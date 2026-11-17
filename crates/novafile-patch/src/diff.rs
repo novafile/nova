@@ -2,7 +2,7 @@
 
 use crate::patch::{Op, OpKind, Patch};
 use novafile_text::{Path, Segment};
-use novafile_value::{revision, Value};
+use novafile_value::{Value, revision};
 
 /// Produce a patch that turns `a` into `b`. Every change is conditional on
 /// the old value, and the patch is pinned to `a`'s revision.

@@ -42,8 +42,8 @@ pub use novafile_text::Profile;
 pub use ser::ValueSerializer;
 
 use novafile_value::Value;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// Convert any `Serialize` type into a NOVA value.
 pub fn to_value<T: ?Sized + Serialize>(v: &T) -> Result<Value, Error> {

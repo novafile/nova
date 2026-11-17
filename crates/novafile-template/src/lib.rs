@@ -8,9 +8,9 @@
 //! every render terminates with bounded output. Templates substitute values,
 //! never text, so there is no indentation or escaping to get wrong.
 
-use novafile_schema::{parse_type, Schema};
+use novafile_schema::{Schema, parse_type};
 use novafile_text::ast::*;
-use novafile_text::{parse_document, Path, Segment};
+use novafile_text::{Path, Segment, parse_document};
 use novafile_value::{Record, Value};
 use std::fmt;
 use std::path::{Component, PathBuf};
@@ -271,7 +271,7 @@ impl<'b> Eval<'b> {
                     return err(format!(
                         "conditions must be bool, found {} (compare explicitly, e.g. `$x != null`)",
                         other.kind()
-                    ))
+                    ));
                 }
             },
             Cond::Eq(a, b) => self.node(a)? == self.node(b)?,

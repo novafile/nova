@@ -1,4 +1,4 @@
-use novafile_text::{parse, parse_document, parse_flow, split_stream, to_text, Path, Profile};
+use novafile_text::{Path, Profile, parse, parse_document, parse_flow, split_stream, to_text};
 use novafile_value::{Decimal, Duration, Record, Timestamp, Value};
 
 const HUMAN: &str = r#"# NOVA human syntax
@@ -310,10 +310,12 @@ fn language_versions() {
     assert!(parse("@schema x@1.0.0\n@nova 0.1\na: 1\n").unwrap_err().to_string().contains("first directive"));
     assert!(parse("@nova 1\na: 1\n").unwrap_err().to_string().contains("MAJOR.MINOR"));
     assert!(parse_document("@nova 0.1\n@template 0.1\na: 1\n").unwrap().is_template());
-    assert!(parse_document("@template 7.0\na: 1\n")
-        .unwrap_err()
-        .to_string()
-        .contains("template language 7.0"));
+    assert!(
+        parse_document("@template 7.0\na: 1\n")
+            .unwrap_err()
+            .to_string()
+            .contains("template language 7.0")
+    );
     assert!(parse_document("@template\na: 1\n").is_ok());
 }
 

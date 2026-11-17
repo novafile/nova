@@ -107,11 +107,7 @@ impl Timestamp {
                     return Err(err());
                 }
                 let o = oh * 3600 + om * 60;
-                if *c == b'-' {
-                    -o
-                } else {
-                    o
-                }
+                if *c == b'-' { -o } else { o }
             }
             _ => return Err(err()),
         };

@@ -15,7 +15,7 @@ use lsp_types::notification::{DidChangeTextDocument, DidCloseTextDocument, DidOp
 use lsp_types::request::{Completion, DocumentSymbolRequest, Formatting, HoverRequest, Request as _};
 use lsp_types::*;
 use novafile_schema::{Def, Schema, SchemaRef, TypeKind};
-use novafile_text::spans::{line_col_utf16, offset_of_utf16, SpanMap};
+use novafile_text::spans::{SpanMap, line_col_utf16, offset_of_utf16};
 use novafile_text::{Path, Segment};
 use novafile_value::Value;
 use std::collections::HashMap;
@@ -411,33 +411,33 @@ impl<'c> Server<'c> {
             shown = shown.chars().take(77).collect::<String>() + "…";
         }
         let mut md = format!("**`{}`** · {}\n\n```nova\n{shown}\n```", span.path, v.kind());
-        if let Some(s) = self.schema_for(&p) {
-            if let Some((ty, field)) = s.type_at(&span.path) {
-                md.push_str(&format!("\n\nschema `{}`: `{ty}`", s.reference().map(|r| r.to_string()).unwrap_or_default()));
-                let (under, _) = s.deref(&ty);
-                if *under != ty {
-                    md.push_str(&format!(" = `{under}`"));
+        if let Some(s) = self.schema_for(&p)
+            && let Some((ty, field)) = s.type_at(&span.path)
+        {
+            md.push_str(&format!("\n\nschema `{}`: `{ty}`", s.reference().map(|r| r.to_string()).unwrap_or_default()));
+            let (under, _) = s.deref(&ty);
+            if *under != ty {
+                md.push_str(&format!(" = `{under}`"));
+            }
+            if let Some(f) = field {
+                let mut notes = Vec::new();
+                if f.optional {
+                    notes.push("optional".to_string());
                 }
-                if let Some(f) = field {
-                    let mut notes = Vec::new();
-                    if f.optional {
-                        notes.push("optional".to_string());
-                    }
-                    if let Some(d) = &f.default {
-                        notes.push(format!("default `{}`", novafile_text::flow_string(d)));
-                    }
-                    if f.key {
-                        notes.push("`@key`".into());
-                    }
-                    if let Some(id) = f.id {
-                        notes.push(format!("`@id({id})`"));
-                    }
-                    if f.deprecated {
-                        notes.push("**deprecated**".into());
-                    }
-                    if !notes.is_empty() {
-                        md.push_str(&format!("\n\n{}", notes.join(" · ")));
-                    }
+                if let Some(d) = &f.default {
+                    notes.push(format!("default `{}`", novafile_text::flow_string(d)));
+                }
+                if f.key {
+                    notes.push("`@key`".into());
+                }
+                if let Some(id) = f.id {
+                    notes.push(format!("`@id({id})`"));
+                }
+                if f.deprecated {
+                    notes.push("**deprecated**".into());
+                }
+                if !notes.is_empty() {
+                    md.push_str(&format!("\n\n{}", notes.join(" · ")));
                 }
             }
         }
@@ -633,12 +633,11 @@ fn children_of(text: &str, p: &Parsed, parent: &Path) -> Vec<DocumentSymbol> {
                 Segment::Index(i) => format!("[{i}]"),
                 other => format!("{other:?}"),
             };
-            if let Value::Record(r) = v {
-                if let Some(id) = ["id", "name", "key"].iter().find_map(|k| r.get(k)) {
-                    if !id.is_container() {
-                        name = format!("{name} {}", novafile_text::flow_string(id));
-                    }
-                }
+            if let Value::Record(r) = v
+                && let Some(id) = ["id", "name", "key"].iter().find_map(|k| r.get(k))
+                && !id.is_container()
+            {
+                name = format!("{name} {}", novafile_text::flow_string(id));
             }
             let full = range(text, s.start, s.end);
             let sel = s.key.map(|(a, b)| range(text, a, b)).unwrap_or(full);

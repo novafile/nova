@@ -310,13 +310,13 @@ impl<'s> Ctx<'s> {
     }
 
     fn constraints(&mut self, v: &Value, c: &Constraints) {
-        if let Some((lo, hi)) = &c.range {
-            if let Some(n) = Num::of(v) {
-                // Exact across kinds; NaN never satisfies a range.
-                if lo.as_ref().is_some_and(|lo| !lo.le(&n)) || hi.as_ref().is_some_and(|hi| !n.le(hi)) {
-                    let b = |o: &Option<Num>| o.as_ref().map(|n| n.to_string()).unwrap_or_default();
-                    self.issue(format!("{n} is outside @range({}..{})", b(lo), b(hi)));
-                }
+        if let Some((lo, hi)) = &c.range
+            && let Some(n) = Num::of(v)
+        {
+            // Exact across kinds; NaN never satisfies a range.
+            if lo.as_ref().is_some_and(|lo| !lo.le(&n)) || hi.as_ref().is_some_and(|hi| !n.le(hi)) {
+                let b = |o: &Option<Num>| o.as_ref().map(|n| n.to_string()).unwrap_or_default();
+                self.issue(format!("{n} is outside @range({}..{})", b(lo), b(hi)));
             }
         }
         if let Some((lo, hi)) = c.len {
@@ -370,11 +370,7 @@ impl Schema {
             apply_defaults: true,
         };
         let out = c.check(v.clone(), t);
-        if c.issues.is_empty() {
-            Ok(out)
-        } else {
-            Err(c.issues)
-        }
+        if c.issues.is_empty() { Ok(out) } else { Err(c.issues) }
     }
 
     /// Resolve against the `@root` type.
@@ -403,10 +399,6 @@ impl Schema {
             apply_defaults: false,
         };
         c.check(v.clone(), &t);
-        if c.issues.is_empty() {
-            Ok(())
-        } else {
-            Err(c.issues)
-        }
+        if c.issues.is_empty() { Ok(()) } else { Err(c.issues) }
     }
 }

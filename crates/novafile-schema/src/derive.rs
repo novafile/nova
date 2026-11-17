@@ -55,8 +55,8 @@ impl SchemaGen {
 
 /// Types with a NOVA schema. Derive it with `#[derive(NovaSchema)]`.
 pub trait NovaSchema {
-    /// The type expression for `Self`, registering named definitions in `gen`.
-    fn nova_type(gen: &mut SchemaGen) -> TypeRef;
+    /// The type expression for `Self`, registering named definitions in `generator`.
+    fn nova_type(generator: &mut SchemaGen) -> TypeRef;
 
     /// As a struct field, may this type be absent? (`Option<T>`: yes.)
     #[doc(hidden)]
@@ -81,18 +81,18 @@ pub trait NovaSchema {
 
 /// The complete schema for `T`, with `T` as the root type.
 pub fn schema_for<T: NovaSchema>() -> Schema {
-    let mut gen = SchemaGen::default();
-    let ty = T::nova_type(&mut gen);
+    let mut generator = SchemaGen::default();
+    let ty = T::nova_type(&mut generator);
     let root = match ty.kind {
         TypeKind::Named(n) => n,
         _ => {
             // Non-named roots (e.g. `Vec<Item>`) get an alias so they can be `@root`.
-            gen.defs.push(("Root".into(), Def::Alias(ty)));
+            generator.defs.push(("Root".into(), Def::Alias(ty)));
             "Root".into()
         }
     };
     let (name, version) = T::nova_schema_id().map(|(n, v)| (Some(n), Some(v))).unwrap_or((None, None));
-    gen.into_schema(Some(root), name, version)
+    generator.into_schema(Some(root), name, version)
 }
 
 /// Apply schema-syntax attributes (`@range(1..10) @len(..64, utf8)`) to a type.

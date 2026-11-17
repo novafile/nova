@@ -21,7 +21,7 @@ pub use ast::Document;
 pub use format::{format_preserving, inline_value, render_fragment, render_preserving};
 pub use parser::{ParseError, Parser};
 pub use path::{CmpOp, Path, PathError, Segment};
-pub use writer::{canonicalize, document_to_text, flow_string, key_text, quote, to_text, Profile};
+pub use writer::{Profile, canonicalize, document_to_text, flow_string, key_text, quote, to_text};
 
 use novafile_value::Value;
 

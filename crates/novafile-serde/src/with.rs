@@ -37,7 +37,7 @@ pub mod set {
 
 /// `std::time::Duration` as a NOVA `duration` (rather than `{secs, nanos}`).
 pub mod duration {
-    use serde::{de::Error as _, ser::Error as _, Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
 
     pub fn serialize<S: Serializer>(d: &std::time::Duration, s: S) -> Result<S::Ok, S::Error> {
         novafile_value::Duration::from_nanos(d.as_nanos() as i128)
@@ -56,7 +56,7 @@ pub mod duration {
 
 /// `std::time::SystemTime` as a NOVA `timestamp`.
 pub mod system_time {
-    use serde::{de::Error as _, ser::Error as _, Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     pub fn serialize<S: Serializer>(t: &SystemTime, s: S) -> Result<S::Ok, S::Error> {

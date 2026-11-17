@@ -8,7 +8,7 @@
 //! stream  = frame*
 //! ```
 
-use novafile_value::{decode_prefix, encode, DecodeError, EncodeOptions, Limits, Value};
+use novafile_value::{DecodeError, EncodeOptions, Limits, Value, decode_prefix, encode};
 use std::fmt;
 
 pub const MAGIC: &[u8; 4] = b"NOVA";

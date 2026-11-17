@@ -1066,28 +1066,31 @@ fn is_null_schema(s: &Json) -> bool {
 fn strip_null(o: &Obj) -> (Obj, bool) {
     let mut o = o.clone();
     let mut nullable = false;
-    if let Some(Json::Array(ts)) = o.get_mut("type") {
-        if ts.len() > 1 && ts.iter().any(|t| t == NULL_TYPE) {
-            ts.retain(|t| t != NULL_TYPE);
-            nullable = true;
-            if ts.len() == 1 {
-                let t = ts[0].clone();
-                o.insert("type".into(), t);
-            }
+    if let Some(Json::Array(ts)) = o.get_mut("type")
+        && ts.len() > 1
+        && ts.iter().any(|t| t == NULL_TYPE)
+    {
+        ts.retain(|t| t != NULL_TYPE);
+        nullable = true;
+        if ts.len() == 1 {
+            let t = ts[0].clone();
+            o.insert("type".into(), t);
         }
     }
-    if let Some(Json::Array(vals)) = o.get_mut("enum") {
-        if vals.len() > 1 && vals.iter().any(Json::is_null) {
-            vals.retain(|v| !v.is_null());
-            nullable = true;
-        }
+    if let Some(Json::Array(vals)) = o.get_mut("enum")
+        && vals.len() > 1
+        && vals.iter().any(Json::is_null)
+    {
+        vals.retain(|v| !v.is_null());
+        nullable = true;
     }
     for k in ["anyOf", "oneOf"] {
-        if let Some(Json::Array(alts)) = o.get_mut(k) {
-            if alts.len() > 1 && alts.iter().any(is_null_schema) {
-                alts.retain(|a| !is_null_schema(a));
-                nullable = true;
-            }
+        if let Some(Json::Array(alts)) = o.get_mut(k)
+            && alts.len() > 1
+            && alts.iter().any(is_null_schema)
+        {
+            alts.retain(|a| !is_null_schema(a));
+            nullable = true;
         }
     }
     (o, nullable)
@@ -1191,12 +1194,13 @@ fn normalize_ref(r: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 3 <= b.len() {
-            if let Some(x) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(x);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 3 <= b.len()
+            && let Some(x) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(x);
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;

@@ -415,12 +415,12 @@ fn check_package_names(defs: &[(&str, &Def)]) -> Result<(), String> {
     };
     for (name, def) in defs {
         claim(ident(name), (*name).to_owned())?;
-        if let Def::Enum(vs) = def {
-            if vs.iter().all(|v| v.payload.is_none()) {
-                claim(enum_value_name(name, "unspecified"), format!("{name} (zero value)"))?;
-                for v in vs {
-                    claim(enum_value_name(name, &v.name), format!("{name}.{}", v.name))?;
-                }
+        if let Def::Enum(vs) = def
+            && vs.iter().all(|v| v.payload.is_none())
+        {
+            claim(enum_value_name(name, "unspecified"), format!("{name} (zero value)"))?;
+            for v in vs {
+                claim(enum_value_name(name, &v.name), format!("{name}.{}", v.name))?;
             }
         }
     }

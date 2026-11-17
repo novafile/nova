@@ -65,7 +65,7 @@ use novafile_value::{Record, Value};
 use yaml_rust2::parser::{Event, Parser, Tag};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
 
-use crate::{Reporter, Warning, MAX_DEPTH};
+use crate::{MAX_DEPTH, Reporter, Warning};
 
 /// Maximum number of value nodes a YAML stream may expand to, counting
 /// every node produced by alias expansion (spec §9.5).
@@ -455,11 +455,7 @@ fn double_quoted(s: &str) -> String {
 }
 
 fn string_scalar(s: &str) -> String {
-    if plain_ok(s) {
-        s.to_owned()
-    } else {
-        double_quoted(s)
-    }
+    if plain_ok(s) { s.to_owned() } else { double_quoted(s) }
 }
 
 /// Longest implicit key YAML permits is 1024 characters; use explicit

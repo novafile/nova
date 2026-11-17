@@ -1,6 +1,6 @@
-use novafile_patch::{apply_unchecked, diff, get, parse_patch, PatchError};
-use novafile_text::{parse, Profile};
-use novafile_value::{revision, Value};
+use novafile_patch::{PatchError, apply_unchecked, diff, get, parse_patch};
+use novafile_text::{Profile, parse};
+use novafile_value::{Value, revision};
 
 const DOC: &str = include_str!("../../../examples/infrastructure.nova");
 
@@ -127,10 +127,12 @@ fn filters() {
     let r = novafile_patch::select(&ts, &novafile_text::Path::parse("e[?at>=\"2025-01-01T00:00:00Z\"]").unwrap()).unwrap();
     assert_eq!(r.as_list().unwrap().len(), 1);
     // Filters are queries only: patches reject them.
-    assert!(parse_patch("@patch\n= services[?replicas>3].replicas: 1\n")
-        .unwrap_err()
-        .to_string()
-        .contains("may not use"));
+    assert!(
+        parse_patch("@patch\n= services[?replicas>3].replicas: 1\n")
+            .unwrap_err()
+            .to_string()
+            .contains("may not use")
+    );
     // Round-trip through display.
     let p = novafile_text::Path::parse("services[?status.code>=500].id").unwrap();
     assert_eq!(p.to_string(), "services[?status.code>=500].id");

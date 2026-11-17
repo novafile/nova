@@ -129,11 +129,7 @@ impl Diagnostic for SourceDiagnostic {
         self.help.as_ref().map(|h| Box::new(h) as Box<dyn fmt::Display>)
     }
     fn source_code(&self) -> Option<&dyn SourceCode> {
-        if self.labels.is_empty() {
-            None
-        } else {
-            Some(&self.src)
-        }
+        if self.labels.is_empty() { None } else { Some(&self.src) }
     }
     fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
         if self.labels.is_empty() {

@@ -1,7 +1,7 @@
 //! Recursive-descent parser for NOVA text (spec §4) and templates (spec §9).
 
 use crate::ast::*;
-use crate::path::{is_ident_char, is_ident_start, Path, Segment};
+use crate::path::{Path, Segment, is_ident_char, is_ident_start};
 use crate::spans::{Span, SpanKind};
 use base64::Engine;
 use novafile_value::{Decimal, Duration, Rational, Timestamp, Value};
@@ -212,16 +212,17 @@ impl<'a> Parser<'a> {
     fn spanned<T>(&mut self, kind: SpanKind, seg: Segment, start: usize, key: Option<(usize, usize)>, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
         self.cur.push(seg);
         let r = f(self);
-        if r.is_ok() && !self.template {
-            if let Some(spans) = self.spans.as_mut() {
-                spans.push(Span {
-                    path: Path(self.cur.clone()),
-                    start,
-                    end: self.last_end.max(start),
-                    key,
-                    kind,
-                });
-            }
+        if r.is_ok()
+            && !self.template
+            && let Some(spans) = self.spans.as_mut()
+        {
+            spans.push(Span {
+                path: Path(self.cur.clone()),
+                start,
+                end: self.last_end.max(start),
+                key,
+                kind,
+            });
         }
         self.cur.pop();
         r
@@ -674,10 +675,10 @@ impl<'a> Parser<'a> {
     }
 
     fn push_entry(&self, entries: &mut Vec<Entry>, seen: &mut std::collections::HashSet<String>, k: Key, v: Node, kpos: usize) -> R<()> {
-        if let Key::Lit(name) = &k {
-            if !seen.insert(name.clone()) {
-                return Err(self.error_at(kpos, format!("duplicate key {name:?}")));
-            }
+        if let Key::Lit(name) = &k
+            && !seen.insert(name.clone())
+        {
+            return Err(self.error_at(kpos, format!("duplicate key {name:?}")));
         }
         entries.push(Entry::Field(k, v));
         Ok(())
@@ -1269,16 +1270,16 @@ impl<'a> Parser<'a> {
             if cells.len() != fields.len() {
                 return self.err(format!("table row has {} cells; the header declares {}", cells.len(), fields.len()));
             }
-            if !self.template {
-                if let Some(spans) = self.spans.as_mut() {
-                    spans.push(Span {
-                        path: Path(self.cur.clone()),
-                        start: row_start,
-                        end: self.last_end.max(row_start),
-                        key: None,
-                        kind: SpanKind::TableRow,
-                    });
-                }
+            if !self.template
+                && let Some(spans) = self.spans.as_mut()
+            {
+                spans.push(Span {
+                    path: Path(self.cur.clone()),
+                    start: row_start,
+                    end: self.last_end.max(row_start),
+                    key: None,
+                    kind: SpanKind::TableRow,
+                });
             }
             self.cur.pop();
             let entries = fields
@@ -1639,16 +1640,16 @@ impl<'a> Parser<'a> {
         if !self.at_eof() {
             return self.err("unexpected content after the document body");
         }
-        if !self.template {
-            if let Some(spans) = self.spans.as_mut() {
-                spans.push(Span {
-                    path: Path::root(),
-                    start: body_start,
-                    end: self.last_end.max(body_start),
-                    key: None,
-                    kind: SpanKind::Root,
-                });
-            }
+        if !self.template
+            && let Some(spans) = self.spans.as_mut()
+        {
+            spans.push(Span {
+                path: Path::root(),
+                start: body_start,
+                end: self.last_end.max(body_start),
+                key: None,
+                kind: SpanKind::Root,
+            });
         }
         Ok(body)
     }

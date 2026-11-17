@@ -6,9 +6,9 @@
 //! -conformance` binary writes them (`generate`); the test checks that the
 //! files on disk still match (`cargo test -p novafile-conformance`).
 
-use novafile_text::{to_text, Profile};
-use novafile_value::{canonical_bytes, revision, Record, Value};
-use serde_json::{json, Value as J};
+use novafile_text::{Profile, to_text};
+use novafile_value::{Record, Value, canonical_bytes, revision};
+use serde_json::{Value as J, json};
 use std::path::{Path, PathBuf};
 
 fn hex(b: &[u8]) -> String {

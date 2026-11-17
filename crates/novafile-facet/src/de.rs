@@ -437,15 +437,13 @@ fn fields(mut wip: P, fields: &'static [Field], r: Record, deny: bool) -> R {
         let rec = Record::from_entries(std::mem::take(&mut rest)).map_err(|e| Error::new(e.to_string()))?;
         wip = fill(wip.begin_nth_field(i)?, Value::Record(rec))?.end()?;
     }
-    if deny {
-        if let Some((k, _)) = rest.first() {
-            let expected: Vec<String> = fields
-                .iter()
-                .filter(|f| !f.should_skip_deserializing())
-                .map(|f| format!("`{}`", f.effective_name()))
-                .collect();
-            return Err(Error::new(format!("unknown field `{k}`, expected one of {}", expected.join(", "))));
-        }
+    if deny && let Some((k, _)) = rest.first() {
+        let expected: Vec<String> = fields
+            .iter()
+            .filter(|f| !f.should_skip_deserializing())
+            .map(|f| format!("`{}`", f.effective_name()))
+            .collect();
+        return Err(Error::new(format!("unknown field `{k}`, expected one of {}", expected.join(", "))));
     }
     // Missing fields without a default are an error here rather than at build time.
     let required: Vec<bool> = match wip.field_plans() {

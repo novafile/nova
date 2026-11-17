@@ -85,9 +85,9 @@
 //!
 //! [Protocol Buffers]: https://protobuf.dev/programming-guides/proto3/
 
+mod codegen;
 mod decode;
 mod encode;
-mod gen;
 mod shape;
 mod wire;
 
@@ -115,7 +115,7 @@ pub const MAX_DEPTH: usize = 128;
 /// ```
 pub fn proto_file(schema: &Schema) -> Result<String, String> {
     let plan = shape::Plan::new(schema)?;
-    gen::render(schema, &plan)
+    codegen::render(schema, &plan)
 }
 
 /// Encode `value`, a value of the schema's `@root` type, as the wire bytes of
@@ -135,7 +135,7 @@ pub fn decode(bytes: &[u8], schema: &Schema) -> Result<Value, String> {
 
 /// The proto3 `package` name the generated file uses, if the schema is named.
 pub fn package_name(schema: &Schema) -> Option<String> {
-    gen::package(schema)
+    codegen::package(schema)
 }
 
 /// An error with the path (innermost segment first) at which it happened.

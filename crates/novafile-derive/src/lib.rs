@@ -10,7 +10,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as Ts;
 use quote::quote;
-use syn::{parse_macro_input, spanned::Spanned, Attribute, Data, DeriveInput, Error, Fields, LitInt, LitStr};
+use syn::{Attribute, Data, DeriveInput, Error, Fields, LitInt, LitStr, parse_macro_input, spanned::Spanned};
 
 #[proc_macro_derive(NovaSchema, attributes(nova))]
 pub fn derive_nova_schema(input: TokenStream) -> TokenStream {
@@ -226,7 +226,7 @@ fn record_fields(owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> 
             None => quote!(None),
         };
         out.push(quote! {{
-            let ty = <#ty as ::novafile_schema::NovaSchema>::nova_type(gen);
+            let ty = <#ty as ::novafile_schema::NovaSchema>::nova_type(generator);
             #with
             let optional = !#has_default && (#serde_default || <#ty as ::novafile_schema::NovaSchema>::nova_field_optional());
             fields.push(::novafile_schema::FieldDef {
@@ -279,7 +279,7 @@ fn expand(input: DeriveInput) -> syn::Result<Ts> {
                     quote!(let ty = ::novafile_schema::derive::__with_attrs(ty, #attr_text, #def_name);)
                 };
                 quote!({
-                    let ty = <#ty as ::novafile_schema::NovaSchema>::nova_type(gen);
+                    let ty = <#ty as ::novafile_schema::NovaSchema>::nova_type(generator);
                     #with
                     ::novafile_schema::Def::Alias(ty)
                 })
@@ -287,7 +287,7 @@ fn expand(input: DeriveInput) -> syn::Result<Ts> {
             Fields::Unnamed(u) => {
                 let tys = u.unnamed.iter().map(|f| &f.ty);
                 quote!(::novafile_schema::Def::Alias(::novafile_schema::TypeRef::new(
-                    ::novafile_schema::TypeKind::Tuple(vec![#(<#tys as ::novafile_schema::NovaSchema>::nova_type(gen)),*])
+                    ::novafile_schema::TypeKind::Tuple(vec![#(<#tys as ::novafile_schema::NovaSchema>::nova_type(generator)),*])
                 )))
             }
             Fields::Unit => quote!(::novafile_schema::Def::Alias(::novafile_schema::TypeRef::new(
@@ -309,19 +309,19 @@ fn expand(input: DeriveInput) -> syn::Result<Ts> {
                     Fields::Unit => quote!(None),
                     Fields::Unnamed(u) if u.unnamed.len() == 1 => {
                         let ty = &u.unnamed[0].ty;
-                        quote!(Some(<#ty as ::novafile_schema::NovaSchema>::nova_type(gen)))
+                        quote!(Some(<#ty as ::novafile_schema::NovaSchema>::nova_type(generator)))
                     }
                     Fields::Unnamed(u) => {
                         let tys = u.unnamed.iter().map(|f| &f.ty);
                         quote!(Some(::novafile_schema::TypeRef::new(::novafile_schema::TypeKind::Tuple(
-                            vec![#(<#tys as ::novafile_schema::NovaSchema>::nova_type(gen)),*]
+                            vec![#(<#tys as ::novafile_schema::NovaSchema>::nova_type(generator)),*]
                         ))))
                     }
                     Fields::Named(named) => {
                         // Struct variants get a record definition of their own.
                         let rec = format!("{def_name}{}", v.ident);
                         let fields = record_fields(&rec, named, None)?;
-                        quote!(Some(gen.named(#rec, |gen| ::novafile_schema::Def::Record(::novafile_schema::RecordDef { fields: #fields, open: false }))))
+                        quote!(Some(generator.named(#rec, |generator| ::novafile_schema::Def::Record(::novafile_schema::RecordDef { fields: #fields, open: false }))))
                     }
                 };
                 variants.push(quote!(::novafile_schema::VariantDef { name: #name.to_owned(), payload: #payload }));
@@ -341,8 +341,8 @@ fn expand(input: DeriveInput) -> syn::Result<Ts> {
     };
     Ok(quote! {
         impl ::novafile_schema::NovaSchema for #ident {
-            fn nova_type(gen: &mut ::novafile_schema::derive::SchemaGen) -> ::novafile_schema::TypeRef {
-                gen.named(#def_name, |gen| #body)
+            fn nova_type(generator: &mut ::novafile_schema::derive::SchemaGen) -> ::novafile_schema::TypeRef {
+                generator.named(#def_name, |generator| #body)
             }
             #id
         }

@@ -112,14 +112,15 @@ struct Encoder {
 
 impl Encoder {
     fn string(&mut self, out: &mut Vec<u8>, s: &str) {
-        if self.opts.dedupe_strings && !self.opts.canonical {
-            if let Some(&idx) = self.table.get(s) {
-                let r = (idx as u128) << 1 | 1;
-                let lit = (s.len() as u128) << 1;
-                if varint_len(r) < varint_len(lit) + s.len() {
-                    put_varint(out, r);
-                    return;
-                }
+        if self.opts.dedupe_strings
+            && !self.opts.canonical
+            && let Some(&idx) = self.table.get(s)
+        {
+            let r = (idx as u128) << 1 | 1;
+            let lit = (s.len() as u128) << 1;
+            if varint_len(r) < varint_len(lit) + s.len() {
+                put_varint(out, r);
+                return;
             }
         }
         put_varint(out, (s.len() as u128) << 1);
@@ -585,7 +586,7 @@ impl<'a> Decoder<'a> {
                 return Err(DecodeError {
                     offset: start,
                     message: format!("unknown type tag 0x{other:02X}"),
-                })
+                });
             }
         })
     }

@@ -1,8 +1,8 @@
 //! Queries and projections (spec §7.3): `@get path`.
 
 use novafile_text::path::step;
-use novafile_text::{document_to_text, CmpOp, Path, PathError, Profile, Segment};
-use novafile_value::{revision, Record, Revision, Value};
+use novafile_text::{CmpOp, Path, PathError, Profile, Segment, document_to_text};
+use novafile_value::{Record, Revision, Value, revision};
 
 /// Evaluate a path that may contain `[*]` and a final projection.
 pub fn select(root: &Value, path: &Path) -> Result<Value, PathError> {
@@ -28,7 +28,7 @@ fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value
                         at: here(),
                         expected: "list",
                         found: other.kind(),
-                    })
+                    });
                 }
             };
             let keep = |e: &&Value| {
@@ -56,7 +56,7 @@ fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value
                         at: here(),
                         expected: "container",
                         found: other.kind(),
-                    })
+                    });
                 }
             };
             Ok(Value::List(elems.into_iter().map(|e| sel(e, rest, depth + 1, full)).collect::<Result<_, _>>()?))
@@ -101,10 +101,10 @@ impl Response {
         let rev = self.revision.to_string();
         let scope = self.scope.as_ref().map(|s| s.to_string());
         let mut d: Vec<(&str, &str)> = vec![("revision", &rev)];
-        if let Some(s) = &scope {
-            if s != "." {
-                d.push(("scope", s));
-            }
+        if let Some(s) = &scope
+            && s != "."
+        {
+            d.push(("scope", s));
         }
         document_to_text(&d, &self.value, profile)
     }

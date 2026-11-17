@@ -1,7 +1,7 @@
 //! Hand-computed wire bytes, decoder robustness and error reporting.
 
 use novafile_proto::{decode, encode, proto_file};
-use novafile_schema::{parse_schema, Schema};
+use novafile_schema::{Schema, parse_schema};
 use novafile_value::Value;
 
 fn schema(src: &str) -> Schema {

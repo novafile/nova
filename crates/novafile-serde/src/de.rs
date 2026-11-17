@@ -1,8 +1,8 @@
 //! `serde::Deserializer` over an owned [`Value`].
 
-use crate::error::{field_seg, Error};
-use novafile_value::serde_support::{__inject, magic};
+use crate::error::{Error, field_seg};
 use novafile_value::Value;
+use novafile_value::serde_support::{__inject, magic};
 use serde::de::{self, DeserializeSeed, IntoDeserializer, Visitor};
 
 /// Deserializes from a value. `key` is set for map keys, where numeric

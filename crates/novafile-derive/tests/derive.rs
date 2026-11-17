@@ -1,4 +1,4 @@
-use novafile_schema::{parse_schema, NovaSchema};
+use novafile_schema::{NovaSchema, parse_schema};
 use novafile_value::Timestamp;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};

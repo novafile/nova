@@ -1,7 +1,7 @@
 //! Hand-written JSON Schemas → NOVA schemas.
 #![recursion_limit = "256"]
 
-use novafile_schemars::{from_json_schema, Conversion, Error};
+use novafile_schemars::{Conversion, Error, from_json_schema};
 use serde_json::json;
 
 fn convert(j: serde_json::Value) -> Conversion {

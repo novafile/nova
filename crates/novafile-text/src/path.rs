@@ -229,10 +229,10 @@ impl Path {
             }
             first = false;
         }
-        if let Some(pos) = segs.iter().position(|s| matches!(s, Segment::Project(_))) {
-            if pos + 1 != segs.len() {
-                return Err("a projection must be the last path segment".into());
-            }
+        if let Some(pos) = segs.iter().position(|s| matches!(s, Segment::Project(_)))
+            && pos + 1 != segs.len()
+        {
+            return Err("a projection must be the last path segment".into());
         }
         Ok((Path(segs), i))
     }

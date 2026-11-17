@@ -62,7 +62,7 @@
 
 use novafile_value::{Decimal, Rational, Record, Timestamp, Value};
 
-use crate::{Reporter, Warning, MAX_DEPTH};
+use crate::{MAX_DEPTH, Reporter, Warning};
 
 const TAG_RFC3339: u64 = 0;
 const TAG_EPOCH: u64 = 1;

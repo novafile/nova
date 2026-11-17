@@ -1,9 +1,9 @@
 //! Text writer with three profiles (spec §4.10).
 
-use crate::parser::{classify, RESERVED_START};
+use crate::parser::{RESERVED_START, classify};
 use crate::path::{is_ident_char, is_ident_start};
 use base64::Engine;
-use novafile_value::{canonical_bytes, Value};
+use novafile_value::{Value, canonical_bytes};
 
 /// Output profile. All profiles produce text that parses back to an equal value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,11 +25,7 @@ pub(crate) fn is_ident(s: &str) -> bool {
 
 /// Key as written: bare identifier or quoted string.
 pub fn key_text(k: &str) -> String {
-    if is_ident(k) {
-        k.to_owned()
-    } else {
-        quote(k)
-    }
+    if is_ident(k) { k.to_owned() } else { quote(k) }
 }
 
 pub fn quote(s: &str) -> String {
@@ -72,11 +68,7 @@ fn float_text(f: f64) -> String {
     if f.is_nan() {
         "@float(\"nan\")".into()
     } else if f.is_infinite() {
-        if f > 0.0 {
-            "@float(\"inf\")".into()
-        } else {
-            "@float(\"-inf\")".into()
-        }
+        if f > 0.0 { "@float(\"inf\")".into() } else { "@float(\"-inf\")".into() }
     } else {
         format!("{f:?}")
     }
@@ -280,11 +272,7 @@ impl<'t> W<'t> {
         (t.keep_spelling && orig == v).then(|| text.clone())
     }
     fn sep(&self) -> &'static str {
-        if self.compact {
-            ","
-        } else {
-            ", "
-        }
+        if self.compact { "," } else { ", " }
     }
 
     fn pad(&mut self, n: usize) {

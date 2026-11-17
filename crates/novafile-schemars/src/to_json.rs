@@ -1,9 +1,9 @@
 //! NOVA schema → JSON Schema (2020-12). See the crate documentation for the mapping.
 
 use novafile_schema::{Constraints, Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
-use novafile_value::schemars_support::patterns;
 use novafile_value::Value;
-use serde_json::{json, Map, Value as Json};
+use novafile_value::schemars_support::patterns;
+use serde_json::{Map, Value as Json, json};
 
 /// The meta-schema URI written as `$schema`.
 pub const DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";

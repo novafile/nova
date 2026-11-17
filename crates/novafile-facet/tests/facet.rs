@@ -1,5 +1,5 @@
 use facet::Facet;
-use novafile_facet::{from_slice, from_str, from_value, to_string, to_string_with, to_value, to_vec, Profile};
+use novafile_facet::{Profile, from_slice, from_str, from_value, to_string, to_string_with, to_value, to_vec};
 use novafile_value::{Decimal, Duration, Rational, Timestamp, Value};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;

@@ -15,10 +15,10 @@ pub(crate) fn value(p: Peek<'_, '_>) -> R {
     }
     let shape = p.shape();
     // A container-level `#[facet(proxy = X)]` serializes as `X`.
-    if shape.proxy.is_some() {
-        if let Some(owned) = p.custom_serialization_from_shape()? {
-            return value(owned.as_peek());
-        }
+    if shape.proxy.is_some()
+        && let Some(owned) = p.custom_serialization_from_shape()?
+    {
+        return value(owned.as_peek());
     }
     if let Some(st) = p.scalar_type() {
         return scalar(p, st);
@@ -96,10 +96,10 @@ pub(crate) fn value(p: Peek<'_, '_>) -> R {
 
 /// Follow `Box`, `Arc`, `Rc`, references, `Cow`, … to the pointee.
 fn deref<'mem, 'facet>(p: Peek<'mem, 'facet>) -> Peek<'mem, 'facet> {
-    if let Ok(ptr) = p.into_pointer() {
-        if let Some(inner) = ptr.borrow_inner() {
-            return deref(inner);
-        }
+    if let Ok(ptr) = p.into_pointer()
+        && let Some(inner) = ptr.borrow_inner()
+    {
+        return deref(inner);
     }
     p
 }
@@ -277,7 +277,7 @@ fn enumeration(e: PeekEnum<'_, '_>) -> R {
                     return Err(Error::new(format!(
                         "internally tagged variant {tag} must have a record payload, got {}",
                         other.kind()
-                    )))
+                    )));
                 }
             }
             Ok(Value::Record(r))

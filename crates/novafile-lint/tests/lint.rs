@@ -1,4 +1,4 @@
-use novafile_lint::{apply_fixes, lint_document, lint_schema, Config, Level};
+use novafile_lint::{Config, Level, apply_fixes, lint_document, lint_schema};
 
 const DOC: &str = "# config\nserviceName: api   # the name\nhttpPort: 8080\nuser_id: 1\nuserId: 2\n\"display name\": x\nstartedAt: 2026-11-17T16:00:00Z\nmixed: [1, two, 3]\nnested:\n  maxRetries: 3\n";
 
@@ -60,9 +60,11 @@ fn schema_rules() {
         [("partial-ids", "record R"), ("field-case", "badField"), ("variant-case", "Active")],
         "{f:#?}"
     );
-    assert!(lint_schema(include_str!("../../../examples/infrastructure.novs"), &Config::default())
-        .unwrap()
-        .is_empty());
+    assert!(
+        lint_schema(include_str!("../../../examples/infrastructure.novs"), &Config::default())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -71,8 +73,10 @@ fn compat_mode() {
     let f = lint_document(src, &Config::default()).unwrap();
     let got: Vec<(&str, &str)> = f.iter().map(|f| (f.rule, &src[f.start..f.end])).collect();
     assert_eq!(got, [("compat-loss", "@decimal(\"1.50\")"), ("compat-loss", "@set[a, b]")], "{f:#?}");
-    assert!(lint_document("@compat toml\na: null\n", &Config::default()).unwrap()[0]
-        .message
-        .contains("null"));
+    assert!(
+        lint_document("@compat toml\na: null\n", &Config::default()).unwrap()[0]
+            .message
+            .contains("null")
+    );
     assert!(lint_document("@compat xml\na: 1\n", &Config::default()).is_err());
 }

@@ -1,6 +1,6 @@
 //! The Protobuf wire format: varints, tags, and a bounds-checked field reader.
 
-use crate::shape::{WireType, MAX_FIELD_NUMBER};
+use crate::shape::{MAX_FIELD_NUMBER, WireType};
 
 /// Append `v` as a base-128 varint.
 pub(crate) fn put_varint(buf: &mut Vec<u8>, mut v: u64) {

@@ -13,8 +13,8 @@
 
 use crate::nav::get_mut;
 use novafile_text::path::{match_indices, resolve_index};
-use novafile_text::{flow_string, Parser, Path, PathError, Segment};
-use novafile_value::{revision, Revision, Value};
+use novafile_text::{Parser, Path, PathError, Segment, flow_string};
+use novafile_value::{Revision, Value, revision};
 use std::fmt;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -249,13 +249,13 @@ pub struct Applied {
 /// accepted (e.g. schema validation); any failure leaves `doc` untouched.
 pub fn apply(doc: &Value, patch: &Patch, validate: &dyn Fn(&Value) -> Result<(), Vec<String>>) -> Result<Applied, PatchError> {
     let base = revision(doc);
-    if let Some(expected) = &patch.base {
-        if !base.matches(expected) {
-            return Err(PatchError::StaleBase {
-                expected: expected.clone(),
-                actual: base,
-            });
-        }
+    if let Some(expected) = &patch.base
+        && !base.matches(expected)
+    {
+        return Err(PatchError::StaleBase {
+            expected: expected.clone(),
+            actual: base,
+        });
     }
     if !patch.scope.is_root() {
         patch.scope.get(doc).map_err(PatchError::Scope)?;
@@ -331,17 +331,17 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
         }
         OpKind::Add(v) => {
             // `+ list[n]: v` inserts before index n (n = length appends).
-            if let Some((parent, Segment::Index(i))) = path.parent() {
-                if let Ok(Value::List(l)) = get_mut(root, &parent) {
-                    let len = l.len();
-                    let idx = if *i == len as i64 {
-                        len
-                    } else {
-                        resolve_index(*i, len).ok_or(format!("index {i} is out of bounds for insert (len {len})"))?
-                    };
-                    l.insert(idx, v.clone());
-                    return Ok(());
-                }
+            if let Some((parent, Segment::Index(i))) = path.parent()
+                && let Ok(Value::List(l)) = get_mut(root, &parent)
+            {
+                let len = l.len();
+                let idx = if *i == len as i64 {
+                    len
+                } else {
+                    resolve_index(*i, len).ok_or(format!("index {i} is out of bounds for insert (len {len})"))?
+                };
+                l.insert(idx, v.clone());
+                return Ok(());
             }
             // Existing list/set at the path: append / insert.
             if let Ok(t) = get_mut(root, path) {

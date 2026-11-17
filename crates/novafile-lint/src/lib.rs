@@ -21,7 +21,7 @@
 
 mod case;
 
-pub use case::{split_words, Case};
+pub use case::{Case, split_words};
 
 use novafile_text::spans::{SpanKind, SpanMap};
 use novafile_text::{Path, Segment};
@@ -163,11 +163,11 @@ fn keys(_src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schema:
     // Group record entries by their parent record.
     let mut by_parent: HashMap<String, Vec<(&novafile_text::spans::Span, String)>> = HashMap::new();
     for s in spans.iter() {
-        if let (Some(Segment::Field(k)), Some(_)) = (s.path.0.last(), s.key) {
-            if matches!(s.kind, SpanKind::BlockEntry | SpanKind::FlowEntry) {
-                let parent = Path(s.path.0[..s.path.0.len() - 1].to_vec()).to_string();
-                by_parent.entry(parent).or_default().push((s, k.clone()));
-            }
+        if let (Some(Segment::Field(k)), Some(_)) = (s.path.0.last(), s.key)
+            && matches!(s.kind, SpanKind::BlockEntry | SpanKind::FlowEntry)
+        {
+            let parent = Path(s.path.0[..s.path.0.len() - 1].to_vec()).to_string();
+            by_parent.entry(parent).or_default().push((s, k.clone()));
         }
     }
     let _ = value;

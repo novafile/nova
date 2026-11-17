@@ -5,7 +5,7 @@
 //! stand-in for BPE tokenizers that is good enough to rank representations;
 //! plug in a real tokenizer for production decisions.
 
-use crate::writer::{to_text, Profile};
+use crate::writer::{Profile, to_text};
 use novafile_value::Value;
 
 pub trait TokenCounter {

@@ -1,10 +1,10 @@
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
-use novafile_binary::{decode_frame, encode_frame, Frame, FrameOptions, MAGIC};
-use novafile_schema::{check_versions, parse_schema, Schema};
+use novafile_binary::{Frame, FrameOptions, MAGIC, decode_frame, encode_frame};
+use novafile_schema::{Schema, check_versions, parse_schema};
 use novafile_text::diagnostic::SourceDiagnostic;
 use novafile_text::tokens::{HeuristicCounter, TokenCounter};
-use novafile_text::{document_to_text, parse_document, Profile};
-use novafile_value::{revision, Record, Value};
+use novafile_text::{Profile, document_to_text, parse_document};
+use novafile_value::{Record, Value, revision};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -370,10 +370,11 @@ fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> 
                     return Ok(compat_loaded(v, "json"));
                 }
                 let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-                if lines.len() > 1 && lines.iter().all(|l| l.trim_start().starts_with('{') || l.trim_start().starts_with('[')) {
-                    if let Ok(v) = novafile_json::from_jsonl_str(&text) {
-                        return Ok(compat_loaded(Value::List(v), "json"));
-                    }
+                if lines.len() > 1
+                    && lines.iter().all(|l| l.trim_start().starts_with('{') || l.trim_start().starts_with('['))
+                    && let Ok(v) = novafile_json::from_jsonl_str(&text)
+                {
+                    return Ok(compat_loaded(Value::List(v), "json"));
                 }
             }
         }
@@ -411,13 +412,12 @@ fn load_schema(p: &Path) -> R<Schema> {
     let src = read_text(p)?;
     // A schema descriptor (NOVA data, spec §6.8) is accepted wherever a schema is.
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if ext != "novs" {
-        if let Ok(doc) = novafile_text::parse_document(&src) {
-            if doc.directive("schema").is_some_and(|r| r.starts_with("nova-schema@")) {
-                let v = doc.body.to_value().map_err(|e| format!("{}: {e}", p.display()))?;
-                return Ok(Schema::from_value(&v).map_err(|e| format!("{}: {e}", p.display()))?);
-            }
-        }
+    if ext != "novs"
+        && let Ok(doc) = novafile_text::parse_document(&src)
+        && doc.directive("schema").is_some_and(|r| r.starts_with("nova-schema@"))
+    {
+        let v = doc.body.to_value().map_err(|e| format!("{}: {e}", p.display()))?;
+        return Ok(Schema::from_value(&v).map_err(|e| format!("{}: {e}", p.display()))?);
     }
     parse_schema(&src).map_err(|e| {
         if e.line == 0 {
@@ -600,10 +600,10 @@ fn run(cli: Cli) -> R<ExitCode> {
         Cmd::Validate { file, schema, resolve } => {
             let s = load_schema(&schema)?;
             let l = load(&file)?;
-            if let Some((_, r)) = l.directives.iter().find(|(n, _)| n == "schema") {
-                if s.reference().is_some() {
-                    s.accepts_reference(r).map_err(|e| format!("{}: {e}", file.display()))?;
-                }
+            if let Some((_, r)) = l.directives.iter().find(|(n, _)| n == "schema")
+                && s.reference().is_some()
+            {
+                s.accepts_reference(r).map_err(|e| format!("{}: {e}", file.display()))?;
             }
             match s.resolve(&l.value) {
                 Ok(v) => {
@@ -699,10 +699,10 @@ fn run(cli: Cli) -> R<ExitCode> {
             let patch_src = read_text(&patch)?;
             let p = novafile_patch::parse_patch(&patch_src).map_err(|e| patch_error(&e, &patch, &patch_src))?;
             let s = schema.as_deref().map(load_schema).transpose()?;
-            if let (Some(s), Some(r)) = (&s, &p.schema) {
-                if s.reference().is_some() {
-                    s.accepts_reference(r).map_err(|e| format!("{}: {e}", patch.display()))?;
-                }
+            if let (Some(s), Some(r)) = (&s, &p.schema)
+                && s.reference().is_some()
+            {
+                s.accepts_reference(r).map_err(|e| format!("{}: {e}", patch.display()))?;
             }
             let validate = |v: &Value| match &s {
                 Some(s) => s.validate(v).map_err(|i| i.iter().map(|i| i.to_string()).collect()),
@@ -763,10 +763,10 @@ fn run(cli: Cli) -> R<ExitCode> {
                 limits: Default::default(),
             };
             let v = novafile_template::render(&src, &args, &opts).map_err(|e| format!("{}: {e}", file.display()))?;
-            if let Some(s) = &s {
-                if s.root.is_some() {
-                    s.validate(&v).map_err(|i| format!("rendered document is invalid:\n{}", issues(i)))?;
-                }
+            if let Some(s) = &s
+                && s.root.is_some()
+            {
+                s.validate(&v).map_err(|i| format!("rendered document is invalid:\n{}", issues(i)))?;
             }
             out(&render_as(&Loaded { directives: vec![], value: v }, to, false)?, None)?;
         }

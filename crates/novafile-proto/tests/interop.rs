@@ -3,7 +3,7 @@
 //! messages are cross-checked with `prost-reflect` dynamic messages in both
 //! directions.
 
-use novafile_schema::{parse_schema, Schema};
+use novafile_schema::{Schema, parse_schema};
 use novafile_value::Value;
 use prost_reflect::prost::Message as _;
 use prost_reflect::{DescriptorPool, DynamicMessage, MapKey, MessageDescriptor, Value as PValue};

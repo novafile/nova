@@ -1,6 +1,6 @@
 //! Rendering a [`Plan`] as proto3 source text.
 
-use crate::shape::{classify_field, classify_payload, enum_value_name, field_number, ident, Plan, Shape, Single};
+use crate::shape::{Plan, Shape, Single, classify_field, classify_payload, enum_value_name, field_number, ident};
 use novafile_schema::{Def, RecordDef, Schema, VariantDef};
 use std::fmt::Write;
 

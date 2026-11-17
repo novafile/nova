@@ -1,4 +1,4 @@
-use novafile_template::{render, FsLoader, Limits, Options};
+use novafile_template::{FsLoader, Limits, Options, render};
 use novafile_value::{Record, Value};
 
 fn args(src: &str) -> Record {

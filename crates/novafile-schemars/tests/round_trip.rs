@@ -1,10 +1,10 @@
 //! NOVA schema → JSON Schema → NOVA schema.
 
-use novafile_schema::{check_compatibility, parse_schema, Schema};
+use novafile_schema::{Schema, check_compatibility, parse_schema};
 use novafile_schemars::{from_json_schema, to_json_schema};
 
 mod common;
-use common::{example, KITCHEN_SINK};
+use common::{KITCHEN_SINK, example};
 
 /// `old` → JSON Schema → back: no breaking change either way.
 fn assert_round_trip(old: &Schema) -> Schema {

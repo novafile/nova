@@ -15,7 +15,7 @@
 //! | [`Value`] | `true` (any value) |
 
 use crate::{Decimal, Duration, Rational, Timestamp, Value};
-use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use std::borrow::Cow;
 
 /// Patterns for the string forms of the text-backed kinds. They accept the

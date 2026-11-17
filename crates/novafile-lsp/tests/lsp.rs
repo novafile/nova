@@ -1,5 +1,5 @@
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 struct Client {
@@ -27,10 +27,10 @@ impl Client {
     }
     fn diagnostics(&self) -> Value {
         loop {
-            if let Message::Notification(n) = self.conn.receiver.recv_timeout(Duration::from_secs(10)).unwrap() {
-                if n.method == "textDocument/publishDiagnostics" {
-                    return n.params["diagnostics"].clone();
-                }
+            if let Message::Notification(n) = self.conn.receiver.recv_timeout(Duration::from_secs(10)).unwrap()
+                && n.method == "textDocument/publishDiagnostics"
+            {
+                return n.params["diagnostics"].clone();
             }
         }
     }

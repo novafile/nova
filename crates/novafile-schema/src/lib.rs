@@ -11,15 +11,15 @@ mod positional;
 mod resolve;
 mod version;
 
-pub use compat::{check_compatibility, widens, Change};
-pub use derive::{schema_for, NovaSchema, SchemaGen};
-pub use descriptor::{meta_schema, META_SCHEMA_SRC};
+pub use compat::{Change, check_compatibility, widens};
+pub use derive::{NovaSchema, SchemaGen, schema_for};
+pub use descriptor::{META_SCHEMA_SRC, meta_schema};
 pub use model::*;
 #[cfg(feature = "derive")]
 pub use novafile_derive::NovaSchema;
-pub use parse::{parse_schema, parse_type, SchemaError};
+pub use parse::{SchemaError, parse_schema, parse_type};
 pub use resolve::Issue;
-pub use version::{valid_schema_name, ChangeKind, PreId, SchemaRef, Version};
+pub use version::{ChangeKind, PreId, SchemaRef, Version, valid_schema_name};
 
 impl Schema {
     /// Canonical rendering used for fingerprints.
@@ -60,10 +60,11 @@ impl Schema {
         if !mine.version.can_read(&r.version) {
             return Err(format!("schema {mine} cannot read data written for {}@{} (spec §6.7)", r.name, r.version));
         }
-        if let Some(fp) = &r.fingerprint {
-            if r.version == mine.version && *fp != self.fingerprint_hex() {
-                return Err(format!("fingerprint mismatch: document expects #{fp}, schema is #{}", self.fingerprint_hex()));
-            }
+        if let Some(fp) = &r.fingerprint
+            && r.version == mine.version
+            && *fp != self.fingerprint_hex()
+        {
+            return Err(format!("fingerprint mismatch: document expects #{fp}, schema is #{}", self.fingerprint_hex()));
         }
         Ok(())
     }

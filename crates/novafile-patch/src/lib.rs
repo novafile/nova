@@ -10,9 +10,9 @@ mod source;
 
 pub use diff::diff;
 pub use nav::get_mut;
-pub use patch::{apply, parse_patch, Applied, Op, OpKind, Patch, PatchError};
-pub use query::{get, select, Response};
-pub use source::{apply_to_source, SourceEdit};
+pub use patch::{Applied, Op, OpKind, Patch, PatchError, apply, parse_patch};
+pub use query::{Response, get, select};
+pub use source::{SourceEdit, apply_to_source};
 
 /// Apply with no extra validation.
 pub fn apply_unchecked(doc: &novafile_value::Value, patch: &Patch) -> Result<Applied, PatchError> {

@@ -9,7 +9,7 @@
 use crate::parser::ParseError;
 use crate::path::Path;
 use crate::spans::{SpanKind, SpanMap};
-use crate::writer::{canonicalize, write_body, Profile, W};
+use crate::writer::{Profile, W, canonicalize, write_body};
 use novafile_value::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -120,10 +120,10 @@ impl Trivia {
             if text.is_empty() || text.contains('\n') || text.starts_with('|') {
                 continue;
             }
-            if let Ok(v) = s.path.get(value) {
-                if !v.is_container() {
-                    t.spelling.insert(s.path.to_string(), (text.to_owned(), v.clone()));
-                }
+            if let Ok(v) = s.path.get(value)
+                && !v.is_container()
+            {
+                t.spelling.insert(s.path.to_string(), (text.to_owned(), v.clone()));
             }
         }
         t.blank_before_body = body_start > 0 && body_start < src.len() && prev_line_blank(src, body_start);

@@ -1,7 +1,7 @@
 //! Protobuf wire bytes → NOVA value.
 
-use crate::shape::{classify_field, classify_payload, field_number, Classified, Message, Plan, Scalar, Shape, Single, WireType};
-use crate::wire::{fields, unzigzag32, unzigzag64, Reader, Wire};
+use crate::shape::{Classified, Message, Plan, Scalar, Shape, Single, WireType, classify_field, classify_payload, field_number};
+use crate::wire::{Reader, Wire, fields, unzigzag32, unzigzag64};
 use crate::{Fail, MAX_DEPTH};
 use novafile_schema::{FieldDef, Schema};
 use novafile_text::Segment;

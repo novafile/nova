@@ -1,4 +1,4 @@
-use novafile_schema::{check_compatibility, check_versions, parse_schema, ChangeKind};
+use novafile_schema::{ChangeKind, check_compatibility, check_versions, parse_schema};
 use novafile_value::Value;
 
 const SCHEMA: &str = include_str!("../../../examples/infrastructure.novs");
@@ -129,14 +129,17 @@ fn document_references() {
     assert!(s.accepts_reference("infrastructure@1.4.0").unwrap_err().contains("cannot read"));
     assert!(s.accepts_reference("infrastructure@2.0.0").is_err());
     assert!(s.accepts_reference("billing@1.0.0").unwrap_err().contains("not"));
-    assert!(s
-        .accepts_reference("infrastructure@1.3.0#0000000000000000")
-        .unwrap_err()
-        .contains("fingerprint"));
-    assert!(parse_schema("@schema infrastructure\n")
-        .unwrap_err()
-        .to_string()
-        .contains("name@MAJOR.MINOR.PATCH"));
+    assert!(
+        s.accepts_reference("infrastructure@1.3.0#0000000000000000")
+            .unwrap_err()
+            .contains("fingerprint")
+    );
+    assert!(
+        parse_schema("@schema infrastructure\n")
+            .unwrap_err()
+            .to_string()
+            .contains("name@MAJOR.MINOR.PATCH")
+    );
     assert!(parse_schema("@schema infrastructure@1.0\n").is_err());
 }
 
@@ -188,10 +191,12 @@ fn exact_ranges_and_len_units() {
         t.contains("@range(0..0.1)") && t.contains("@range(1/3..)") && t.contains("@len(..4, utf8)") && t.contains("@len(1..1, graphemes)"),
         "{t}"
     );
-    assert!(parse_schema("@root R\nrecord R:\n  n: string @len(..4, bits)\n")
-        .unwrap_err()
-        .to_string()
-        .contains("unknown @len unit"));
+    assert!(
+        parse_schema("@root R\nrecord R:\n  n: string @len(..4, bits)\n")
+            .unwrap_err()
+            .to_string()
+            .contains("unknown @len unit")
+    );
 }
 
 #[test]
@@ -214,14 +219,18 @@ fn positional_round_trip() {
 #[test]
 fn schema_files_declare_language_version() {
     assert!(parse_schema("@nova 0.1\n@schema x@1.0.0\n").is_ok());
-    assert!(parse_schema("@nova 9.9\n@schema x@1.0.0\n")
-        .unwrap_err()
-        .to_string()
-        .contains("requires NOVA 9.9"));
-    assert!(parse_schema("@schema x@1.0.0\n@nova 0.1\n")
-        .unwrap_err()
-        .to_string()
-        .contains("first directive"));
+    assert!(
+        parse_schema("@nova 9.9\n@schema x@1.0.0\n")
+            .unwrap_err()
+            .to_string()
+            .contains("requires NOVA 9.9")
+    );
+    assert!(
+        parse_schema("@schema x@1.0.0\n@nova 0.1\n")
+            .unwrap_err()
+            .to_string()
+            .contains("first directive")
+    );
 }
 
 #[test]
@@ -242,7 +251,11 @@ fn constraints_on_type_arguments() {
 fn schemas_as_data() {
     use novafile_schema::meta_schema;
     let meta = meta_schema();
-    for src in [SCHEMA, novafile_schema::META_SCHEMA_SRC, "@root R\nrecord R @open:\n  ports: list<u16 @range(1..1024)>?\n  m: map<string @len(1..8, utf8), (int @range(1/3..), string)>\n  r?: rational @range(-1.5..) @deprecated = 1/2\n"] {
+    for src in [
+        SCHEMA,
+        novafile_schema::META_SCHEMA_SRC,
+        "@root R\nrecord R @open:\n  ports: list<u16 @range(1..1024)>?\n  m: map<string @len(1..8, utf8), (int @range(1/3..), string)>\n  r?: rational @range(-1.5..) @deprecated = 1/2\n",
+    ] {
         let s = parse_schema(src).unwrap();
         let d = s.to_value();
         // The descriptor is valid data under the meta-schema …

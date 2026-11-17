@@ -1,11 +1,11 @@
 //! `to_json_schema` describes what `novafile-json` writes for resolved documents:
 //! checked with an independent JSON Schema validator.
 
-use novafile_schema::{parse_schema, Schema};
+use novafile_schema::{Schema, parse_schema};
 use novafile_value::Value;
 
 mod common;
-use common::{example, KITCHEN_SINK};
+use common::{KITCHEN_SINK, example};
 
 fn validator(schema: &Schema) -> jsonschema::Validator {
     let json = novafile_schemars::to_json_schema(schema);

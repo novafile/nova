@@ -136,11 +136,7 @@ impl<'a> TyParser<'a> {
                 self.need(b'<')?;
                 let t = Box::new(self.inner()?);
                 self.need(b'>')?;
-                if name == "list" {
-                    TypeKind::List(t)
-                } else {
-                    TypeKind::Set(t)
-                }
+                if name == "list" { TypeKind::List(t) } else { TypeKind::Set(t) }
             }
             "map" => {
                 self.need(b'<')?;
@@ -340,10 +336,10 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
                 if fields.iter().any(|g| g.name == f.name) {
                     return Err(err(i, format!("duplicate field {:?}", f.name)));
                 }
-                if let Some(id) = f.id {
-                    if fields.iter().any(|g| g.id == Some(id)) {
-                        return Err(err(i, format!("duplicate field id {id}")));
-                    }
+                if let Some(id) = f.id
+                    && fields.iter().any(|g| g.id == Some(id))
+                {
+                    return Err(err(i, format!("duplicate field id {id}")));
                 }
                 fields.push(f);
                 i += 1;
@@ -386,11 +382,7 @@ fn parse_variant(s: &str) -> Result<VariantDef, String> {
 
 fn check_name(n: &str) -> Result<String, String> {
     let ok = n.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    if ok {
-        Ok(n.to_owned())
-    } else {
-        Err(format!("invalid name {n:?}"))
-    }
+    if ok { Ok(n.to_owned()) } else { Err(format!("invalid name {n:?}")) }
 }
 
 fn parse_field(body: &str) -> Result<FieldDef, String> {

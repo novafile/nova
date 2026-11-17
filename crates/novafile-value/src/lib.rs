@@ -19,7 +19,7 @@ pub mod schemars_support;
 pub mod serde_support;
 mod time;
 
-pub use codec::{canonical_bytes, decode, decode_prefix, encode, revision, DecodeError, EncodeOptions, Limits, Revision};
+pub use codec::{DecodeError, EncodeOptions, Limits, Revision, canonical_bytes, decode, decode_prefix, encode, revision};
 pub use decimal::Decimal;
 pub use numeric::numeric_cmp;
 pub use rational::Rational;

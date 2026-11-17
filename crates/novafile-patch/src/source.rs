@@ -8,10 +8,10 @@
 //! value that value-level application produced, the document is re-rendered
 //! with [`novafile_text::render_preserving`] instead.
 
-use crate::patch::{apply, apply_op, Applied, OpKind, Patch, PatchError};
+use crate::patch::{Applied, OpKind, Patch, PatchError, apply, apply_op};
 use novafile_text::path::{match_indices, resolve_index};
 use novafile_text::spans::{Span, SpanKind, SpanMap};
-use novafile_text::{inline_value, parse_with_spans, render_fragment, render_preserving, Path, Profile, Segment};
+use novafile_text::{Path, Profile, Segment, inline_value, parse_with_spans, render_fragment, render_preserving};
 use novafile_value::Value;
 
 /// The result of [`apply_to_source`].
