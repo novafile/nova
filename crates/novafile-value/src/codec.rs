@@ -24,7 +24,7 @@ pub(crate) mod tag {
     pub const UNIT_VARIANT: u8 = 0x0F;
     pub const VARIANT: u8 = 0x10;
     pub const RATIONAL: u8 = 0x11;
-    // 0x12 is reserved for tensors (docs/proposals/0001-tensors.md).
+    // 0x12 is reserved for tensors (https://github.com/novafile/spec/blob/main/proposals/0001-tensors.md).
     pub const RECORD_LIST: u8 = 0x13;
 }
 
