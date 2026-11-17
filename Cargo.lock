@@ -1024,41 +1024,60 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
 
 [[package]]
-name = "nova-binary"
+name = "novafile"
 version = "0.1.0"
 dependencies = [
- "nova-value",
+ "novafile-binary",
+ "novafile-facet",
+ "novafile-formats",
+ "novafile-json",
+ "novafile-lint",
+ "novafile-patch",
+ "novafile-proto",
+ "novafile-schema",
+ "novafile-schemars",
+ "novafile-serde",
+ "novafile-template",
+ "novafile-text",
+ "novafile-value",
 ]
 
 [[package]]
-name = "nova-cli"
+name = "novafile-binary"
+version = "0.1.0"
+dependencies = [
+ "novafile-value",
+]
+
+[[package]]
+name = "novafile-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
  "detect-coding-agent",
  "miette",
- "nova-binary",
- "nova-formats",
- "nova-json",
- "nova-lint",
- "nova-patch",
- "nova-proto",
- "nova-schema",
- "nova-schemars",
- "nova-template",
- "nova-text",
- "nova-value",
+ "novafile-binary",
+ "novafile-formats",
+ "novafile-json",
+ "novafile-lint",
+ "novafile-patch",
+ "novafile-proto",
+ "novafile-schema",
+ "novafile-schemars",
+ "novafile-template",
+ "novafile-text",
+ "novafile-value",
  "serde_json",
 ]
 
 [[package]]
-name = "nova-derive"
+name = "novafile-derive"
 version = "0.1.0"
 dependencies = [
- "nova-schema",
- "nova-serde",
- "nova-text",
- "nova-value",
+ "novafile-schema",
+ "novafile-serde",
+ "novafile-text",
+ "novafile-value",
  "proc-macro2",
  "quote",
  "serde",
@@ -1066,141 +1085,141 @@ dependencies = [
 ]
 
 [[package]]
-name = "nova-facet"
+name = "novafile-facet"
 version = "0.1.0"
 dependencies = [
  "facet",
  "facet-reflect",
- "nova-binary",
- "nova-schema",
- "nova-serde",
- "nova-text",
- "nova-value",
+ "novafile-binary",
+ "novafile-schema",
+ "novafile-serde",
+ "novafile-text",
+ "novafile-value",
  "serde",
 ]
 
 [[package]]
-name = "nova-formats"
+name = "novafile-formats"
 version = "0.1.0"
 dependencies = [
  "base64",
- "nova-value",
+ "novafile-value",
  "toml",
  "yaml-rust2",
 ]
 
 [[package]]
-name = "nova-json"
+name = "novafile-json"
 version = "0.1.0"
 dependencies = [
  "base64",
- "nova-value",
+ "novafile-value",
 ]
 
 [[package]]
-name = "nova-lint"
+name = "novafile-lint"
 version = "0.1.0"
 dependencies = [
- "nova-formats",
- "nova-json",
- "nova-schema",
- "nova-text",
- "nova-value",
+ "novafile-formats",
+ "novafile-json",
+ "novafile-schema",
+ "novafile-text",
+ "novafile-value",
 ]
 
 [[package]]
-name = "nova-lsp"
+name = "novafile-lsp"
 version = "0.1.0"
 dependencies = [
  "lsp-server",
  "lsp-types",
- "nova-lint",
- "nova-patch",
- "nova-schema",
- "nova-text",
- "nova-value",
+ "novafile-lint",
+ "novafile-patch",
+ "novafile-schema",
+ "novafile-text",
+ "novafile-value",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "nova-patch"
+name = "novafile-patch"
 version = "0.1.0"
 dependencies = [
- "nova-text",
- "nova-value",
+ "novafile-text",
+ "novafile-value",
 ]
 
 [[package]]
-name = "nova-proto"
+name = "novafile-proto"
 version = "0.1.0"
 dependencies = [
- "nova-schema",
- "nova-text",
- "nova-value",
+ "novafile-schema",
+ "novafile-text",
+ "novafile-value",
  "prost-reflect",
  "protox",
 ]
 
 [[package]]
-name = "nova-schema"
+name = "novafile-schema"
 version = "0.1.0"
 dependencies = [
  "base64",
- "nova-derive",
- "nova-text",
- "nova-value",
+ "novafile-derive",
+ "novafile-text",
+ "novafile-value",
  "unicode-segmentation",
 ]
 
 [[package]]
-name = "nova-schemars"
+name = "novafile-schemars"
 version = "0.1.0"
 dependencies = [
  "jsonschema",
- "nova-json",
- "nova-schema",
- "nova-serde",
- "nova-text",
- "nova-value",
+ "novafile-json",
+ "novafile-schema",
+ "novafile-serde",
+ "novafile-text",
+ "novafile-value",
  "schemars",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "nova-serde"
+name = "novafile-serde"
 version = "0.1.0"
 dependencies = [
- "nova-binary",
- "nova-json",
- "nova-schema",
- "nova-text",
- "nova-value",
+ "novafile-binary",
+ "novafile-json",
+ "novafile-schema",
+ "novafile-text",
+ "novafile-value",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "nova-template"
+name = "novafile-template"
 version = "0.1.0"
 dependencies = [
- "nova-schema",
- "nova-text",
- "nova-value",
+ "novafile-schema",
+ "novafile-text",
+ "novafile-value",
 ]
 
 [[package]]
-name = "nova-text"
+name = "novafile-text"
 version = "0.1.0"
 dependencies = [
  "base64",
  "miette",
- "nova-value",
+ "novafile-value",
 ]
 
 [[package]]
-name = "nova-value"
+name = "novafile-value"
 version = "0.1.0"
 dependencies = [
  "facet",

@@ -1,0 +1,34 @@
+[package]
+name = "novafile"
+description = "NOVA: one semantic model, several representations (umbrella crate)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme = "../../README.md"
+
+[features]
+default = ["serde"]
+serde = ["dep:novafile-serde"]
+derive = ["novafile-schema/derive"]
+facet = ["dep:novafile-facet"]
+formats = ["dep:novafile-formats", "dep:novafile-json"]
+proto = ["dep:novafile-proto"]
+template = ["dep:novafile-template"]
+lint = ["dep:novafile-lint"]
+schemars = ["dep:novafile-schemars"]
+full = ["serde", "derive", "facet", "formats", "proto", "template", "lint", "schemars"]
+
+[dependencies]
+novafile-value = { path = "../novafile-value" }
+novafile-text = { path = "../novafile-text" }
+novafile-binary = { path = "../novafile-binary" }
+novafile-schema = { path = "../novafile-schema" }
+novafile-patch = { path = "../novafile-patch" }
+novafile-serde = { path = "../novafile-serde", optional = true }
+novafile-facet = { path = "../novafile-facet", optional = true }
+novafile-json = { path = "../novafile-json", optional = true }
+novafile-formats = { path = "../novafile-formats", optional = true }
+novafile-proto = { path = "../novafile-proto", optional = true }
+novafile-template = { path = "../novafile-template", optional = true }
+novafile-lint = { path = "../novafile-lint", optional = true }
+novafile-schemars = { path = "../novafile-schemars", optional = true }

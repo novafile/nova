@@ -453,7 +453,7 @@ Resolution never reinterprets `bytes` as a tensor and never narrows a dtype.
 | `Vec<f32>`, `[f32; N]` | **List of `float`** by default. serde gives a serializer no homogeneity guarantee, and choosing the kind from contents would break principle 2. `#[serde(with = "nova::as_tensor")]` opts in to `tensor<f32,[n]>`. |
 | `Vec<Vec<f32>>` | List of lists. With `nova::as_tensor`, the rows are checked to be rectangular and the value is emitted as rank 2. |
 | `nova::Tensor<T>`, `nova::Vector<T, N>`, `nova::Matrix<T, R, C>` | Native. These serialize through a private newtype-struct marker (the technique `toml` uses for datetimes), so the NOVA serializer emits tag `0x12` / `@tensor` while other serializers (e.g. serde_json) see nested sequences. |
-| `ndarray::Array<T, D>` | Its built-in serde form `{v, dim, data}` would become a record. The `nova` crate's `ndarray` feature provides an adapter mapping it to a tensor. `data` is already in logical row-major order. Non-standard layouts are copied, and standard-layout arrays are borrowed zero-copy. |
+| `ndarray::Array<T, D>` | Its built-in serde form `{v, dim, data}` would become a record. The `novafile` crate's `ndarray` feature provides an adapter mapping it to a tensor. `data` is already in logical row-major order. Non-standard layouts are copied, and standard-layout arrays are borrowed zero-copy. |
 | `nalgebra::Matrix` | Column-major storage. The adapter **transposes** into row-major (copy). The shape is `[nrows, ncols]`. |
 | `half::f16`, `half::bf16` | `f16` / `bf16` elements. |
 

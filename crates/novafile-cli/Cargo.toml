@@ -1,0 +1,27 @@
+[package]
+name = "novafile-cli"
+description = "The `nova` command-line tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nvf"
+path = "src/main.rs"
+
+[dependencies]
+novafile-value.workspace = true
+novafile-binary.workspace = true
+novafile-text = { workspace = true, features = ["miette"] }
+novafile-schema.workspace = true
+novafile-patch.workspace = true
+novafile-template.workspace = true
+novafile-json.workspace = true
+novafile-formats = { path = "../novafile-formats" }
+novafile-proto = { path = "../novafile-proto" }
+novafile-lint = { path = "../novafile-lint" }
+novafile-schemars = { path = "../novafile-schemars" }
+serde_json.workspace = true
+clap.workspace = true
+miette = { workspace = true, features = ["fancy"] }
+detect-coding-agent = "0.2"

@@ -10,7 +10,7 @@
 
 📄 **[Read the specification →](SPEC.md)**
 
-This repository contains the draft specification (v0.1) and a reference implementation in Rust.
+This repository contains the draft specification (v0.1) and a reference implementation in Rust. The format is called NOVA (files `.nova`, schemas `.novs`); the Rust packages are published as `novafile-*`, and the command-line tool is `nvf`.
 
 ## A taste
 
@@ -43,7 +43,7 @@ services[2]{id,port,replicas}:
 An agent reads only what it needs…
 
 ```
-$ nova get infrastructure.nova 'services[id=api].{replicas,port}'
+$ nvf get infrastructure.nova 'services[id=api].{replicas,port}'
 @revision sha256:91cf16db2f4a403ed7a586e82fc2618093f7c1d87fc0183e54ea1c9b936bd65b
 @scope services[id=api]
 replicas: 5
@@ -83,17 +83,17 @@ services:
 enum Status { Active, Failed(String) }
 
 #[derive(Serialize, Deserialize)]
-struct Service { id: String, port: u16, deployed_at: nova_value::Timestamp, status: Status }
+struct Service { id: String, port: u16, deployed_at: novafile_value::Timestamp, status: Status }
 
-let text = nova_serde::to_string(&svc)?;      // status: !Failed(oom), deployed_at: @timestamp("…")
-let svc: Service = nova_serde::from_str(&text)?;
-let bytes = nova_serde::to_vec(&svc)?;         // binary frame
+let text = novafile_serde::to_string(&svc)?;      // status: !Failed(oom), deployed_at: @timestamp("…")
+let svc: Service = novafile_serde::from_str(&text)?;
+let bytes = novafile_serde::to_vec(&svc)?;         // binary frame
 ```
 
 Schemas can be derived from the same types:
 
 ```rust
-#[derive(Serialize, Deserialize, NovaSchema)]          // nova-schema = { features = ["derive"] }
+#[derive(Serialize, Deserialize, NovaSchema)]          // novafile-schema = { features = ["derive"] }
 #[nova(name = "infrastructure", version = "1.0.0")]
 struct Infrastructure {
     #[nova(id = 1)] environment: String,
@@ -107,79 +107,80 @@ struct Service {
     #[nova(id = 3, default = "true")] enabled: bool,
 }
 
-let schema = Infrastructure::nova_schema();             // == the hand-written .novs
+let schema = Infrastructure::novafile_schema();             // == the hand-written .novs
 ```
 
 ## Workspace
 
 | Crate | Purpose |
 | --- | --- |
-| [`nova-value`](crates/nova-value) | Value model (incl. decimals, rationals, timestamps, durations), canonical encoding, revisions |
-| [`nova-binary`](crates/nova-binary) | Framed binary representation, CRC-32, recovering stream reader |
-| [`nova-text`](crates/nova-text) | Text parser; human, compact and canonical writers; paths; source spans; template syntax; token heuristics; [miette](https://docs.rs/miette) diagnostics (feature `miette`) |
-| [`nova-schema`](crates/nova-schema) | Schema language, schema-directed resolution, `@key`, compatibility checks, fingerprints |
-| [`nova-patch`](crates/nova-patch) | `@get` queries and projections; the patch language; atomic apply; diff |
-| [`nova-template`](crates/nova-template) | Template rendering with typed parameters, output budget and sandboxed imports |
-| [`nova-json`](crates/nova-json) | JSON and JSONL mapping with explicit loss reporting |
-| [`nova-formats`](crates/nova-formats) | YAML, TOML and CBOR adapters with explicit loss reporting |
-| [`nova-proto`](crates/nova-proto) | `.proto` generation and Protobuf encoding/decoding driven by NOVA schemas (`@id` = field number) |
-| [`nova-facet`](crates/nova-facet) | [facet](https://github.com/facet-rs/facet) reflection binding, same mapping and API as `nova-serde` |
-| [`nova-derive`](crates/nova-derive) | `#[derive(NovaSchema)]`: NOVA schemas from Rust types, honouring `#[nova]` and `#[serde]` attributes |
-| [`nova-schemars`](crates/nova-schemars) | NOVA schemas from Rust types (`#[derive(JsonSchema)]`), and NOVA schema ↔ JSON Schema |
-| [`nova-serde`](crates/nova-serde) | Serde integration: `to_string`/`from_str`, `to_vec`/`from_slice`, `to_value`/`from_value` |
-| [`nova-lint`](crates/nova-lint) | Conventions and lints with fixes (`nova lint`, also shown by the language server) |
-| [`nova-cli`](crates/nova-cli) | The `nova` command |
-| [`nova-lsp`](crates/nova-lsp) | Language server: diagnostics with workspace schemas, outline, hover, completion, formatting |
+| [`novafile`](crates/novafile) | Umbrella crate re-exporting the pieces below (features: `serde`, `derive`, `facet`, `formats`, `proto`, `template`, `lint`, `schemars`, `full`) |
+| [`novafile-value`](crates/novafile-value) | Value model (incl. decimals, rationals, timestamps, durations), canonical encoding, revisions |
+| [`novafile-binary`](crates/novafile-binary) | Framed binary representation, CRC-32, recovering stream reader |
+| [`novafile-text`](crates/novafile-text) | Text parser; human, compact and canonical writers; paths; source spans; template syntax; token heuristics; [miette](https://docs.rs/miette) diagnostics (feature `miette`) |
+| [`novafile-schema`](crates/novafile-schema) | Schema language, schema-directed resolution, `@key`, compatibility checks, fingerprints |
+| [`novafile-patch`](crates/novafile-patch) | `@get` queries and projections; the patch language; atomic apply; diff |
+| [`novafile-template`](crates/novafile-template) | Template rendering with typed parameters, output budget and sandboxed imports |
+| [`novafile-json`](crates/novafile-json) | JSON and JSONL mapping with explicit loss reporting |
+| [`novafile-formats`](crates/novafile-formats) | YAML, TOML and CBOR adapters with explicit loss reporting |
+| [`novafile-proto`](crates/novafile-proto) | `.proto` generation and Protobuf encoding/decoding driven by NOVA schemas (`@id` = field number) |
+| [`novafile-facet`](crates/novafile-facet) | [facet](https://github.com/facet-rs/facet) reflection binding, same mapping and API as `novafile-serde` |
+| [`novafile-derive`](crates/novafile-derive) | `#[derive(NovaSchema)]`: NOVA schemas from Rust types, honouring `#[nova]` and `#[serde]` attributes |
+| [`novafile-schemars`](crates/novafile-schemars) | NOVA schemas from Rust types (`#[derive(JsonSchema)]`), and NOVA schema ↔ JSON Schema |
+| [`novafile-serde`](crates/novafile-serde) | Serde integration: `to_string`/`from_str`, `to_vec`/`from_slice`, `to_value`/`from_value` |
+| [`novafile-lint`](crates/novafile-lint) | Conventions and lints with fixes (`nvf lint`, also shown by the language server) |
+| [`novafile-cli`](crates/novafile-cli) | The `nvf` command |
+| [`novafile-lsp`](crates/novafile-lsp) | Language server: diagnostics with workspace schemas, outline, hover, completion, formatting |
 
 ## CLI
 
 ```bash
-cargo install --path crates/nova-cli
+cargo install --path crates/novafile-cli
 ```
 
 ```bash
 cd examples
-nova fmt infrastructure.nova --to compact
-nova validate infrastructure.nova --schema infrastructure.novs --resolve
-nova get infrastructure.nova 'services[*].{id,replicas}'
-nova get infrastructure.nova 'services[?replicas>3].id' -r     # jq-style filter, raw output
-curl -s https://api.example.com/items | nova get - 'items[?price<10].{name,price}' --to json
-nova patch infrastructure.nova scale-api.patch --schema infrastructure.novs
-nova diff before.nova after.nova
-nova render service.tpl.nova --set env=production --set 'services=[auth, api]' --set metrics=true --schema infrastructure.novs
-nova convert infrastructure.nova --to binary -o infrastructure.novb
-nova convert config.yaml --to nova                 # also toml, cbor; --to yaml/toml/cbor
-nova convert infrastructure.nova --to protobuf --schema infrastructure.novs -o infra.pb
-nova schema proto infrastructure.novs              # the matching .proto
-nova schema json-schema infrastructure.novs        # JSON Schema 2020-12 (and back: schema from-json-schema)
-nova get infrastructure.novs 'defs[name=Service].record.fields[*].name'   # schemas are data too
-nova schema to-nova infrastructure.novs           # the schema's descriptor (validated by `nova schema meta`)
-nova convert infrastructure.nova --to positional --schema infrastructure.novs   # field names omitted
-nova hash infrastructure.novb          # same revision as the text form
-nova stats infrastructure.nova         # bytes and estimated tokens per representation
-nova schema check old.novs new.novs    # exits 1 on breaking changes
+nvf fmt infrastructure.nova --to compact
+nvf validate infrastructure.nova --schema infrastructure.novs --resolve
+nvf get infrastructure.nova 'services[*].{id,replicas}'
+nvf get infrastructure.nova 'services[?replicas>3].id' -r     # jq-style filter, raw output
+curl -s https://api.example.com/items | nvf get - 'items[?price<10].{name,price}' --to json
+nvf patch infrastructure.nova scale-api.patch --schema infrastructure.novs
+nvf diff before.nova after.nova
+nvf render service.tpl.nova --set env=production --set 'services=[auth, api]' --set metrics=true --schema infrastructure.novs
+nvf convert infrastructure.nova --to binary -o infrastructure.novb
+nvf convert config.yaml --to nova                 # also toml, cbor; --to yaml/toml/cbor
+nvf convert infrastructure.nova --to protobuf --schema infrastructure.novs -o infra.pb
+nvf schema proto infrastructure.novs              # the matching .proto
+nvf schema json-schema infrastructure.novs        # JSON Schema 2020-12 (and back: schema from-json-schema)
+nvf get infrastructure.novs 'defs[name=Service].record.fields[*].name'   # schemas are data too
+nvf schema to-nova infrastructure.novs           # the schema's descriptor (validated by `nvf schema meta`)
+nvf convert infrastructure.nova --to positional --schema infrastructure.novs   # field names omitted
+nvf hash infrastructure.novb          # same revision as the text form
+nvf stats infrastructure.nova         # bytes and estimated tokens per representation
+nvf schema check old.novs new.novs    # exits 1 on breaking changes
 ```
 
-## Conventions and `nova lint`
+## Conventions and `nvf lint`
 
-JSON never settled on naming conventions; NOVA has them: `snake_case` keys and variants, and `@id` on all fields or on none. `nova lint` checks documents and schemas, and `--fix` applies the safe fixes (renaming keys, typing timestamps) without disturbing comments. Data that mirrors an external JSON, YAML or TOML contract is marked `@compat json` (added automatically by `nova convert`). For such data, names are left alone and anything the format cannot represent is flagged. See [spec Appendix E](SPEC.md#appendix-e--conventions-and-lints).
+JSON never settled on naming conventions; NOVA has them: `snake_case` keys and variants, and `@id` on all fields or on none. `nvf lint` checks documents and schemas, and `--fix` applies the safe fixes (renaming keys, typing timestamps) without disturbing comments. Data that mirrors an external JSON, YAML or TOML contract is marked `@compat json` (added automatically by `nvf convert`). For such data, names are left alone and anything the format cannot represent is flagged. See [spec Appendix E](SPEC.md#appendix-e--conventions-and-lints).
 
 ```bash
-nova lint config.nova examples/*.novs
-nova lint config.nova --fix
-nova lint config.nova --format json       # one finding per line, for tools and agents
+nvf lint config.nova examples/*.novs
+nvf lint config.nova --fix
+nvf lint config.nova --format json       # one finding per line, for tools and agents
 ```
 
 ## Coding agents
 
-When `nova` runs under a coding agent (detected with [`detect-coding-agent`](https://crates.io/crates/detect-coding-agent): Claude Code, Codex, Copilot, Cursor, Gemini CLI, …), errors are printed as plain, narratable text instead of box drawings, and `--help` points to `nova guide`, a one-screen workflow for reading projections and writing conditional patches. Override with `--agent on|off` or `NOVA_AGENT=on|off`.
+When `nvf` runs under a coding agent (detected with [`detect-coding-agent`](https://crates.io/crates/detect-coding-agent): Claude Code, Codex, Copilot, Cursor, Gemini CLI, …), errors are printed as plain, narratable text instead of box drawings, and `--help` points to `nvf guide`, a one-screen workflow for reading projections and writing conditional patches. Override with `--agent on|off` or `NOVA_AGENT=on|off`.
 
 ## Editor support
 
-`nova-lsp` speaks the Language Server Protocol over stdio:
+`nvf-lsp` speaks the Language Server Protocol over stdio:
 
 ```bash
-cargo install --path crates/nova-lsp
+cargo install --path crates/novafile-lsp
 ```
 
 It reports syntax errors in documents, templates, patches and `.novs` schemas. A document that declares `@schema name@version` is validated against the newest `.novs` file in the workspace that can read that version. Hover shows the path, value and declared type. Completion offers missing record fields and enum variants. Formatting is only offered for documents without comments.
@@ -187,8 +188,8 @@ It reports syntax errors in documents, templates, patches and `.novs` schemas. A
 Helix (`languages.toml`):
 
 ```toml
-[language-server.nova-lsp]
-command = "nova-lsp"
+[language-server.nvf-lsp]
+command = "nvf-lsp"
 
 [[language]]
 name = "nova"
@@ -196,22 +197,22 @@ scope = "source.nova"
 file-types = ["nova", "novs", "patch"]
 comment-token = "#"
 indent = { tab-width = 2, unit = "  " }
-language-servers = ["nova-lsp"]
+language-servers = ["nvf-lsp"]
 ```
 
 Neovim (0.11+):
 
 ```lua
 vim.filetype.add({ extension = { nova = "nova", novs = "nova" } })
-vim.lsp.config("nova_lsp", { cmd = { "nova-lsp" }, filetypes = { "nova" }, root_markers = { ".git" } })
-vim.lsp.enable("nova_lsp")
+vim.lsp.config("novafile_lsp", { cmd = { "nvf-lsp" }, filetypes = { "nova" }, root_markers = { ".git" } })
+vim.lsp.enable("novafile_lsp")
 ```
 
 A VS Code extension, with a TextMate grammar for syntax highlighting, is not written yet.
 
 ## Status
 
-This is a draft. Formatting and patching are **document-preserving**: `nova fmt` keeps comments, blank lines and spellings, and `nova patch -w` edits only the lines it changes. See [SPEC.md §14](SPEC.md#14-reference-implementation) and [Appendix C](SPEC.md#appendix-c--open-questions-and-future-work).
+This is a draft. Formatting and patching are **document-preserving**: `nvf fmt` keeps comments, blank lines and spellings, and `nvf patch -w` edits only the lines it changes. See [SPEC.md §14](SPEC.md#14-reference-implementation) and [Appendix C](SPEC.md#appendix-c--open-questions-and-future-work).
 
 ## License
 

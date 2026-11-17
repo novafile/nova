@@ -718,7 +718,7 @@ A validator given both a document's `@schema` reference and a schema MUST reject
 | Backward-compatible only | MINOR + 1 | PATCH + 1 | PATCH + 1 |
 | At least one breaking change | MAJOR + 1 | MINOR + 1 | PATCH + 1 |
 
-In every case *new* MUST have greater precedence than *old*. A breaking release MUST leave the old compatibility range: per the contract above, *new* must not be able to read data written for *old*. Pre-release versions MAY contain any change. Tools SHOULD reject a release that violates these rules; `nova schema check old.novs new.novs` does, exiting non-zero.
+In every case *new* MUST have greater precedence than *old*. A breaking release MUST leave the old compatibility range: per the contract above, *new* must not be able to read data written for *old*. Pre-release versions MAY contain any change. Tools SHOULD reject a release that violates these rules; `nvf schema check old.novs new.novs` does, exiting non-zero.
 
 > *Rationale (non-normative).* Because compatibility is decided by the schema diff (§6.5), a version number is a *checked claim*, not a convention. A consumer that pins `infrastructure@1.4.0` can rely on every `1.x` release at or above it to read its data.
 
@@ -844,14 +844,14 @@ The body is the selected value: with `[*]` it is a list of the results, and with
 
 Responses MUST be valid NOVA documents. Hosts SHOULD offer queries so that agents never need to load whole documents into context.
 
-*Command line (non-normative).* `nova get FILE PATH` answers queries. FILE may be `-` for stdin; JSON and JSON Lines input are detected automatically. Output options:
+*Command line (non-normative).* `nvf get FILE PATH` answers queries. FILE may be `-` for stdin; JSON and JSON Lines input are detected automatically. Output options:
 
 - `-r` prints raw strings, one line per result for `[*]` and filters, like `jq -r`;
 - `--to json` / `--to json-compact` prints JSON;
 - `--bare` omits the header;
 - `-e` exits with status 1 on `null`, `false` or an empty result.
 
-Example: `curl … | nova get - 'items[?price<10].name' -r`.
+Example: `curl … | nvf get - 'items[?price<10].name' -r`.
 
 ### 7.4 Patch documents
 
@@ -1067,8 +1067,8 @@ The language has no user-defined functions, no recursion, no arithmetic, no I/O 
 Kustomize-style overlays need no new mechanism: an overlay is a **patch** (§7.4) applied to a rendered base. Overlays get the same conditional operations, atomicity and validation as agent edits:
 
 ```
-nova render base.tpl.nova --set env=prod > base.nova
-nova patch base.nova prod-overlay.patch --schema infra.novs
+nvf render base.tpl.nova --set env=prod > base.nova
+nvf patch base.nova prod-overlay.patch --schema infra.novs
 ```
 
 ### 9.7 Why this is not "YAML as a programming language" (non-normative)
@@ -1137,7 +1137,7 @@ JSON Lines maps to a list of the values on its non-empty lines.
 
 ### 11.2 Other formats
 
-Adapters for other formats SHOULD follow the same discipline: lossless where the target can represent the kind, and an explicit report where it cannot. The reference adapters (`nova-formats`, `nova-proto`) implement the following.
+Adapters for other formats SHOULD follow the same discipline: lossless where the target can represent the kind, and an explicit report where it cannot. The reference adapters (`novafile-formats`, `novafile-proto`) implement the following.
 
 **YAML.**
 - *Reading:*
@@ -1176,7 +1176,7 @@ Adapters for other formats SHOULD follow the same discipline: lossless where the
 - Durations, tuples and variants have no registered tag and are written with loss warnings.
 - A deterministic mode implements RFC 8949 §4.2.1.
 
-**Protobuf (proto3).** Protobuf requires a schema; `nova-proto` derives it from a NOVA schema:
+**Protobuf (proto3).** Protobuf requires a schema; `novafile-proto` derives it from a NOVA schema:
 - every record field MUST carry `@id(n)`, which becomes its field number;
 - records become messages;
 - enums with only unit variants become proto enums with a zero `…_UNSPECIFIED` value;
@@ -1195,7 +1195,7 @@ Bindings map NOVA kinds to native types. They SHOULD follow these rules:
 - **No lossy narrowing.** A rational, decimal or out-of-range integer MUST NOT be silently converted to a float or a narrower integer. Bindings MAY offer explicit, opt-in adapters.
 - **Errors carry paths.** Errors SHOULD report the path (§7.1) of the offending value, e.g. `services[1].port: invalid value: integer 70000, expected u16`.
 
-**Rust / Serde (reference binding, `nova-serde`):**
+**Rust / Serde (reference binding, `novafile-serde`):**
 
 | Serde data model | NOVA |
 | --- | --- |
@@ -1207,21 +1207,21 @@ Bindings map NOVA kinds to native types. They SHOULD follow these rules:
 | struct, map with string keys | record |
 | map with other keys | map (when deserializing, numeric keys also accept their string form, as in JSON objects) |
 | unit / newtype / tuple / struct variant | `!Tag`, `!Tag(x)`, `!Tag((a, b))`, `!Tag({…})` |
-| `nova_value::{Timestamp, Duration, Decimal, Rational}` | the corresponding kind |
-| `nova_value::Value` | itself, losslessly |
-| `#[serde(with = "nova_serde::with::set")]` | set |
+| `novafile_value::{Timestamp, Duration, Decimal, Rational}` | the corresponding kind |
+| `novafile_value::Value` | itself, losslessly |
+| `#[serde(with = "novafile_serde::with::set")]` | set |
 | `with::duration` (`std::time::Duration`), `with::system_time` (`SystemTime`) | duration, timestamp |
 
 Serde has no data-model slots for NOVA's extra kinds. The binding therefore uses reserved newtype-struct names (`$nova::timestamp`, `$nova::decimal`, `$nova::set`, `$nova::value`, …). With other serde formats these degrade to natural forms: a timestamp becomes its canonical text, a set becomes a sequence, and a variant becomes a string or `{tag: payload}`. This means the same Rust types can also be serialized to JSON with the usual JSON conventions.
 
-**Rust schema derivation.** `#[derive(NovaSchema)]` (crate `nova-derive`, re-exported by `nova-schema` with feature `derive`) generates the NOVA schema of a Rust type.
+**Rust schema derivation.** `#[derive(NovaSchema)]` (crate `novafile-derive`, re-exported by `novafile-schema` with feature `derive`) generates the NOVA schema of a Rust type.
 - Mapping: structs become records, enums become variants (struct variants get a record of their own), and newtype structs become aliases. `Option<T>` becomes an optional, nullable field, and collections, maps and tuples map as in the table above.
 - `#[nova(...)]` attributes carry what Rust types cannot express:
   - `name` and `version` produce the `@schema` line;
   - `key`, `id`, `range`, `len`, `default`, `deprecated` and `open` map to the schema attributes of the same names.
-- Serde attributes (`rename`, `rename_all`, `default`, `skip`) are honoured, so values produced by `nova-serde` resolve against the derived schema. Internally tagged and untagged enums, `flatten` and generic types are rejected at compile time.
+- Serde attributes (`rename`, `rename_all`, `default`, `skip`) are honoured, so values produced by `novafile-serde` resolve against the derived schema. Internally tagged and untagged enums, `flatten` and generic types are rejected at compile time.
 
-**Rust / facet (`nova-facet`).** A reflection-based binding built on `facet` (`#[derive(Facet)]`), with the same mapping and API as `nova-serde`. It needs no reserved names: the NOVA types are recognised by their shapes. Its differences from the Serde binding are:
+**Rust / facet (`novafile-facet`).** A reflection-based binding built on `facet` (`#[derive(Facet)]`), with the same mapping and API as `novafile-serde`. It needs no reserved names: the NOVA types are recognised by their shapes. Its differences from the Serde binding are:
 - sets map to `set` natively, without an adapter;
 - `Vec<u8>` and byte arrays map to `bytes`;
 - fixed-size arrays map to `list`;
@@ -1282,25 +1282,25 @@ The Rust workspace in this repository implements the specification.
 
 | Crate | Implements |
 | --- | --- |
-| `nova-value` | §2, §5.1–5.3: value model, decimals, rationals, time types, canonical encoding, decoding, revisions |
-| `nova-binary` | §5.4–5.5: frames, CRC-32, recovering stream reader |
-| `nova-text` | §4, §7.1: parser, writer profiles, paths, template syntax tree, source spans, token heuristics (§10); `miette` diagnostics behind a feature |
-| `nova-schema` | §6: schema parser, resolution and validation, compatibility checks, fingerprints |
-| `nova-patch` | §7: queries and projections, the patch language, atomic application, diffs |
-| `nova-template` | §9: rendering, sandboxed file loader, limits |
-| `nova-json` | §11.1: JSON and JSON Lines mapping with loss reporting |
-| `nova-formats` | §11.2: YAML, TOML and CBOR adapters with loss reporting |
-| `nova-proto` | §11.2: `.proto` generation and Protobuf wire encoding/decoding from NOVA schemas |
-| `nova-serde` | §11.3: Serde serializer/deserializer, text and binary helpers, `with::` adapters |
-| `nova-derive` | `#[derive(NovaSchema)]`: NOVA schemas from Rust types |
-| `nova-schemars` | NOVA schemas from Rust types via schemars, and NOVA schema ↔ JSON Schema (2020-12, draft-07 input) |
-| `nova-facet` | §11.3: facet (reflection) binding with the same mapping and API |
-| `nova-lsp` | Language server: diagnostics (syntax, patches, schemas, §6.7 schema lookup), outline, hover, completion, comment-safe formatting |
-| `nova-cli` | The `nova` command: `fmt`, `convert`, `hash`, `validate`, `get`, `patch`, `diff`, `render`, `stats`, `schema {fmt,fingerprint,check}` |
+| `novafile-value` | §2, §5.1–5.3: value model, decimals, rationals, time types, canonical encoding, decoding, revisions |
+| `novafile-binary` | §5.4–5.5: frames, CRC-32, recovering stream reader |
+| `novafile-text` | §4, §7.1: parser, writer profiles, paths, template syntax tree, source spans, token heuristics (§10); `miette` diagnostics behind a feature |
+| `novafile-schema` | §6: schema parser, resolution and validation, compatibility checks, fingerprints |
+| `novafile-patch` | §7: queries and projections, the patch language, atomic application, diffs |
+| `novafile-template` | §9: rendering, sandboxed file loader, limits |
+| `novafile-json` | §11.1: JSON and JSON Lines mapping with loss reporting |
+| `novafile-formats` | §11.2: YAML, TOML and CBOR adapters with loss reporting |
+| `novafile-proto` | §11.2: `.proto` generation and Protobuf wire encoding/decoding from NOVA schemas |
+| `novafile-serde` | §11.3: Serde serializer/deserializer, text and binary helpers, `with::` adapters |
+| `novafile-derive` | `#[derive(NovaSchema)]`: NOVA schemas from Rust types |
+| `novafile-schemars` | NOVA schemas from Rust types via schemars, and NOVA schema ↔ JSON Schema (2020-12, draft-07 input) |
+| `novafile-facet` | §11.3: facet (reflection) binding with the same mapping and API |
+| `novafile-lsp` | Language server: diagnostics (syntax, patches, schemas, §6.7 schema lookup), outline, hover, completion, comment-safe formatting |
+| `novafile-cli` | The `nvf` command: `fmt`, `convert`, `hash`, `validate`, `get`, `patch`, `diff`, `render`, `stats`, `schema {fmt,fingerprint,check}` |
 
 **Known gaps in version 0.1:**
 
-- **Fidelity.** The reference implementation is document-preserving without a separate concrete syntax tree. Instead, the parser records the source span of every value and every comment (`parse_with_spans`). `nova fmt` (`format_preserving`) re-renders with comments, blank lines and the author's spellings carried over. `nova patch` on text (`apply_to_source`) edits the source surgically and reports whether any part had to be re-rendered. Whitespace *inside* a line (for example, alignment after `key:`) is normalised whenever that line is re-rendered.
+- **Fidelity.** The reference implementation is document-preserving without a separate concrete syntax tree. Instead, the parser records the source span of every value and every comment (`parse_with_spans`). `nvf fmt` (`format_preserving`) re-renders with comments, blank lines and the author's spellings carried over. `nvf patch` on text (`apply_to_source`) edits the source surgically and reports whether any part had to be re-rendered. Whitespace *inside* a line (for example, alignment after `key:`) is normalised whenever that line is re-rendered.
 - **Envelopes.** `@envelope` (§8.2) is accepted as a directive, but its body structure is not yet checked.
 
 ---
@@ -1382,7 +1382,7 @@ unary       = "not" unary | "(" cond ")" | flow-value [("==" | "!=") flow-value]
 
 ## Appendix E — Conventions and lints
 
-*Non-normative, but recommended.* JSON never acquired naming conventions, so every project invents its own. NOVA recommends one set of conventions, and the reference tooling (`nova lint`, the language server) checks them.
+*Non-normative, but recommended.* JSON never acquired naming conventions, so every project invents its own. NOVA recommends one set of conventions, and the reference tooling (`nvf lint`, the language server) checks them.
 
 | Element | Convention |
 | --- | --- |
@@ -1410,5 +1410,5 @@ Documents that declare `@schema` take their names from the schema, so naming rul
 | `field-case` / `variant-case` | warning | schema field and variant names | — |
 | `partial-ids` | warning | records where only some fields have `@id` | — |
 
-Fixes are text edits at source spans, so comments and layout are preserved. `nova convert` from JSON, YAML or TOML into NOVA text adds the matching `@compat` directive.
+Fixes are text edits at source spans, so comments and layout are preserved. `nvf convert` from JSON, YAML or TOML into NOVA text adds the matching `@compat` directive.
 

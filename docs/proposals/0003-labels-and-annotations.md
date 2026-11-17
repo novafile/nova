@@ -224,7 +224,7 @@ record Service:
 ```
 
 - **Keys.** `"app.kubernetes.io/part-of"` is a quoted record key (§4.3). Paths reach it with a quoted name: `services[id=api].labels."app.kubernetes.io/part-of"` (§7.1 `name = identifier | quoted-string`).
-- **Types.** `map<string, V>` accepts the stored record by resolution (§6.3, "keys become strings"). The reference implementation does this in `nova-schema/src/resolve.rs` ✔. `nova-serde` maps a Rust `HashMap<String, String>` to a record ✔, so labels round-trip as records and export to JSON as objects.
+- **Types.** `map<string, V>` accepts the stored record by resolution (§6.3, "keys become strings"). The reference implementation does this in `novafile-schema/src/resolve.rs` ✔. `novafile-serde` maps a Rust `HashMap<String, String>` to a record ✔, so labels round-trip as records and export to JSON as objects.
 - **Selection.** `@get services[?labels.tier=backend].{id,replicas}` works today.
 - **Patching.**
   - `+ services[id=api].labels.track: canary` adds a label (§7.5: `P` is a record or map, so the entry is added).
@@ -238,7 +238,7 @@ record Service:
         ...$common
         tier: backend
   ```
-- **Binary and positional.** These are ordinary fields with `@id`s, so the positional profile (§4.12) and `nova-proto` (`map<string,string>` → proto `map`) both work. Repeated label keys benefit from string back-references (§5.3).
+- **Binary and positional.** These are ordinary fields with `@id`s, so the positional profile (§4.12) and `novafile-proto` (`map<string,string>` → proto `map`) both work. Repeated label keys benefit from string back-references (§5.3).
 
 The general need — grouping plus decoration — is therefore already met **by schema authors who opt in**. What is missing is (i) a shared vocabulary, so that tools can rely on the field names and key syntax, and (ii) two expressiveness gaps in filters.
 
@@ -352,7 +352,7 @@ Prometheus is the warning case: there, labels *are* identity, and every label ch
 | Option | What | Benefit | Cost / risk |
 | --- | --- | --- | --- |
 | **(A) Do nothing** | Users model labels and annotations in schemas as they like | No spec surface | Every tool invents `tags`, `labels`, `meta`, `extra` and `x_*`. There is no shared key syntax, so collisions return. The `exists` and `in` gaps remain |
-| **(B) Conventions document only** | Recommended field names and types, key grammar, ownership and churn guidance, interop mapping | Shared vocabulary at zero normative cost. Tools (LSP completions, `nova get` docs, Kubernetes/OCI adapters) can rely on it | Selector gaps remain. Envelope `meta` extensibility stays ambiguous |
+| **(B) Conventions document only** | Recommended field names and types, key grammar, ownership and churn guidance, interop mapping | Shared vocabulary at zero normative cost. Tools (LSP completions, `nvf get` docs, Kubernetes/OCI adapters) can rely on it | Selector gaps remain. Envelope `meta` extensibility stays ambiguous |
 | **(B+) Conventions + two general spec changes** (recommended) | (B), plus §7.1 `exists`/`absent`/`in` filters and the §8.2 namespaced-`meta` rule | Fixes real expressiveness gaps that also help non-label data. Keeps closed-by-default intact | Small grammar growth in the path language, which must stay non-Turing-complete (it does: no OR of arbitrary filters, no functions) |
 | **(C) First-class spec support** | Reserved `$meta`/`@meta` record on every record or document, `@labeled` schema keyword, spec-level key grammar, size and charset limits, ownership in patches | Universal annotatability without schema cooperation | Breaks closed-by-default, positional and proto mappings. Duplicates schemas. Imports Kubernetes-specific limits into a format. Ownership machinery is a server concern. Large surface for a need mostly met by (B) |
 
@@ -537,4 +537,4 @@ Contents, in brief:
 - ○ Git, `git-notes(1)`. https://git-scm.com/docs/git-notes
 - ○ ID3v2.4.0 frames (`TXXX`). https://id3.org/id3v2.4.0-frames
 - ○ CVE-2021-25742 (ingress-nginx custom snippets via annotations). https://github.com/kubernetes/ingress-nginx/issues/7837
-- NOVA SPEC.md §1, §2.10–2.13, §3, §4.3, §4.12, §6.1–6.7, §7.1–7.6, §8.2, §9, §11.1. Reference implementation: `crates/nova-schema/src/resolve.rs` (map-from-record resolution), `crates/nova-serde/src/lib.rs` (string-keyed maps serialise as records).
+- NOVA SPEC.md §1, §2.10–2.13, §3, §4.3, §4.12, §6.1–6.7, §7.1–7.6, §8.2, §9, §11.1. Reference implementation: `crates/novafile-schema/src/resolve.rs` (map-from-record resolution), `crates/novafile-serde/src/lib.rs` (string-keyed maps serialise as records).

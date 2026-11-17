@@ -1,0 +1,10 @@
+[package]
+name = "novafile-patch"
+description = "NOVA queries, projections and validated atomic patches"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+novafile-value.workspace = true
+novafile-text.workspace = true

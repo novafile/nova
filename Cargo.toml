@@ -9,14 +9,14 @@ license = "EUPL-1.2 OR MPL-2.0"
 rust-version = "1.90"
 
 [workspace.dependencies]
-nova-value = { path = "crates/nova-value" }
-nova-binary = { path = "crates/nova-binary" }
-nova-text = { path = "crates/nova-text" }
-nova-schema = { path = "crates/nova-schema" }
-nova-patch = { path = "crates/nova-patch" }
-nova-template = { path = "crates/nova-template" }
-nova-json = { path = "crates/nova-json" }
-nova-serde = { path = "crates/nova-serde" }
+novafile-value = { path = "crates/novafile-value" }
+novafile-binary = { path = "crates/novafile-binary" }
+novafile-text = { path = "crates/novafile-text" }
+novafile-schema = { path = "crates/novafile-schema" }
+novafile-patch = { path = "crates/novafile-patch" }
+novafile-template = { path = "crates/novafile-template" }
+novafile-json = { path = "crates/novafile-json" }
+novafile-serde = { path = "crates/novafile-serde" }
 sha2 = "0.10"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }

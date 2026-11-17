@@ -31,15 +31,15 @@ The recommendations, in one table:
 | Lazy access | A borrowed **pull-event API** (`Event<'a>`) for text and binary, and a lazy **`ValueRef<'a>`** over memory-mapped binary. Literal and back-referenced strings are zero-copy, because the string table stores spans. |
 | Streaming queries | Classify path segments as streamable (`.name`, `[n≥0]`, `[*]`, filters, projections) or as needing lookahead or buffering (`[-n]` in text, `[field=v]` uniqueness, `[v]` on sets and maps). Binary and `[N]` tables know counts up front, so `[-1]` is streamable there. |
 | Hashing huge data | `sha256:` (§2.13) stays the definition of equality. It is computable in one pass only for list-shaped data with known counts. Add a **`tree:` revision**: a Merkle hash (RFC 6962-style for lists, key-sorted for records, hash-sorted for sets and maps). It is incremental, parallel and append-friendly, and gives cheap subtree revisions. Streams are identified by their `tree:` root. |
-| Patches on huge data | A new patch directive **`@expect <rev>`** gives the revision of the value at `@scope`. Patches can then be checked without hashing the whole document. Streams are append-only. Edits to streams go to a **patch sidecar**, and `nova compact` folds them in. |
-| TUI | A separate crate `nova-tui` (ratatui + crossterm), also reachable as `nova tui`. It has jless-style tree navigation, a visidata-style table view for uniform lists, `/` search, a `:` path and filter bar, breadcrumbs, and yank as path, NOVA or JSON. It is read-only by default. With `--edit`, every edit becomes a **conditional patch op**: it is previewed, applied atomically, undone with the inverse patch, and saved through **span-splicing**, so comments survive. Large files get a sidecar patch log instead of a rewrite. |
+| Patches on huge data | A new patch directive **`@expect <rev>`** gives the revision of the value at `@scope`. Patches can then be checked without hashing the whole document. Streams are append-only. Edits to streams go to a **patch sidecar**, and `nvf compact` folds them in. |
+| TUI | A separate crate `nova-tui` (ratatui + crossterm), also reachable as `nvf tui`. It has jless-style tree navigation, a visidata-style table view for uniform lists, `/` search, a `:` path and filter bar, breadcrumbs, and yank as path, NOVA or JSON. It is read-only by default. With `--edit`, every edit becomes a **conditional patch op**: it is previewed, applied atomically, undone with the inverse patch, and saved through **span-splicing**, so comments survive. Large files get a sidecar patch log instead of a rewrite. |
 
 ---
 
 ## 1. Motivation and goals
 
 1. **Unbounded producers.** Logs, event feeds, LLM batch outputs and agent traces are produced incrementally and consumed by `tail -f`, by pipelines or by other agents. JSONL won because each line stands alone. NOVA has `---` text streams and binary frame streams, but no line-oriented record stream, no stream header, no truncation trailer and no stream identity.
-2. **Large files.** Typical sizes are a 2–20 GB export, a 5 GB list of records, or a 300 MB configuration-like document with one huge list. Users want `nova get`, `nova hash` and a browser to work in roughly constant memory, and in time proportional to the bytes they actually touch.
+2. **Large files.** Typical sizes are a 2–20 GB export, a 5 GB list of records, or a 300 MB configuration-like document with one huge list. Users want `nvf get`, `nvf hash` and a browser to work in roughly constant memory, and in time proportional to the bytes they actually touch.
 3. **Interactive exploration and editing.** A TUI that understands NOVA's types, tables, paths and filters, schemas and the patch model, and that never silently loses comments.
 
 Non-goals: a columnar analytics format (§4.1 explains why Parquet and Arrow stay out of scope), a database, and changing the value model.
@@ -50,18 +50,18 @@ Non-goals: a columnar analytics format (§4.1 explains why Parquet and Arrow sta
 
 | Component | Behavior | Streaming obstacle |
 | --- | --- | --- |
-| `nova-text` `Parser<'a>` (`crates/nova-text/src/parser.rs`) | Recursive descent over a fully loaded `&str`. Builds an AST (`ast::Node`), then `Node::to_value` clones it into an owned `Value`. Optional span recording (`SpanMap`, sorted `Vec<Span>`) | The whole input must be in memory, and the AST and the `Value` coexist, so memory is about 2× the tree. There is no event or pull interface. |
-| `nova-value` codec (`crates/nova-value/src/codec.rs`) | `decode(&[u8]) -> Value`, fully owned. `canonical_bytes` re-encodes each set or map child into its own `Vec<u8>` and sorts them (`sorted_children`) | Containers carry element counts but no byte lengths, so skipping a subtree means decoding it. Back-references (§5.3) make skipping stateful. |
-| `nova-binary` `FrameReader<'a>` | Iterates frames over `&'a [u8]`. Recovering mode resyncs on `NOVA` magic | Already streaming-friendly, because each frame has a byte `length`. Every frame is still decoded to an owned `Value`. |
-| `nova-patch` `select` (`query.rs`) | Evaluates paths over `&Value` and clones results | Needs the whole tree. |
-| `nova-cli` `load` | Reads the file (or stdin) to the end, detects the format, parses everything. `.jsonl` becomes one `Value::List` | No `--stream` mode. |
-| `split_stream` (`nova-text/src/lib.rs`) | Splits on any line that is exactly `---` | Ambiguous with multi-line flow values (§2.3). |
+| `novafile-text` `Parser<'a>` (`crates/novafile-text/src/parser.rs`) | Recursive descent over a fully loaded `&str`. Builds an AST (`ast::Node`), then `Node::to_value` clones it into an owned `Value`. Optional span recording (`SpanMap`, sorted `Vec<Span>`) | The whole input must be in memory, and the AST and the `Value` coexist, so memory is about 2× the tree. There is no event or pull interface. |
+| `novafile-value` codec (`crates/novafile-value/src/codec.rs`) | `decode(&[u8]) -> Value`, fully owned. `canonical_bytes` re-encodes each set or map child into its own `Vec<u8>` and sorts them (`sorted_children`) | Containers carry element counts but no byte lengths, so skipping a subtree means decoding it. Back-references (§5.3) make skipping stateful. |
+| `novafile-binary` `FrameReader<'a>` | Iterates frames over `&'a [u8]`. Recovering mode resyncs on `NOVA` magic | Already streaming-friendly, because each frame has a byte `length`. Every frame is still decoded to an owned `Value`. |
+| `novafile-patch` `select` (`query.rs`) | Evaluates paths over `&Value` and clones results | Needs the whole tree. |
+| `novafile-cli` `load` | Reads the file (or stdin) to the end, detects the format, parses everything. `.jsonl` becomes one `Value::List` | No `--stream` mode. |
+| `split_stream` (`novafile-text/src/lib.rs`) | Splits on any line that is exactly `---` | Ambiguous with multi-line flow values (§2.3). |
 
 ### 2.1 Measured baseline
 
-The measurements were taken in a 4-vCPU Linux sandbox with a `--release` build of `nova-cli`. The build came from a scratch copy of the workspace, with one in-progress line from a concurrent `SpanKind` edit removed so that it compiled. The dataset has 500,000 records of the form `{id, image, port, replicas, enabled, tags:[2], meta:{zone, cpu}}`. These are single runs, wall clock and peak RSS, so treat them as orders of magnitude.
+The measurements were taken in a 4-vCPU Linux sandbox with a `--release` build of `novafile-cli`. The build came from a scratch copy of the workspace, with one in-progress line from a concurrent `SpanKind` edit removed so that it compiled. The dataset has 500,000 records of the form `{id, image, port, replicas, enabled, tags:[2], meta:{zone, cpu}}`. These are single runs, wall clock and peak RSS, so treat them as orders of magnitude.
 
-| Input | Size | `nova hash` time | Peak RSS |
+| Input | Size | `nvf hash` time | Peak RSS |
 | --- | --- | --- | --- |
 | JSONL | 82.6 MB | 2.90 s | 937 MB |
 | NOVA binary frame (`convert --to binary`) | 25.4 MB | 2.28 s | 933 MB |
@@ -83,10 +83,10 @@ The measurements were taken in a 4-vCPU Linux sandbox with a `--release` build o
 
 ### 2.2 Root causes (bugs to fix before any streaming work)
 
-1. `crates/nova-text/src/parser.rs:989`, in `block_list`: `let idx = items.iter().filter(|i| matches!(i, Item::Node(_))).count()` runs once per item, so the cost is **O(n²)** in list length. Keep a running counter instead.
-2. `crates/nova-text/src/parser.rs:643`, in `push_entry`: the duplicate-key check is a linear scan over the entries, which is **O(n²)** in fields per record. Use a `HashSet<&str>`, or a sorted check when n is small.
-3. `crates/nova-value/src/record.rs:57/77`: `Record::insert` calls `contains_key`, which is a linear `position`. Building a record therefore costs **O(n²)** in *every* input path: text, JSON and binary decode. Keep a lazily built hash index once a record exceeds about 16 fields, or check duplicates in bulk at construction (sort the key refs and compare neighbors).
-4. `crates/nova-value/src/codec.rs:128`: `Encoder::string` inserts every literal into a `HashMap<String, usize>` (an owned `String` plus SipHash) **even in canonical mode**, where back-references are never emitted. Skip the table when `canonical || !dedupe_strings`. Use a borrowed-key or FxHash table otherwise.
+1. `crates/novafile-text/src/parser.rs:989`, in `block_list`: `let idx = items.iter().filter(|i| matches!(i, Item::Node(_))).count()` runs once per item, so the cost is **O(n²)** in list length. Keep a running counter instead.
+2. `crates/novafile-text/src/parser.rs:643`, in `push_entry`: the duplicate-key check is a linear scan over the entries, which is **O(n²)** in fields per record. Use a `HashSet<&str>`, or a sorted check when n is small.
+3. `crates/novafile-value/src/record.rs:57/77`: `Record::insert` calls `contains_key`, which is a linear `position`. Building a record therefore costs **O(n²)** in *every* input path: text, JSON and binary decode. Keep a lazily built hash index once a record exceeds about 16 fields, or check duplicates in bulk at construction (sort the key refs and compare neighbors).
+4. `crates/novafile-value/src/codec.rs:128`: `Encoder::string` inserts every literal into a `HashMap<String, usize>` (an owned `String` plus SipHash) **even in canonical mode**, where back-references are never emitted. Skip the table when `canonical || !dedupe_strings`. Use a borrowed-key or FxHash table otherwise.
 5. `sorted_children` calls `canonical_bytes` per child. Nested sets and maps are therefore re-encoded once per nesting level, and every child allocates its own `Vec`. Encode children into one arena buffer and sort `(start, end)` ranges.
 6. `Node::to_value` deep-clones literals out of the AST, so peak memory is about the AST plus the `Value`. Make it consuming (`into_value(self)`), or build `Value` directly when no template is involved.
 
@@ -121,7 +121,7 @@ Legend: ✔ = read from primary text (spec or source) while preparing this propo
 | **Arrow IPC stream and file** ✔ ([Columnar.rst](https://github.com/apache/arrow/blob/main/docs/source/format/Columnar.rst)) | Messages: `0xFFFFFFFF` continuation, int32 metadata length, Flatbuffer metadata padded to 8 bytes, body | **Schema message first**. Dictionary batches before use. `isDelta` appends to a dictionary, otherwise it replaces it | EOS = `0xFFFFFFFF 00000000`, or close | File format: `ARROW1` magic, the stream, a footer (schema + block offsets), int32 footer size, `ARROW1` | The schema-first header and **dictionary-by-id with deltas** inform NOVA's `!header` and `!dict`. The footer-with-offsets pattern informs `!index`. |
 | **Avro object container** ✔ ([spec](https://github.com/apache/avro/blob/main/doc/content/en/docs/%2B%2Bversion%2B%2B/Specification/_index.md)) | `Obj\x01`, header map (`avro.schema`, `avro.codec`), 16-byte **sync marker**. Blocks: object count, byte size, objects, sync | Schema in the header | Sync markers let readers split files and detect corrupt blocks | Splittable at sync markers | **Blocks of many records** with count and byte size are the right unit for compression and string-table amortization. NOVA frames already work as blocks. Also, Avro arrays may carry a *negative count followed by a byte size* "so readers can skip the block without decoding it", which is precedent for NOVA's optional `sized` wrapper. |
 | **TOON** ✔ ([SPEC.md](https://github.com/toon-format/spec/blob/main/SPEC.md)) | Indentation-based. `key[N]{f1,f2}:` tabular arrays, one row per line, delimiter `,`, tab or `|` declared in the header | Column list in the header | `N` is required. Strict mode (the default) rejects count mismatches, non-strict decodes every row present | None. The spec recommends streaming row output but defines no streaming protocol | Validates NOVA's `[N]` design. Neither TOON nor NOVA has an unknown-length table, and NOVA Lines fills that gap without weakening `[N]`. |
-| **Parquet** (contrast) ✔ ([README](https://github.com/apache/parquet-format/blob/master/README.md)) | `PAR1` … row groups → column chunks → pages … FileMetaData (Thrift compact) + 4-byte LE length + `PAR1` | In the footer | "File Metadata is written after the data to allow for single pass writing" | Footer → column chunks | Footer-at-end for single-pass writers. Columnar layout is out of scope for NOVA, which is a tree format. Columnar *export* is an adapter (`nova convert --to parquet`), not a NOVA feature. |
+| **Parquet** (contrast) ✔ ([README](https://github.com/apache/parquet-format/blob/master/README.md)) | `PAR1` … row groups → column chunks → pages … FileMetaData (Thrift compact) + 4-byte LE length + `PAR1` | In the footer | "File Metadata is written after the data to allow for single pass writing" | Footer → column chunks | Footer-at-end for single-pass writers. Columnar layout is out of scope for NOVA, which is a tree format. Columnar *export* is an adapter (`nvf convert --to parquet`), not a NOVA feature. |
 | **zstd seekable** ✔ ([format](https://github.com/facebook/zstd/blob/dev/contrib/seekable_format/zstd_seekable_compression_format.md)) | Independent zstd frames, with a seek table in a skippable frame (`0x184D2A5E`) at the end | — | Per-frame XXH64 low-32 checksum (optional) | 9-byte footer: `Number_Of_Frames`, descriptor, magic `0x8F92EAB1`. Entries hold compressed and decompressed sizes | Compression stays *outside* NOVA framing. Align zstd frames to NOVA frame or batch boundaries (§5.9). |
 | **safetensors** ✔ ([README](https://github.com/huggingface/safetensors/blob/main/README.md)) | `u64 LE` header size + JSON header (`dtype`, `shape`, `data_offsets`) + byte buffer | Header first | Header ≤ 100 MB. No holes or overlaps | Offsets → mmap, lazy per-tensor load | Header-first works when sizes are known in advance. Writers of streams don't know them, so NOVA puts the index at the *end*. |
 
@@ -183,10 +183,10 @@ The rules:
 - **`@end <count> [<revision>]`** is an optional trailer. It MUST be the last non-blank line. `count` is the number of records. The optional revision is the `tree:` root of the stream (§5.8). A reader that reaches EOF:
   - **with `@end`** checks the count, and the root if present, and reports the stream as *complete* or *corrupt*;
   - **without `@end`** reports the stream as *open*. Open is a status, not an error: `tail -f` works and producers can crash. `--strict` turns *open* into an error.
-- **Errors.** A malformed line is reported with its line number and skipped in recovering mode (the default for `nova get`; `--strict` stops). Because a record is always exactly one line, recovery is trivial and exact.
+- **Errors.** A malformed line is reported with its line number and skipped in recovering mode (the default for `nvf get`; `--strict` stops). Because a record is always exactly one line, recovery is trivial and exact.
 - **Concatenation.** Header directives MAY reappear later in the stream. `@nova` or `@schema` after records start a new *segment*. An `@end` inside a concatenation closes only its own segment.
 
-**Why not `[?]{cols}:` inside ordinary documents?** The `[N]` count is NOVA's guard against truncated LLM output (§4.9). An escape hatch there would be used exactly when the guard matters. Streams are a different object: they are expected to be open, and they get their own trailer. Converting is lossless. `nova convert --to nova x.novl` yields `[N]{…}:` with the count filled in, and `nova convert --to novl doc.nova --path items` goes the other way.
+**Why not `[?]{cols}:` inside ordinary documents?** The `[N]` count is NOVA's guard against truncated LLM output (§4.9). An escape hatch there would be used exactly when the guard matters. Streams are a different object: they are expected to be open, and they get their own trailer. Converting is lossless. `nvf convert --to nova x.novl` yields `[N]{…}:` with the count filled in, and `nvf convert --to novl doc.nova --path items` goes the other way.
 
 **Why not reuse `---` for records?** `---` documents are block-structured, cost a separator line each, and cannot be parsed from an arbitrary byte offset without scanning back to a separator. NOVA Lines records can be: from any byte offset, skip to the next `\n`. The one piece of context needed is the latest `@columns` line, which a splitter finds by scanning backwards for a line starting with `@columns`, or reads from an index.
 
@@ -229,7 +229,7 @@ That is 4 + 1 + 1 + 1 + 19 = **26 bytes**. A file with an index is *still* a pla
 | Stream value revision | `sha256:` of the stream *as a list value* | Needs `n` before the first element (`0x0A varint(n) …`), so it is a two-pass computation over a file and **impossible for a live stream** | Equality with a materialized document |
 | **Stream root** | `tree:` Merkle root over record leaf hashes (§5.8) | One pass, O(log n) state, parallel | `@end`, the index, sidecar patches, replication and consistency proofs |
 
-The recommendation: streams are identified by their **`tree:` root**. `sha256:` remains available via `nova hash --exact`, which takes two passes.
+The recommendation: streams are identified by their **`tree:` root**. `sha256:` remains available via `nvf hash --exact`, which takes two passes.
 
 ### 4.5 String tables: per frame by default, shared dictionaries opt-in
 
@@ -260,7 +260,7 @@ Streams are append-only, so the operations map as follows:
 | --- | --- |
 | Insert a record | Append a record (line or frame) |
 | Edit or delete a record | Append a **patch document** to a sidecar `FILE.patches`. This is a `---`-separated text stream of `@patch` documents. A future option is in-band patch frames, `!patch{…}` META frames |
-| Compact | `nova compact FILE` rewrites the stream with all patches applied, writes a fresh `@end` and index, and archives or truncates the sidecar |
+| Compact | `nvf compact FILE` rewrites the stream with all patches applied, writes a fresh `@end` and index, and archives or truncates the sidecar |
 
 Stream paths treat the stream as a list: `[123]` is an ordinal, and `[id=auth]` is a keyed lookup, efficient when `@key id` is declared and indexed. A sidecar patch looks like this:
 
@@ -399,7 +399,7 @@ impl ValueRef<'_> { pub fn to_owned(&self) -> Result<Value, ReadError>; }
 
 **Zero-copy back-references.** The decoder's string table stores `(offset, len)` into the source buffer rather than owned `String`s. Both literals and back-references then resolve to `&'a str` with no allocation. UTF-8 is validated once, at the literal.
 
-**Builders.** `Value::from_events(src)` becomes the one materializer, and the existing `decode` and `parse` become thin wrappers. The `nova-serde` deserializer can be driven by events directly, avoiding the intermediate `Value` (the serde-json `from_reader` pattern).
+**Builders.** `Value::from_events(src)` becomes the one materializer, and the existing `decode` and `parse` become thin wrappers. The `novafile-serde` deserializer can be driven by events directly, avoiding the intermediate `Value` (the serde-json `from_reader` pattern).
 
 **Text duplicate keys in streaming mode.** A pull parser cannot reject duplicates before emitting the second key unless it keeps the key set per open record. It does keep that set: keys only, not values, so the memory is proportional to the widest record.
 
@@ -424,7 +424,7 @@ pub fn select_stream<'a, S: EventSource<'a>>(src: S, path: &Path, opts: SelectOp
     -> impl Iterator<Item = Result<Value, PathError>> + 'a;
 ```
 
-CLI: `nova get --stream FILE PATH` produces NOVA Lines output, or `-r` raw strings. For `.novl` and binary streams it is selected automatically.
+CLI: `nvf get --stream FILE PATH` produces NOVA Lines output, or `-r` raw strings. For `.novl` and binary streams it is selected automatically.
 
 ### 5.6 Incremental parsing of indentation-based text
 
@@ -500,7 +500,7 @@ Targets for the reference implementation on one modern x86-64 core after the §2
 | Binary pull events / `ValueRef` navigation | — | 1–2 GB/s; O(1) skips with `sized` |
 | `sha256:` over canonical bytes | Dominated by encoding | SHA-256 bound: ~1 GB/s with SHA-NI (sha256sum measured 82 MB in 0.08 s here) |
 | `tree:` hash | — | ≥ 0.7 × the SHA-256 rate per core, scaling with cores |
-| `nova get --stream '[?replicas>7].id'` on 5 GB `.novl` | Impossible (OOM) | ≤ 15 s single-threaded, ≤ 4 s on 8 cores; RSS < 64 MB |
+| `nvf get --stream '[?replicas>7].id'` on 5 GB `.novl` | Impossible (OOM) | ≤ 15 s single-threaded, ≤ 4 s on 8 cores; RSS < 64 MB |
 | Peak RSS, owned `Value` | 29× text size, 37× binary size | ≤ 6× text size (compact `Value`: interned keys, `Box<str>`, small-int variant) |
 | TUI open of a 5 GB text file | — | First screen in ≤ 1 s (outline of the first screen only), full outline in the background |
 
@@ -556,7 +556,7 @@ impl<'a> Index<'a> {
     pub fn by_key(&self, key: &Value) -> Option<u64>;
 }
 
-// crate nova-value additions
+// crate novafile-value additions
 pub struct TreeHasher { /* frontier stack for lists, per-depth sort buffers of 32-byte child hashes */ }
 impl TreeHasher {
     pub fn feed(&mut self, e: &Event<'_>);
@@ -639,7 +639,7 @@ The table view (`t` on a list of uniform records) uses NOVA's compact-table noti
 | `s`, `S` | Sort the table by column ascending/descending (view only) | |
 | `Enter` | Open: drill into a table row or a long string (pager) | |
 | `q`/`Esc` | Back (pop the view stack) or quit | |
-| `yy`, `yv`, `yk`, `yp`, `yq` | Yank value as NOVA block, value as one-line flow, key, path, `nova get` command | OSC 52, with a local clipboard fallback |
+| `yy`, `yv`, `yk`, `yp`, `yq` | Yank value as NOVA block, value as one-line flow, key, path, `nvf get` command | OSC 52, with a local clipboard fallback |
 | `yj`, `yJ` | Yank as JSON (compact or pretty), with loss warnings (§11.1) | |
 | `m` | Toggle tree mode / source (line) mode | jless |
 | `i` | Toggle the inspector pane | |
@@ -662,9 +662,9 @@ crates/
                  Source (mmap'd or in-memory text/binary/novl), NodeId, lazy Outline index,
                  Cursor, materialize(NodeId) -> Value, subtree revisions (tree:), SpanMap bridge,
                  EditSession (staged patch, apply, inverse, span-splice save)
-  nova-stream  — §6 (also used by nova-cli)
-  nova-tui     — ratatui + crossterm app (bin `nova-tui`, lib for embedding); nova-cli gets
-                 `nova tui` behind a default-on cargo feature `tui` (so minimal builds stay small)
+  nova-stream  — §6 (also used by novafile-cli)
+  nova-tui     — ratatui + crossterm app (bin `nova-tui`, lib for embedding); novafile-cli gets
+                 `nvf tui` behind a default-on cargo feature `tui` (so minimal builds stay small)
 ```
 
 Model, view, update (the Elm architecture, which ratatui's documentation recommends ○):
@@ -704,7 +704,7 @@ The recommendation is yes: **every edit is a conditional patch op.** Concretely:
 
 1. **Staging.** `e` on `replicas` with value 5, entering `8`, stages `services[id=api].replicas: 5 -> 8`. Paths prefer stable selectors: `[id=…]` when the list has a unique `id`, `key` or `name` (the §7.6 diff heuristic), otherwise an index. Staged ops form one pending `Patch` with `@expect` per scope, or a `@base` for small files.
 2. **Preview.** The inspector shows the pending patch as text and the projected schema validation of the patched value, run in the background. Invalid edits are marked inline (`⚠`) but may still be staged.
-3. **Apply.** `w` runs `nova_patch::apply` on the *current on-disk* value. If the file changed underneath, the base or expect check fails and the TUI offers rebase or abort. Application is atomic (§7.5).
+3. **Apply.** `w` runs `novafile_patch::apply` on the *current on-disk* value. If the file changed underneath, the base or expect check fails and the TUI offers rebase or abort. Application is atomic (§7.5).
 4. **Save with comments preserved (span-splicing).** The parser already records byte spans per path, including the key range (`parse_with_spans` / `SpanMap`). For each op:
    - *replace a scalar*: substitute the value's byte range with the canonical spelling of the new value (§4.10);
    - *add a field*: insert a new line after the last sibling's span at the sibling's indentation;
@@ -727,7 +727,7 @@ The recommendation is yes: **every edit is a conditional patch op.** Concretely:
 
    Undo before save pops a staged op. Undo after save stages the inverse as a new edit, so history is linear and every step is conditional.
 6. **Safety.** Read-only is the default. `--edit` is required, and the title bar shows `EDIT`. Edits on a file with no schema warn once. Binary files are edited by re-encoding the whole frame, after checking the frame flags (CANONICAL and DEDUPE are preserved) — or via the append path below.
-7. **Big files (for example 5 GB).** Never rewrite in place. `w` **appends** the patch to `FILE.patches` (a `---` text stream of `@patch` docs with `@scope` and `@expect`). The view overlays pending sidecar patches; changed nodes are marked `◆`. `:compact` (or `nova compact`) materializes a new file in a streaming pass and replaces the original atomically. For indexed binary streams, an edited record can instead be **appended as a new frame plus a new `!index`** that redirects the ordinal (§5.3), which also never rewrites old bytes.
+7. **Big files (for example 5 GB).** Never rewrite in place. `w` **appends** the patch to `FILE.patches` (a `---` text stream of `@patch` docs with `@scope` and `@expect`). The view overlays pending sidecar patches; changed nodes are marked `◆`. `:compact` (or `nvf compact`) materializes a new file in a streaming pass and replaces the original atomically. For indexed binary streams, an edited record can instead be **appended as a new frame plus a new `!index`** that redirects the ordinal (§5.3), which also never rewrites old bytes.
 
 ### 7.7 Scope
 
@@ -742,12 +742,12 @@ The recommendation is yes: **every edit is a conditional patch op.** Concretely:
 
 - `--edit`: staging, preview, validation, inverse-patch undo, span-splice save with the re-parse invariant.
 - Large text: lazy structural outline (§5.6), background search.
-- NOVA Lines reader and writer in `nova-stream`. `nova get --stream`. TUI tail mode.
+- NOVA Lines reader and writer in `nova-stream`. `nvf get --stream`. TUI tail mode.
 
 **Phase 3**
 
 - Binary pull events, `ValueRef`, `0x13 sized`, META frames, `!index` and locator, SHARED_DICT.
-- `tree:` revisions, `@expect`, patch sidecars, `nova compact`, `nova verify`.
+- `tree:` revisions, `@expect`, patch sidecars, `nvf compact`, `nova verify`.
 - Big-file editing via sidecars. Frequency view (`F`) and column stats in the table view.
 
 **Later:** zstd-seekable reading, parallel parsing, in-band `!patch` frames, an LSP-shared `nova-doc`, `@ref` navigation (Appendix C item 2), and a CST-backed editor.
@@ -823,9 +823,9 @@ Rationale: this makes `---` splitting (§4.11), structural indexing and parallel
 7. **Batched frames vs. one record per frame.** Is the `batched` header bit a good idea, or should batching be a distinct frame flag, so that a frame is self-describing without the header?
 8. **Key index format.** Use a sorted `(hash64, ordinal)` table, or a minimal perfect hash? What happens with hash collisions in `by_key`? (A verify-on-read fallback is planned.)
 9. **TUI editing of tables.** Should editing a cell in a `[N]{…}:` table splice the cell in place? (Yes, with comma and quote handling.) Should adding a column re-render the whole table? (Probably.)
-10. **Sidecar naming and discovery.** Use `FILE.patches` or `FILE.nova-patches`? Should `nova get` apply sidecars automatically (risky), or only with `--with-patches`?
+10. **Sidecar naming and discovery.** Use `FILE.patches` or `FILE.nova-patches`? Should `nvf get` apply sidecars automatically (risky), or only with `--with-patches`?
 11. **Schema validation of streams.** Validate per record against `@schema` (a schema for the record type) or against the list type? (Proposal: `@schema` in a stream header names the **record** type.)
-12. **JSONL detection.** Should `nova` treat `.jsonl` as a stream (lazily) rather than as a `List` value by default? (Yes, for `get --stream` and the TUI. `convert` keeps today's behavior.)
+12. **JSONL detection.** Should `nvf` treat `.jsonl` as a stream (lazily) rather than as a `List` value by default? (Yes, for `get --stream` and the TUI. `convert` keeps today's behavior.)
 
 ---
 

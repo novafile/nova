@@ -1,0 +1,299 @@
+//! Schemas as NOVA data (spec §6.8).
+//!
+//! [`Schema::to_value`] produces the *descriptor* of a schema: an ordinary
+//! NOVA value described by the meta-schema [`meta_schema`]
+//! (`nova-schema@0.1.0`). [`Schema::from_value`] turns a descriptor back
+//! into a schema by rendering its canonical text and parsing that, so
+//! descriptors are validated exactly like hand-written schemas.
+
+use crate::model::*;
+use novafile_value::{Record, Value};
+
+/// Source of the meta-schema.
+pub const META_SCHEMA_SRC: &str = include_str!("../meta/nova-schema.novs");
+
+/// The meta-schema, which validates descriptors (including its own).
+pub fn meta_schema() -> Schema {
+    crate::parse_schema(META_SCHEMA_SRC).expect("the meta-schema is valid")
+}
+
+fn rec(entries: Vec<(&str, Value)>) -> Value {
+    let mut r = Record::new();
+    for (k, v) in entries {
+        r.set(k, v);
+    }
+    Value::Record(r)
+}
+
+fn s(x: &str) -> Value {
+    Value::String(x.to_owned())
+}
+
+fn tag(x: &str) -> Value {
+    Value::Variant(x.to_owned(), None)
+}
+
+fn type_value(t: &TypeRef) -> Value {
+    let mut e: Vec<(&str, Value)> = Vec::new();
+    let kind = match &t.kind {
+        TypeKind::Any => "any",
+        TypeKind::Null => "null",
+        TypeKind::Bool => "bool",
+        TypeKind::Int(k) => k.name(),
+        TypeKind::Float => "float",
+        TypeKind::Decimal => "decimal",
+        TypeKind::Rational => "rational",
+        TypeKind::String => "string",
+        TypeKind::Bytes => "bytes",
+        TypeKind::Timestamp => "timestamp",
+        TypeKind::Duration => "duration",
+        TypeKind::List(_) => "list",
+        TypeKind::Set(_) => "set",
+        TypeKind::Map(..) => "map",
+        TypeKind::Tuple(_) => "tuple",
+        TypeKind::Named(_) => "named",
+    };
+    e.push(("kind", tag(kind)));
+    match &t.kind {
+        TypeKind::Named(n) => e.push(("ref", s(n))),
+        TypeKind::List(i) | TypeKind::Set(i) => e.push(("item", type_value(i))),
+        TypeKind::Map(k, v) => {
+            e.push(("key", type_value(k)));
+            e.push(("value", type_value(v)));
+        }
+        TypeKind::Tuple(ts) => e.push(("items", Value::List(ts.iter().map(type_value).collect()))),
+        _ => {}
+    }
+    if t.nullable {
+        e.push(("nullable", Value::Bool(true)));
+    }
+    if let Some((lo, hi)) = &t.constraints.range {
+        let mut r = Vec::new();
+        if let Some(lo) = lo {
+            r.push(("min", lo.0.clone()));
+        }
+        if let Some(hi) = hi {
+            r.push(("max", hi.0.clone()));
+        }
+        e.push(("range", rec(r)));
+    }
+    if let Some((lo, hi)) = t.constraints.len {
+        let mut l = Vec::new();
+        if let Some(lo) = lo {
+            l.push(("min", Value::Int(lo as i128)));
+        }
+        if let Some(hi) = hi {
+            l.push(("max", Value::Int(hi as i128)));
+        }
+        if t.constraints.len_unit != LenUnit::Scalars {
+            l.push(("unit", tag(t.constraints.len_unit.name())));
+        }
+        e.push(("len", rec(l)));
+    }
+    rec(e)
+}
+
+impl Schema {
+    /// The descriptor of this schema (definitions in canonical, name order).
+    pub fn to_value(&self) -> Value {
+        let mut top: Vec<(&str, Value)> = Vec::new();
+        if let Some(n) = &self.name {
+            top.push(("name", s(n)));
+        }
+        if let Some(v) = &self.version {
+            top.push(("version", Value::String(v.to_string())));
+        }
+        if let Some(r) = &self.root {
+            top.push(("root", s(r)));
+        }
+        let mut defs: Vec<&(String, Def)> = self.defs.iter().collect();
+        defs.sort_by(|a, b| a.0.cmp(&b.0));
+        let defs = defs
+            .into_iter()
+            .map(|(name, def)| {
+                let body = match def {
+                    Def::Alias(t) => ("alias", type_value(t)),
+                    Def::Enum(vs) => (
+                        "enum",
+                        Value::List(
+                            vs.iter()
+                                .map(|v| {
+                                    let mut e = vec![("name", s(&v.name))];
+                                    if let Some(p) = &v.payload {
+                                        e.push(("payload", type_value(p)));
+                                    }
+                                    rec(e)
+                                })
+                                .collect(),
+                        ),
+                    ),
+                    Def::Record(r) => {
+                        let fields = r
+                            .fields
+                            .iter()
+                            .map(|f| {
+                                let mut e = vec![("name", s(&f.name)), ("type", type_value(&f.ty))];
+                                if f.optional {
+                                    e.push(("optional", Value::Bool(true)));
+                                }
+                                if let Some(d) = &f.default {
+                                    e.push(("default", d.clone()));
+                                }
+                                if f.key {
+                                    e.push(("key", Value::Bool(true)));
+                                }
+                                if let Some(id) = f.id {
+                                    e.push(("id", Value::Int(id as i128)));
+                                }
+                                if f.deprecated {
+                                    e.push(("deprecated", Value::Bool(true)));
+                                }
+                                rec(e)
+                            })
+                            .collect();
+                        let mut e = Vec::new();
+                        if r.open {
+                            e.push(("open", Value::Bool(true)));
+                        }
+                        e.push(("fields", Value::List(fields)));
+                        ("record", rec(e))
+                    }
+                };
+                rec(vec![("name", s(name)), body])
+            })
+            .collect();
+        top.push(("defs", Value::List(defs)));
+        rec(top)
+    }
+
+    /// Rebuild a schema from its descriptor. The descriptor is first resolved
+    /// against the meta-schema, then checked like schema text.
+    pub fn from_value(v: &Value) -> Result<Schema, String> {
+        let v = meta_schema().resolve(v).map_err(|i| {
+            format!(
+                "invalid schema descriptor:\n  {}",
+                i.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n  ")
+            )
+        })?;
+        let r = v.as_record().ok_or("descriptor must be a record")?;
+        let text = |k: &str| r.get(k).and_then(Value::as_str).map(str::to_owned);
+        let mut schema = Schema {
+            name: text("name"),
+            version: None,
+            root: text("root"),
+            defs: Vec::new(),
+        };
+        if let Some(ver) = text("version") {
+            schema.version = Some(crate::Version::parse(&ver)?);
+        }
+        for d in r.get("defs").and_then(Value::as_list).into_iter().flatten() {
+            let d = d.as_record().ok_or("definition must be a record")?;
+            let name = d.get("name").and_then(Value::as_str).ok_or("definition without name")?.to_owned();
+            let at = |what: &str| format!("defs[name={name}]: {what}");
+            let bodies = ["record", "enum", "alias"].iter().filter(|k| d.contains_key(k)).count();
+            if bodies != 1 {
+                return Err(at("needs exactly one of `record`, `enum` and `alias`"));
+            }
+            let def = if let Some(t) = d.get("alias") {
+                Def::Alias(value_type(t).map_err(|e| at(&e))?)
+            } else if let Some(Value::List(vs)) = d.get("enum") {
+                Def::Enum(
+                    vs.iter()
+                        .map(|v| {
+                            let v = v.as_record().ok_or("variant must be a record")?;
+                            Ok(VariantDef {
+                                name: v.get("name").and_then(Value::as_str).ok_or("variant without name")?.to_owned(),
+                                payload: v.get("payload").map(value_type).transpose()?,
+                            })
+                        })
+                        .collect::<Result<_, String>>()
+                        .map_err(|e| at(&e))?,
+                )
+            } else {
+                let rd = d.get("record").and_then(Value::as_record).ok_or_else(|| at("`record` must be a record"))?;
+                let flag = |r: &Record, k: &str| matches!(r.get(k), Some(Value::Bool(true)));
+                let fields = rd
+                    .get("fields")
+                    .and_then(Value::as_list)
+                    .into_iter()
+                    .flatten()
+                    .map(|f| {
+                        let f = f.as_record().ok_or("field must be a record")?;
+                        Ok(FieldDef {
+                            name: f.get("name").and_then(Value::as_str).ok_or("field without name")?.to_owned(),
+                            ty: value_type(f.get("type").ok_or("field without type")?)?,
+                            optional: flag(f, "optional"),
+                            default: f.get("default").cloned(),
+                            key: flag(f, "key"),
+                            id: match f.get("id") {
+                                Some(Value::Int(i)) => Some(u32::try_from(*i).map_err(|_| "id out of range")?),
+                                _ => None,
+                            },
+                            deprecated: flag(f, "deprecated"),
+                        })
+                    })
+                    .collect::<Result<_, String>>()
+                    .map_err(|e| at(&e))?;
+                Def::Record(RecordDef {
+                    fields,
+                    open: flag(rd, "open"),
+                })
+            };
+            schema.defs.push((name, def));
+        }
+        // Validate exactly like schema text (names, references, ids, cycles, defaults).
+        crate::parse_schema(&schema.to_canonical_text()).map_err(|e| format!("invalid schema descriptor: {}", e.message))
+    }
+}
+
+fn value_type(v: &Value) -> Result<TypeRef, String> {
+    let r = v.as_record().ok_or("type must be a record")?;
+    let kind = match r.get("kind") {
+        Some(Value::Variant(k, None)) => k.as_str(),
+        Some(Value::String(k)) => k.as_str(),
+        _ => return Err("type without kind".into()),
+    };
+    let sub = |k: &str| -> Result<Box<TypeRef>, String> { Ok(Box::new(value_type(r.get(k).ok_or_else(|| format!("{kind} type needs `{k}`"))?)?)) };
+    let tk = match kind {
+        "any" => TypeKind::Any,
+        "null" => TypeKind::Null,
+        "bool" => TypeKind::Bool,
+        "float" => TypeKind::Float,
+        "decimal" => TypeKind::Decimal,
+        "rational" => TypeKind::Rational,
+        "string" => TypeKind::String,
+        "bytes" => TypeKind::Bytes,
+        "timestamp" => TypeKind::Timestamp,
+        "duration" => TypeKind::Duration,
+        "list" => TypeKind::List(sub("item")?),
+        "set" => TypeKind::Set(sub("item")?),
+        "map" => TypeKind::Map(sub("key")?, sub("value")?),
+        "tuple" => TypeKind::Tuple(
+            r.get("items")
+                .and_then(Value::as_list)
+                .ok_or("tuple type needs `items`")?
+                .iter()
+                .map(value_type)
+                .collect::<Result<_, _>>()?,
+        ),
+        "named" => TypeKind::Named(r.get("ref").and_then(Value::as_str).ok_or("named type needs `ref`")?.to_owned()),
+        other => TypeKind::Int(IntKind::from_name(other).ok_or_else(|| format!("unknown kind {other:?}"))?),
+    };
+    let mut t = TypeRef::new(tk);
+    t.nullable = matches!(r.get("nullable"), Some(Value::Bool(true)));
+    if let Some(Value::Record(rg)) = r.get("range") {
+        let bound = |k: &str| rg.get(k).map(|v| Num::of(v).ok_or_else(|| format!("range {k} must be a number"))).transpose();
+        t.constraints.range = Some((bound("min")?, bound("max")?));
+    }
+    if let Some(Value::Record(l)) = r.get("len") {
+        let n = |k: &str| match l.get(k) {
+            Some(Value::Int(i)) => u64::try_from(*i).map(Some).map_err(|_| format!("len {k} out of range")),
+            _ => Ok(None),
+        };
+        t.constraints.len = Some((n("min")?, n("max")?));
+        if let Some(Value::Variant(u, None)) = l.get("unit") {
+            t.constraints.len_unit = LenUnit::from_name(u).ok_or("unknown len unit")?;
+        }
+    }
+    Ok(t)
+}
