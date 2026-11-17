@@ -205,7 +205,7 @@ impl Duration {
     ///
     /// Returns an error if `|nanos|` exceeds `i64::MAX` seconds.
     pub fn from_nanos(nanos: i128) -> Result<Self, String> {
-        if nanos.abs() > MAX_DURATION {
+        if nanos.unsigned_abs() > MAX_DURATION.unsigned_abs() {
             return Err("duration out of range".into());
         }
 
@@ -492,6 +492,8 @@ mod tests {
 
     #[test]
     fn durations() {
+        // Fuzzer find: `abs` overflowed on i128::MIN.
+        assert!(Duration::from_nanos(i128::MIN).is_err());
         for (s, c) in [
             ("1h30m", "1h30m"),
             ("90m", "1h30m"),
