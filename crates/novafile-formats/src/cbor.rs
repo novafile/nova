@@ -64,13 +64,21 @@ use novafile_value::{Decimal, Rational, Record, Timestamp, Value};
 
 use crate::{MAX_DEPTH, Reporter, Warning};
 
+/// Tag 0: standard date/time string (RFC 3339 text).
 const TAG_RFC3339: u64 = 0;
+/// Tag 1: epoch-based date/time (integer or float seconds since 1970).
 const TAG_EPOCH: u64 = 1;
+/// Tag 2: unsigned bignum (big-endian byte string `n`, value `n`).
 const TAG_POS_BIGNUM: u64 = 2;
+/// Tag 3: negative bignum (big-endian byte string `n`, value `-1 - n`).
 const TAG_NEG_BIGNUM: u64 = 3;
+/// Tag 4: decimal fraction `[exponent, mantissa]`, value `mantissa × 10^exponent`.
 const TAG_DECIMAL: u64 = 4;
+/// Tag 30: rational number `[numerator, denominator]`, denominator positive.
 const TAG_RATIONAL: u64 = 30;
+/// Tag 258: mathematical finite set, encoded as an array of distinct items.
 const TAG_SET: u64 = 258;
+/// Tag 259: map datatype; marks a map that must not be read back as a record.
 const TAG_MAP: u64 = 259;
 
 // ---------------------------------------------------------------- decoding
@@ -92,21 +100,28 @@ pub fn from_slice(b: &[u8]) -> Result<Value, String> {
     Ok(v)
 }
 
+/// Cursor over the input of [`from_slice`].
 struct Decoder<'a> {
+    /// The complete input.
     b: &'a [u8],
+    /// Offset of the next unread byte; reported in error messages.
     i: usize,
+    /// Current nesting depth of arrays, maps and tags, capped at [`MAX_DEPTH`].
     depth: usize,
 }
 
 impl Decoder<'_> {
+    /// Fail with `m`, prefixed with the current byte offset.
     fn err<T>(&self, m: &str) -> Result<T, String> {
         Err(format!("CBOR byte {}: {m}", self.i))
     }
 
+    /// Number of unread bytes left in the input.
     fn remaining(&self) -> usize {
         self.b.len() - self.i
     }
 
+    /// Consume the next `n` bytes, or fail without consuming if fewer remain.
     fn take(&mut self, n: usize) -> Result<&[u8], String> {
         if n > self.remaining() {
             return self.err("unexpected end of input");
@@ -117,10 +132,13 @@ impl Decoder<'_> {
         Ok(s)
     }
 
+    /// Consume one byte.
     fn byte(&mut self) -> Result<u8, String> {
         Ok(self.take(1)?[0])
     }
 
+    /// The next byte without consuming it; used to look for an indefinite-length
+    /// break (`0xff`).
     fn peek(&self) -> Result<u8, String> {
         self.b
             .get(self.i)
@@ -144,6 +162,7 @@ impl Decoder<'_> {
         Ok(Some(self.take(n)?.iter().fold(0u64, |a, &b| a << 8 | u64::from(b))))
     }
 
+    /// Like [`Self::arg`], but an indefinite length is an error.
     fn definite(&mut self, ai: u8) -> Result<u64, String> {
         match self.arg(ai)? {
             Some(n) => Ok(n),
@@ -160,6 +179,8 @@ impl Decoder<'_> {
         }
     }
 
+    /// Descend one nesting level, failing beyond [`MAX_DEPTH`]. The caller
+    /// decrements `depth` again when the nested item is done.
     fn enter(&mut self) -> Result<(), String> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
@@ -259,6 +280,10 @@ impl Decoder<'_> {
         }
     }
 
+    /// Decode one data item at the current position.
+    ///
+    /// Maps whose keys are all text strings become records; any other map
+    /// becomes a NOVA map. Floats of every width are widened to `f64`.
     fn item(&mut self) -> Result<Value, String> {
         let ib = self.byte()?;
         let (major, ai) = (ib >> 5, ib & 31);
@@ -310,6 +335,9 @@ impl Decoder<'_> {
         })
     }
 
+    /// Decode the content of tag `tag` (the tag head is already consumed) into
+    /// the NOVA value it denotes; see the module table for the supported tags.
+    /// Unsupported tags are errors.
     fn tagged(&mut self, tag: u64) -> Result<Value, String> {
         let at = self.i;
         let bad = |m: &str| Err(format!("CBOR byte {at}: tag {tag}: {m}"));
@@ -493,11 +521,16 @@ pub fn to_vec(v: &Value, deterministic: bool) -> (Vec<u8>, Vec<Warning>) {
     (out, e.rep.warnings)
 }
 
+/// Writer state for [`to_vec`].
 struct Encoder {
+    /// Whether to emit RFC 8949 §4.2.1 core deterministic encoding.
     det: bool,
+    /// Collects lossy-mapping warnings and the path of the value being written.
     rep: Reporter,
 }
 
+/// Write an initial byte for `major` with argument `arg`, always in the
+/// shortest form (which deterministic encoding requires).
 #[expect(clippy::cast_possible_truncation, reason = "each match arm bounds `arg` to the target width")]
 fn head(out: &mut Vec<u8>, major: u8, arg: u64) {
     let m = major << 5;
@@ -519,11 +552,14 @@ fn head(out: &mut Vec<u8>, major: u8, arg: u64) {
     }
 }
 
+/// Write a definite-length text string.
 fn text(out: &mut Vec<u8>, s: &str) {
     head(out, 3, s.len() as u64);
     out.extend_from_slice(s.as_bytes());
 }
 
+/// Write an integer: major 0/1 if it fits in 64 bits, otherwise a tag 2/3
+/// bignum with leading zero bytes stripped.
 fn int(out: &mut Vec<u8>, i: i128) {
     let (major, tag, n) = if i >= 0 {
         (0, TAG_POS_BIGNUM, i.cast_unsigned())
@@ -548,6 +584,9 @@ impl Encoder {
         clippy::cast_possible_truncation,
         reason = "narrowing to f32 is deliberate; exact equality checks it was lossless"
     )]
+    /// Write a float. Non-deterministic output is always `f64` (with NaN
+    /// canonicalized); deterministic output uses the shortest of f16, f32 and
+    /// f64 that represents `f` exactly.
     fn float(&self, out: &mut Vec<u8>, f: f64) {
         if !self.det {
             out.push(0xfb);
@@ -565,6 +604,8 @@ impl Encoder {
         }
     }
 
+    /// Write an array of `l`. With `sort` and deterministic mode, elements are
+    /// ordered by their encoded bytes (used for sets).
     fn array(&mut self, l: &[Value], out: &mut Vec<u8>, sort: bool) {
         head(out, 4, l.len() as u64);
         let mut items: Vec<Vec<u8>> = l
@@ -572,6 +613,7 @@ impl Encoder {
             .enumerate()
             .map(|(i, e)| self.rep.index(i, |rep| Self::sub(self.det, rep, e)))
             .collect();
+
         if sort && self.det {
             items.sort();
         }
@@ -603,6 +645,8 @@ impl Encoder {
         }
     }
 
+    /// Write `v` as one data item, warning on every mapping CBOR cannot
+    /// round-trip exactly (see the module table).
     fn value(&mut self, v: &Value, out: &mut Vec<u8>) {
         let det = self.det;
         match v {

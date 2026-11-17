@@ -29,6 +29,8 @@ pub mod patterns {
     pub const DURATION: &str = r"^-?(P[0-9WDTHMS.,]+|([0-9]+(\.[0-9]{1,9})?[dhms])+)$";
 }
 
+/// Implement `JsonSchema` for a text-backed type as the inline schema `$schema`,
+/// named `$name`.
 macro_rules! text_schema {
     ($ty:ty, $name:literal, $schema:tt) => {
         impl JsonSchema for $ty {

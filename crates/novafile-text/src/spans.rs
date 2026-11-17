@@ -40,6 +40,7 @@ pub struct Span {
     pub end: usize,
     /// Byte range of the key, for record fields.
     pub key: Option<(usize, usize)>,
+    /// The construct this span belongs to.
     pub kind: SpanKind,
 }
 
@@ -90,14 +91,17 @@ impl Span {
     }
 }
 
+/// The spans of a parsed document, plus its comments.
 #[derive(Clone, Debug, Default)]
 pub struct SpanMap {
+    /// Sorted by start, then by descending end, so enclosing spans come before enclosed ones.
     spans: Vec<Span>,
     /// Byte ranges of comments (`#` through end of line).
     pub comments: Vec<(usize, usize)>,
 }
 
 impl SpanMap {
+    /// Build a map from spans in any order.
     #[must_use]
     pub fn new(mut spans: Vec<Span>) -> Self {
         spans.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
@@ -111,6 +115,7 @@ impl SpanMap {
             .filter(move |s| s.path.0.len() == parent.0.len() + 1 && s.path.0.starts_with(&parent.0))
     }
 
+    /// All spans, in source order (enclosing before enclosed).
     pub fn iter(&self) -> impl Iterator<Item = &Span> {
         self.spans.iter()
     }

@@ -12,6 +12,7 @@ pub enum Case {
 }
 
 impl Case {
+    /// Parse a case name: `snake`, `camel` or `kebab`, or the style's own spelling.
     #[must_use]
     pub fn parse(s: &str) -> Option<Case> {
         Some(match s {
@@ -22,6 +23,7 @@ impl Case {
         })
     }
 
+    /// The style's own spelling, e.g. `camelCase`.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {

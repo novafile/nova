@@ -11,9 +11,12 @@
 use novafile_value::{DecodeError, EncodeOptions, Limits, Value, decode_prefix, encode};
 use std::fmt;
 
+/// The four magic bytes every frame starts with; also the resynchronization marker.
 pub const MAGIC: &[u8; 4] = b"NOVA";
+/// The frame format version this crate reads and writes.
 pub const VERSION: u8 = 0x01;
 
+/// Bits of the frame flags byte.
 pub mod flags {
     /// A schema reference follows the flags byte.
     pub const SCHEMA: u8 = 0b0000_0001;
@@ -25,23 +28,31 @@ pub mod flags {
     pub const DEDUPE: u8 = 0b0000_1000;
     /// The payload may contain record lists (informational).
     pub const TABLES: u8 = 0b0001_0000;
+    /// All flags defined by this version; a frame setting any other bit is rejected.
     pub const KNOWN: u8 = 0b0001_1111;
 }
 
+/// One frame: an optional schema reference and a value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
     /// Schema reference such as `infrastructure@1.0.0#8c21a0f3d5e6b7c8`.
     pub schema: Option<String>,
+    /// The framed value.
     pub value: Value,
 }
 
+/// Encoder switches for [`encode_frame`]. The default dedupes strings, writes
+/// record lists and appends a CRC-32.
 #[derive(Clone, Copy, Debug)]
 #[expect(clippy::struct_excessive_bools, reason = "independent encoder switches; public API")]
 pub struct FrameOptions {
+    /// Write the payload in canonical form (spec §5.2); disables `dedupe_strings` and `tables`.
     pub canonical: bool,
+    /// Replace repeated strings with back-references (spec §5.3). Ignored when `canonical`.
     pub dedupe_strings: bool,
     /// Encode lists of same-shaped records as record lists (spec §5.3).
     pub tables: bool,
+    /// Append a CRC-32 of the payload.
     pub checksum: bool,
 }
 
@@ -56,14 +67,28 @@ impl Default for FrameOptions {
     }
 }
 
+/// A failure to decode a frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameError {
+    /// The input ends before the frame does.
     Truncated,
+    /// The input does not start with the `NOVA` magic.
     BadMagic,
+    /// The version byte is not [`VERSION`].
     UnsupportedVersion(u8),
+    /// The flags byte sets bits outside [`flags::KNOWN`].
     UnknownFlags(u8),
-    Checksum { expected: u32, actual: u32 },
+    /// The stored CRC-32 does not match the payload.
+    Checksum {
+        /// The CRC-32 stored in the frame.
+        expected: u32,
+        /// The CRC-32 computed over the payload.
+        actual: u32,
+    },
+    /// The payload is not a valid value encoding.
     Payload(DecodeError),
+    /// The frame is structurally invalid (e.g. an overlong varint, a non-UTF-8
+    /// schema reference, or a payload length that disagrees with the value).
     Malformed(String),
 }
 
@@ -97,6 +122,7 @@ pub fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
+/// Append `v` as an unsigned LEB128 varint.
 #[expect(clippy::cast_possible_truncation, reason = "LEB128: only the low 7 bits are kept per byte")]
 fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
@@ -107,6 +133,10 @@ fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     out.push(v as u8);
 }
 
+/// Read an unsigned LEB128 varint at `*pos`, advancing it.
+///
+/// Fails with [`FrameError::Truncated`] at end of input and with
+/// [`FrameError::Malformed`] after ten bytes.
 fn get_varint(buf: &[u8], pos: &mut usize) -> Result<u64, FrameError> {
     let mut v = 0u64;
     for shift in (0..64).step_by(7) {
@@ -121,6 +151,7 @@ fn get_varint(buf: &[u8], pos: &mut usize) -> Result<u64, FrameError> {
     Err(FrameError::Malformed("varint too long".into()))
 }
 
+/// Encode one frame, setting the flags to match `frame` and `opts`.
 #[must_use]
 pub fn encode_frame(frame: &Frame, opts: FrameOptions) -> Vec<u8> {
     let payload = encode(
@@ -131,6 +162,7 @@ pub fn encode_frame(frame: &Frame, opts: FrameOptions) -> Vec<u8> {
             tables: opts.tables && !opts.canonical,
         },
     );
+
     let mut f = 0u8;
     if frame.schema.is_some() {
         f |= flags::SCHEMA;
@@ -235,13 +267,18 @@ pub fn decode_frame(buf: &[u8]) -> Result<(Frame, usize), FrameError> {
 /// reported once and the reader resynchronizes at the next `NOVA` magic
 /// (spec §5.5); without it, iteration stops at the first error.
 pub struct FrameReader<'a> {
+    /// The whole stream.
     buf: &'a [u8],
+    /// Offset of the next frame.
     pos: usize,
+    /// Resynchronize after a corrupt frame instead of stopping.
     recover: bool,
+    /// Set after an error in strict mode; ends iteration.
     failed: bool,
 }
 
 impl<'a> FrameReader<'a> {
+    /// A strict reader over `buf`: iteration ends at the first error.
     #[must_use]
     pub fn new(buf: &'a [u8]) -> Self {
         FrameReader {
@@ -252,6 +289,7 @@ impl<'a> FrameReader<'a> {
         }
     }
 
+    /// Switch to recovery mode: skip a corrupt frame and continue at the next `NOVA` magic.
     #[must_use]
     pub fn recovering(mut self) -> Self {
         self.recover = true;

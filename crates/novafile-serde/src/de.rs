@@ -8,25 +8,31 @@ use serde::de::{self, DeserializeSeed, IntoDeserializer, Visitor};
 /// Deserializes from a value. `key` is set for map keys, where numeric
 /// target types also accept their decimal string form (as in JSON objects).
 pub struct ValueDeserializer {
+    /// The value to deserialize from.
     value: Value,
+    /// Whether this is a map key, which accepts numbers and bools in string form.
     key: bool,
 }
 
 impl ValueDeserializer {
+    /// Deserialize from `value`.
     #[must_use]
     pub fn new(value: Value) -> Self {
         ValueDeserializer { value, key: false }
     }
 
+    /// Deserialize a map key (see [`ValueDeserializer`]).
     fn key(value: Value) -> Self {
         ValueDeserializer { value, key: true }
     }
 
+    /// A type mismatch error for the current value.
     fn invalid<T>(&self, exp: &dyn de::Expected) -> Result<T, Error> {
         Err(de::Error::invalid_type(unexpected(&self.value), exp))
     }
 }
 
+/// How a value is reported in serde's type mismatch errors.
 fn unexpected(v: &Value) -> de::Unexpected<'_> {
     use de::Unexpected as U;
     match v {
@@ -52,6 +58,7 @@ fn unexpected(v: &Value) -> de::Unexpected<'_> {
     }
 }
 
+/// Visit an integer as `i64` or `u64` when it fits, else as `i128`.
 fn visit_int<'de, V: Visitor<'de>>(i: i128, v: V) -> Result<V::Value, Error> {
     if let Ok(x) = i64::try_from(i) {
         v.visit_i64(x)
@@ -62,6 +69,8 @@ fn visit_int<'de, V: Visitor<'de>>(i: i128, v: V) -> Result<V::Value, Error> {
     }
 }
 
+/// A `deserialize_*` method for a scalar that, for map keys, also parses
+/// its string form (e.g. `"8080"` for a `u16` key).
 macro_rules! key_number {
     ($method:ident, $t:ty) => {
         fn $method<V: Visitor<'de>>(self, v: V) -> Result<V::Value, Error> {
@@ -77,15 +86,19 @@ macro_rules! key_number {
     };
 }
 
+/// Scalars parsed from a map key's string form, converted back to a value.
 trait IntoValue {
+    /// The value for `self`; fails when it is out of the NOVA integer range.
     fn into_value(self) -> Result<Value, Error>;
 }
 
+/// [`IntoValue`] for integer types that convert losslessly into `i128`.
 macro_rules! into_value_int {
     ($($t:ty),*) => {$(impl IntoValue for $t { fn into_value(self) -> Result<Value, Error> { Ok(Value::Int(self.into())) } })*};
 }
 
 into_value_int!(i8, i16, i32, i64, i128, u8, u16, u32, u64);
+
 impl IntoValue for u128 {
     fn into_value(self) -> Result<Value, Error> {
         i128::try_from(self)
@@ -255,6 +268,7 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer {
     }
 }
 
+/// Visit a sequence; fails if the visitor leaves elements unconsumed.
 fn visit_seq<'de, V: Visitor<'de>>(items: Vec<Value>, v: V) -> Result<V::Value, Error> {
     let len = items.len();
     let mut access = SeqAccess {
@@ -269,7 +283,9 @@ fn visit_seq<'de, V: Visitor<'de>>(items: Vec<Value>, v: V) -> Result<V::Value, 
     Ok(out)
 }
 
+/// Elements of a list, tuple or set.
 struct SeqAccess {
+    /// Remaining elements with their index, for error paths.
     iter: std::iter::Enumerate<std::vec::IntoIter<Value>>,
 }
 
@@ -287,12 +303,16 @@ impl<'de> de::SeqAccess<'de> for SeqAccess {
     }
 }
 
+/// Entries of a record (or a variant payload seen as a one-entry map).
 struct RecordAccess {
+    /// Entries not yet visited.
     iter: std::vec::IntoIter<(String, Value)>,
+    /// The entry whose key was just visited, waiting for its value.
     value: Option<(String, Value)>,
 }
 
 impl RecordAccess {
+    /// Access over `entries` in order.
     fn new(entries: Vec<(String, Value)>) -> Self {
         RecordAccess {
             iter: entries.into_iter(),
@@ -324,8 +344,11 @@ impl<'de> de::MapAccess<'de> for RecordAccess {
     }
 }
 
+/// Entries of a NOVA map, whose keys can be any value.
 struct MapAccess {
+    /// Entries not yet visited.
     iter: std::vec::IntoIter<(Value, Value)>,
+    /// The entry whose key was just visited, waiting for its value.
     value: Option<(Value, Value)>,
 }
 
@@ -349,8 +372,11 @@ impl<'de> de::MapAccess<'de> for MapAccess {
     }
 }
 
+/// An enum value: the variant tag and its optional payload.
 struct EnumAccess {
+    /// Variant name.
     tag: String,
+    /// Payload, if any.
     payload: Option<Value>,
 }
 
@@ -370,8 +396,11 @@ impl<'de> de::EnumAccess<'de> for EnumAccess {
     }
 }
 
+/// The payload of a variant whose tag was already visited.
 struct VariantAccess {
+    /// Variant name, for errors and error paths.
     tag: String,
+    /// Payload, if any.
     payload: Option<Value>,
 }
 

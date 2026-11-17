@@ -3,22 +3,32 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+/// One dot-separated pre-release identifier.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PreId {
+    /// Digits only; compares numerically and below alphanumeric identifiers.
     Num(u64),
+    /// Contains a letter or `-`; compares in ASCII order.
     Alpha(String),
 }
 
+/// A `SemVer` 2.0.0 version.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Version {
+    /// `MAJOR`: incremented for breaking changes (from 1.0.0 on).
     pub major: u64,
+    /// `MINOR`: incremented for compatible additions (breaking changes in 0.y.z).
     pub minor: u64,
+    /// `PATCH`: incremented for everything else.
     pub patch: u64,
+    /// Pre-release identifiers after `-`; empty for a release.
     pub pre: Vec<PreId>,
     /// Build metadata: ignored for precedence and compatibility.
     pub build: Vec<String>,
 }
 
+/// Parse a numeric identifier: ASCII digits, no leading zeros; `what`
+/// names it in errors.
 fn numeric(s: &str, what: &str) -> Result<u64, String> {
     if s.is_empty() || !s.bytes().all(|c| c.is_ascii_digit()) {
         return Err(format!("{what} must be a non-negative integer, got {s:?}"));
@@ -31,11 +41,13 @@ fn numeric(s: &str, what: &str) -> Result<u64, String> {
     s.parse().map_err(|_| format!("{what} is too large: {s:?}"))
 }
 
+/// Whether `s` is a non-empty run of `[0-9A-Za-z-]`.
 fn ident_ok(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
 }
 
 impl Version {
+    /// The release `major.minor.patch`, without pre-release or build metadata.
     #[must_use]
     pub fn new(major: u64, minor: u64, patch: u64) -> Self {
         Version {
@@ -101,6 +113,7 @@ impl Version {
         })
     }
 
+    /// Whether the version has pre-release identifiers.
     #[must_use]
     pub fn is_prerelease(&self) -> bool {
         !self.pre.is_empty()
@@ -134,6 +147,7 @@ impl Version {
             })
     }
 
+    /// Same version, ignoring build metadata.
     fn same_release(&self, o: &Version) -> bool {
         self.precedence(o) == Ordering::Equal
     }
@@ -211,11 +225,17 @@ impl fmt::Display for Version {
 /// A schema reference: `name@version[#fingerprint]` (spec §6.7).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaRef {
+    /// Schema name (see [`valid_schema_name`]).
     pub name: String,
+    /// The referenced version.
     pub version: Version,
+    /// 16 lowercase hex digits pinning the exact schema
+    /// (see [`crate::Schema::fingerprint_hex`]); optional.
     pub fingerprint: Option<String>,
 }
 
+/// Whether `n` is a valid schema name: a lowercase letter, then lowercase
+/// letters, digits or `-_./`, with no empty `/`-separated segment.
 #[must_use]
 pub fn valid_schema_name(n: &str) -> bool {
     let b = n.as_bytes();

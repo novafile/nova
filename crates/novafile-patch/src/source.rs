@@ -105,14 +105,18 @@ fn concretize(root: &Value, path: &Path) -> Option<Path> {
     Some(Path(out))
 }
 
+/// Byte offset of the start of the line containing `at`.
 fn line_start(t: &str, at: usize) -> usize {
     t[..at].rfind('\n').map_or(0, |i| i + 1)
 }
 
+/// Byte offset of the newline ending the line containing `at`, or the end of
+/// the text.
 fn line_end(t: &str, at: usize) -> usize {
     t[at..].find('\n').map_or(t.len(), |i| at + i)
 }
 
+/// Replace the bytes `a..b` of `t` with `with`.
 fn splice(t: &str, a: usize, b: usize, with: &str) -> String {
     let mut s = String::with_capacity(t.len() + with.len());
     s.push_str(&t[..a]);
@@ -153,6 +157,9 @@ fn block_start_with_comments(t: &str, s: &Span) -> usize {
     start
 }
 
+/// Rewrite `text` for one operation that turned `cur` into `next` at `path`.
+/// `None` means no minimal edit applies and the caller re-renders the whole
+/// document.
 fn edit(text: &str, cur: &Value, next: &Value, path: &Path, kind: &OpKind) -> Option<String> {
     if matches!(kind, OpKind::Test(_)) {
         return Some(text.to_owned());
@@ -225,6 +232,8 @@ fn replace_at(text: &str, spans: &SpanMap, path: &Path, new: &Value) -> Option<S
     }
 }
 
+/// Insert a new field after the last field of a block record; other records
+/// are re-rendered whole.
 fn insert_field(text: &str, spans: &SpanMap, next: &Value, record: &Path, key: &str, value: &Value) -> Option<String> {
     let kids: Vec<&Span> = spans.children(record).collect();
     match kids.first() {
@@ -238,6 +247,8 @@ fn insert_field(text: &str, spans: &SpanMap, next: &Value, record: &Path, key: &
     }
 }
 
+/// Insert a new item at `idx` into a block list, above the current item and
+/// its comments (or after the last item); other lists are re-rendered whole.
 fn insert_item(text: &str, spans: &SpanMap, next: &Value, list: &Path, idx: usize, value: &Value) -> Option<String> {
     let kids: Vec<&Span> = spans.children(list).collect();
     match kids.first() {
@@ -267,6 +278,8 @@ fn replace_whole(text: &str, spans: &SpanMap, next: &Value, path: &Path) -> Opti
     replace_at(text, spans, path, path.get(next).ok()?)
 }
 
+/// Remove the block entry or item at `path` with its comment lines and avoid
+/// leaving a stray blank line; otherwise re-render the parent.
 fn remove_at(text: &str, spans: &SpanMap, next: &Value, path: &Path) -> Option<String> {
     let (parent, _) = path.parent()?;
     let s = spans.get(path);

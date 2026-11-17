@@ -8,11 +8,16 @@ use std::fmt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "facet", derive(facet::Facet), facet(opaque, proxy = String))]
 pub struct Decimal {
+    /// Significand without trailing decimal zeros; zero only together with `exp == 0`.
     coeff: i128,
+    /// Power of ten the coefficient is scaled by.
     exp: i32,
 }
 
 impl Decimal {
+    /// Build `coeff × 10^exp`, normalizing away trailing zeros of `coeff`.
+    ///
+    /// The exponent saturates at `i32::MAX` while normalizing.
     #[must_use]
     pub fn new(mut coeff: i128, mut exp: i32) -> Self {
         if coeff == 0 {
@@ -27,16 +32,19 @@ impl Decimal {
         Decimal { coeff, exp }
     }
 
+    /// The normalized coefficient (signed significand).
     #[must_use]
     pub fn coefficient(&self) -> i128 {
         self.coeff
     }
 
+    /// The normalized power-of-ten exponent.
     #[must_use]
     pub fn exponent(&self) -> i32 {
         self.exp
     }
 
+    /// The decimal equal to the integer `i`.
     #[must_use]
     pub fn from_int(i: i128) -> Self {
         Decimal::new(i, 0)
@@ -134,6 +142,7 @@ impl Decimal {
         Ok(Decimal::new(if neg { -coeff } else { coeff }, exp))
     }
 
+    /// Nearest binary64 value; `±inf` when the magnitude exceeds the `f64` range.
     #[must_use]
     pub fn to_f64(&self) -> f64 {
         format!("{}e{}", self.coeff, self.exp).parse().unwrap_or(f64::NAN)

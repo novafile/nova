@@ -93,9 +93,13 @@ impl Schema {
 /// Result of checking a new schema version against an old one (spec §6.7).
 #[derive(Clone, Debug)]
 pub struct VersionCheck {
+    /// Every difference found between the two schemas.
     pub changes: Vec<Change>,
+    /// The overall classification of `changes`.
     pub kind: ChangeKind,
+    /// The old schema's version.
     pub old: Version,
+    /// The new schema's version.
     pub new: Version,
     /// The smallest acceptable new version.
     pub minimum: Version,
@@ -114,6 +118,7 @@ pub fn check_versions(old: &Schema, new: &Schema) -> Result<VersionCheck, String
         old.reference().ok_or("old schema has no `@schema name@version`")?,
         new.reference().ok_or("new schema has no `@schema name@version`")?,
     );
+
     if o.name != n.name {
         return Err(format!("schema names differ: {} vs {}", o.name, n.name));
     }

@@ -8,10 +8,13 @@ use std::fmt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "facet", derive(facet::Facet), facet(opaque, proxy = String))]
 pub struct Rational {
+    /// Numerator; carries the sign.
     num: i128,
+    /// Denominator; always positive and coprime to the numerator.
     den: i128,
 }
 
+/// Greatest common divisor (Euclid); `gcd(0, 0) == 0`.
 fn gcd(mut a: u128, mut b: u128) -> u128 {
     while b != 0 {
         (a, b) = (b, a % b);
@@ -46,11 +49,13 @@ impl Rational {
         Ok(Rational { num: n, den: d })
     }
 
+    /// The normalized numerator; carries the sign.
     #[must_use]
     pub fn numerator(&self) -> i128 {
         self.num
     }
 
+    /// The normalized denominator; always positive.
     #[must_use]
     pub fn denominator(&self) -> i128 {
         self.den
@@ -76,6 +81,7 @@ impl Rational {
         Rational::new(num, den)
     }
 
+    /// Nearest binary64 approximation (both components are rounded first).
     #[must_use]
     #[expect(clippy::cast_precision_loss, reason = "nearest binary64 approximation is the intent")]
     pub fn to_f64(&self) -> f64 {

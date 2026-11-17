@@ -1,3 +1,5 @@
+//! `#[derive(NovaSchema)]`: derived schemas match hand-written ones and accept serde output.
+
 use novafile_schema::{NovaSchema, parse_schema};
 use novafile_value::Timestamp;
 use serde::Serialize;

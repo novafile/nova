@@ -1,3 +1,5 @@
+//! Records: string-keyed values with unique keys and presentation order (spec §2.10).
+
 use crate::Value;
 use std::collections::HashMap;
 
@@ -8,13 +10,16 @@ use std::collections::HashMap;
 /// key index.
 #[derive(Clone, Default)]
 pub struct Record {
+    /// Entries in insertion (presentation) order; keys are unique.
     entries: Vec<(String, Value)>,
+    /// Key-to-position index, present only above [`INDEX_THRESHOLD`] entries.
     index: Option<HashMap<String, usize>>,
 }
 
 /// Records with more entries than this keep a hash index.
 const INDEX_THRESHOLD: usize = 16;
 
+/// Error from inserting a key that is already present; holds that key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DuplicateKey(pub String);
 
@@ -34,11 +39,13 @@ impl std::fmt::Debug for Record {
 }
 
 impl Record {
+    /// An empty record.
     #[must_use]
     pub fn new() -> Self {
         Record::default()
     }
 
+    /// An empty record with room for `n` entries.
     #[must_use]
     pub fn with_capacity(n: usize) -> Self {
         Record {
@@ -61,16 +68,19 @@ impl Record {
         Ok(r)
     }
 
+    /// Number of entries.
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    /// Whether the record has no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    /// Position of `key` in `entries`, via the index when there is one.
     fn position(&self, key: &str) -> Option<usize> {
         match &self.index {
             Some(ix) => ix.get(key).copied(),
@@ -78,10 +88,12 @@ impl Record {
         }
     }
 
+    /// Rebuild the index from `entries`, or drop it at or below the threshold.
     fn reindex(&mut self) {
         self.index = (self.entries.len() > INDEX_THRESHOLD).then(|| self.entries.iter().enumerate().map(|(i, (k, _))| (k.clone(), i)).collect());
     }
 
+    /// Append an entry without a duplicate check, keeping the index in sync.
     fn push(&mut self, key: String, value: Value) {
         if let Some(ix) = &mut self.index {
             ix.insert(key.clone(), self.entries.len());
@@ -94,15 +106,18 @@ impl Record {
         }
     }
 
+    /// The value for `key`.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.position(key).map(|i| &self.entries[i].1)
     }
 
+    /// Mutable access to the value for `key`.
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
         self.position(key).map(move |i| &mut self.entries[i].1)
     }
 
+    /// Whether `key` is present.
     #[must_use]
     pub fn contains_key(&self, key: &str) -> bool {
         self.position(key).is_some()
@@ -134,6 +149,7 @@ impl Record {
         }
     }
 
+    /// Remove `key`, returning its value; later entries keep their relative order.
     pub fn remove(&mut self, key: &str) -> Option<Value> {
         let idx = self.position(key)?;
         let v = self.entries.remove(idx).1;
@@ -144,18 +160,22 @@ impl Record {
         Some(v)
     }
 
+    /// Entries in presentation order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
         self.entries.iter().map(|(k, v)| (k, v))
     }
 
+    /// Entries in presentation order, with mutable values.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut Value)> {
         self.entries.iter_mut().map(|(k, v)| (&*k, v))
     }
 
+    /// Keys in presentation order.
     pub fn keys(&self) -> impl Iterator<Item = &String> {
         self.entries.iter().map(|(k, _)| k)
     }
 
+    /// Sort entries by key in UTF-8 byte order (non-recursive; see [`Value::sort_keys`]).
     pub fn sort_keys(&mut self) {
         self.entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
         if self.index.is_some() {
@@ -163,6 +183,7 @@ impl Record {
         }
     }
 
+    /// The entries in presentation order.
     #[must_use]
     pub fn into_entries(self) -> Vec<(String, Value)> {
         self.entries

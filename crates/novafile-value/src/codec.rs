@@ -6,31 +6,54 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Write as _;
 
+/// Type tags: the first byte of every encoded value (spec §5.1).
 pub(crate) mod tag {
+    /// `null`.
     pub const NULL: u8 = 0x00;
+    /// Boolean `false`.
     pub const FALSE: u8 = 0x01;
+    /// Boolean `true`.
     pub const TRUE: u8 = 0x02;
+    /// Integer: zigzag varint.
     pub const INT: u8 = 0x03;
+    /// Float: IEEE 754 binary64, big-endian; NaN is written as the canonical quiet NaN.
     pub const FLOAT: u8 = 0x04;
+    /// Decimal: zigzag varint coefficient, then zigzag varint exponent.
     pub const DECIMAL: u8 = 0x05;
+    /// String: string header varint (literal length or back-reference), then UTF-8 bytes.
     pub const STRING: u8 = 0x06;
+    /// Bytes: varint length, then the raw bytes.
     pub const BYTES: u8 = 0x07;
+    /// Timestamp: zigzag varint Unix seconds, then varint nanoseconds.
     pub const TIMESTAMP: u8 = 0x08;
+    /// Duration: zigzag varint nanoseconds.
     pub const DURATION: u8 = 0x09;
+    /// List: varint count, then the elements.
     pub const LIST: u8 = 0x0A;
+    /// Tuple: varint count, then the elements.
     pub const TUPLE: u8 = 0x0B;
+    /// Set: varint count, then the elements (sorted by canonical bytes in canonical form).
     pub const SET: u8 = 0x0C;
+    /// Record: varint count, then key string and value per field.
     pub const RECORD: u8 = 0x0D;
+    /// Map: varint count, then key and value per entry.
     pub const MAP: u8 = 0x0E;
+    /// Unit variant: the variant name as a string.
     pub const UNIT_VARIANT: u8 = 0x0F;
+    /// Variant with payload: the variant name as a string, then the payload value.
     pub const VARIANT: u8 = 0x10;
+    /// Rational: zigzag varint numerator, then varint (positive) denominator.
     pub const RATIONAL: u8 = 0x11;
     // 0x12 is reserved for tensors (https://github.com/novafile/spec/blob/main/proposals/0001-tensors.md).
+    /// Record list (spec §5.3): row count, field count, field names, a dense/sparse
+    /// mode byte, then per row an optional presence bitmap and the present values.
     pub const RECORD_LIST: u8 = 0x13;
 }
 
+/// The single NaN bit pattern written for every NaN, so all NaNs encode (and compare) equal.
 const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
 
+/// Switches for [`encode`]; the default writes plain, non-canonical output.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EncodeOptions {
     /// Sort records/sets/maps canonically. Implies `dedupe_strings = false`.
@@ -80,6 +103,7 @@ fn table_shape(items: &[Value]) -> Option<Vec<&str>> {
     (fields.len() <= 256 && present * 2 >= fields.len() * items.len()).then_some(fields)
 }
 
+/// Append `v` as an unsigned LEB128 varint.
 fn put_varint(out: &mut Vec<u8>, mut v: u128) {
     loop {
         let byte = (v & 0x7F) as u8;
@@ -93,6 +117,7 @@ fn put_varint(out: &mut Vec<u8>, mut v: u128) {
     }
 }
 
+/// Number of bytes [`put_varint`] writes for `v`.
 fn varint_len(mut v: u128) -> usize {
     let mut n = 1;
     while v >= 0x80 {
@@ -104,21 +129,31 @@ fn varint_len(mut v: u128) -> usize {
 }
 
 // Zigzag maps by bit reinterpretation: every i128 has exactly one u128 image.
+/// Zigzag-encode a signed integer so small magnitudes get short varints.
 fn zigzag(v: i128) -> u128 {
     ((v << 1) ^ (v >> 127)).cast_unsigned()
 }
 
+/// Inverse of [`zigzag`].
 fn unzigzag(v: u128) -> i128 {
     (v >> 1).cast_signed() ^ -(v & 1).cast_signed()
 }
 
+/// Encoder state for one [`encode`] call.
 struct Encoder {
+    /// Output switches.
     opts: EncodeOptions,
+    /// Strings already written as literals, mapped to their string-table index.
+    /// Only populated when back-references may be emitted.
     table: HashMap<String, usize>,
+    /// Index the next literal string receives in the string table.
     next_index: usize,
 }
 
 impl Encoder {
+    /// Write a string header and body, or a back-reference when it is shorter.
+    ///
+    /// Every literal advances the string-table index, matching the decoder.
     fn string(&mut self, out: &mut Vec<u8>, s: &str) {
         if self.opts.dedupe_strings
             && !self.opts.canonical
@@ -143,12 +178,14 @@ impl Encoder {
         self.next_index += 1;
     }
 
+    /// Canonical encodings of `items`, sorted bytewise (canonical set order).
     fn sorted_children<'a, I: Iterator<Item = &'a Value>>(items: I) -> Vec<Vec<u8>> {
         let mut parts: Vec<Vec<u8>> = items.map(canonical_bytes).collect();
         parts.sort();
         parts
     }
 
+    /// Append the encoding of `v` to `out`.
     #[expect(clippy::too_many_lines, reason = "flat dispatcher over every Value variant")]
     fn value(&mut self, out: &mut Vec<u8>, v: &Value) {
         match v {
@@ -317,9 +354,12 @@ pub fn canonical_bytes(v: &Value) -> Vec<u8> {
     )
 }
 
+/// Resource bounds the decoder enforces on untrusted input.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
+    /// Maximum nesting depth of containers and variant payloads.
     pub max_depth: usize,
+    /// Maximum number of literal strings in the back-reference table.
     pub max_strings: usize,
 }
 
@@ -332,9 +372,12 @@ impl Default for Limits {
     }
 }
 
+/// A failure to decode a binary value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodeError {
+    /// Byte offset in the input where the problem was detected.
     pub offset: usize,
+    /// Human-readable description of the problem.
     pub message: String,
 }
 
@@ -346,15 +389,22 @@ impl fmt::Display for DecodeError {
 
 impl std::error::Error for DecodeError {}
 
+/// Decoder state for one [`decode_prefix`] call.
 struct Decoder<'a> {
+    /// The whole input.
     buf: &'a [u8],
+    /// Offset of the next unread byte.
     pos: usize,
+    /// Current container nesting depth.
     depth: usize,
+    /// Bounds checked while decoding.
     limits: Limits,
+    /// Literal strings seen so far, indexed by back-references.
     strings: Vec<String>,
 }
 
 impl<'a> Decoder<'a> {
+    /// Fail with `msg` at the current offset.
     fn err<T>(&self, msg: impl Into<String>) -> Result<T, DecodeError> {
         Err(DecodeError {
             offset: self.pos,
@@ -362,6 +412,7 @@ impl<'a> Decoder<'a> {
         })
     }
 
+    /// Read one byte.
     fn byte(&mut self) -> Result<u8, DecodeError> {
         let b = *self.buf.get(self.pos).ok_or(DecodeError {
             offset: self.pos,
@@ -371,6 +422,7 @@ impl<'a> Decoder<'a> {
         Ok(b)
     }
 
+    /// Read the next `n` bytes, failing if fewer remain.
     fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
         if self.buf.len() - self.pos < n {
             return self.err("length exceeds input");
@@ -381,6 +433,10 @@ impl<'a> Decoder<'a> {
         Ok(s)
     }
 
+    /// Read an unsigned LEB128 varint.
+    ///
+    /// Rejects values that overflow `u128` and non-minimal encodings (a trailing
+    /// zero byte), so each integer has exactly one encoding.
     fn varint(&mut self) -> Result<u128, DecodeError> {
         let mut v: u128 = 0;
         let mut shift = 0;
@@ -403,6 +459,8 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    /// Read an element count, rejecting counts larger than the remaining input
+    /// (every element takes at least one byte).
     fn count(&mut self) -> Result<usize, DecodeError> {
         let n = self.varint()?;
         if n > (self.buf.len() - self.pos) as u128 {
@@ -412,6 +470,8 @@ impl<'a> Decoder<'a> {
         Ok(n as usize)
     }
 
+    /// Read a string header and resolve it: a literal is validated as UTF-8 and
+    /// appended to the string table, a back-reference is looked up in it.
     fn string(&mut self) -> Result<String, DecodeError> {
         let h = self.varint()?;
         if h & 1 == 1 {
@@ -443,6 +503,8 @@ impl<'a> Decoder<'a> {
         Ok(s)
     }
 
+    /// Decode one value, enforcing [`Limits`] and canonical-form invariants
+    /// (normalized decimals and rationals, unique set elements, map keys and record keys).
     #[expect(clippy::too_many_lines, reason = "flat dispatcher over every wire tag")]
     fn value(&mut self) -> Result<Value, DecodeError> {
         let start = self.pos;
@@ -680,6 +742,7 @@ pub fn decode(buf: &[u8]) -> Result<Value, DecodeError> {
 pub struct Revision(pub [u8; 32]);
 
 impl Revision {
+    /// The digest as 64 lowercase hex digits, without the `sha256:` prefix.
     #[must_use]
     pub fn hex(&self) -> String {
         self.0.iter().fold(String::with_capacity(64), |mut s, b| {
@@ -709,6 +772,7 @@ impl fmt::Debug for Revision {
     }
 }
 
+/// The [`Revision`] of `v`: SHA-256 of its canonical encoding.
 #[must_use]
 pub fn revision(v: &Value) -> Revision {
     Revision(Sha256::digest(canonical_bytes(v)).into())

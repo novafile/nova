@@ -16,6 +16,8 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::path::{Component, PathBuf};
 
+/// A template that failed to parse, bind its arguments, import, or evaluate; the message
+/// says why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TemplateError(pub String);
 
@@ -27,6 +29,7 @@ impl fmt::Display for TemplateError {
 
 impl std::error::Error for TemplateError {}
 
+/// Shorthand for returning a [`TemplateError`] with message `m`.
 fn err<T>(m: impl Into<String>) -> Result<T, TemplateError> {
     Err(TemplateError(m.into()))
 }
@@ -54,6 +57,7 @@ impl Loader for NoImports {
 
 /// Reads relative paths beneath `root`; absolute paths and `..` escapes are refused.
 pub struct FsLoader {
+    /// Directory that imports resolve against and may not escape.
     pub root: PathBuf,
 }
 
@@ -87,10 +91,12 @@ impl Loader for FsLoader {
     }
 }
 
+/// Resource limits that keep every render bounded.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     /// Maximum number of value nodes produced (guards against exponential `@let` reuse).
     pub max_nodes: usize,
+    /// Maximum nesting depth of `@import` chains.
     pub max_import_depth: usize,
 }
 
@@ -103,10 +109,13 @@ impl Default for Limits {
     }
 }
 
+/// Settings for [`render`].
 pub struct Options<'a> {
+    /// Resolves `@import` paths; [`NoImports`] by default.
     pub loader: &'a dyn Loader,
     /// Schema whose named types parameters may use (e.g. `list<Service>`).
     pub schema: Option<&'a Schema>,
+    /// Output budget and import depth.
     pub limits: Limits,
 }
 
@@ -132,6 +141,8 @@ pub fn render(src: &str, args: &Record, opts: &Options) -> Result<Value, Templat
     render_inner(src, None, args, opts, &mut Vec::new(), &mut 0)
 }
 
+/// Render `src`, identified by `id` when imported. `stack` holds the importing documents
+/// (for cycle detection) and `budget` the nodes produced so far, shared across imports.
 fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stack: &mut Vec<String>, budget: &mut usize) -> Result<Value, TemplateError> {
     let where_ = || id.map(|i| format!(" in {i}")).unwrap_or_default();
     let doc = parse_document(src).map_err(|e| TemplateError(format!("{e}{}", where_())))?;
@@ -209,12 +220,17 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stac
     ev.node(&doc.body)
 }
 
+/// Evaluator state for one template.
 struct Eval<'b> {
+    /// Bindings, innermost scope last; `@for` pushes a scope per iteration.
     scopes: Vec<Vec<(String, Value)>>,
+    /// Nodes produced so far, shared with importing templates.
     budget: &'b mut usize,
+    /// Maximum number of nodes (from [`Limits::max_nodes`]).
     max: usize,
 }
 
+/// Number of value nodes in `v`, counting containers and their contents.
 fn size(v: &Value) -> usize {
     1 + match v {
         Value::List(l) | Value::Tuple(l) | Value::Set(l) => l.iter().map(size).sum(),
@@ -226,6 +242,7 @@ fn size(v: &Value) -> usize {
 }
 
 impl Eval<'_> {
+    /// Count `n` produced nodes against the budget; fails once it is exceeded.
     fn charge(&mut self, n: usize) -> Result<(), TemplateError> {
         *self.budget += n;
         if *self.budget > self.max {
@@ -235,6 +252,7 @@ impl Eval<'_> {
         Ok(())
     }
 
+    /// Bind `name` in the innermost scope; redefining a name in the same scope is an error.
     fn bind(&mut self, name: &str, v: Value) -> Result<(), TemplateError> {
         let scope = self.scopes.last_mut().unwrap();
         if scope.iter().any(|(n, _)| n == name) {
@@ -245,6 +263,7 @@ impl Eval<'_> {
         Ok(())
     }
 
+    /// Resolve a `$name.path` reference, searching from the innermost scope outwards.
     fn lookup(&mut self, p: &Path) -> Result<Value, TemplateError> {
         let Some((Segment::Field(name), rest)) = p.0.split_first() else {
             return err(format!("invalid reference ${p}"));
@@ -263,6 +282,7 @@ impl Eval<'_> {
         Ok(v)
     }
 
+    /// Interpolate a string: references must be scalars and are inserted in their text form.
     fn text(&mut self, parts: &[Part]) -> Result<String, TemplateError> {
         let mut s = String::new();
         for p in parts {
@@ -291,6 +311,7 @@ impl Eval<'_> {
         Ok(s)
     }
 
+    /// Evaluate an `@if` condition; plain tests must be bools.
     fn cond(&mut self, c: &Cond) -> Result<bool, TemplateError> {
         Ok(match c {
             Cond::Test(n) => match self.node(n)? {
@@ -335,6 +356,7 @@ impl Eval<'_> {
         Ok(out)
     }
 
+    /// Evaluate list items into `out`, expanding spreads, `@if` and `@for`.
     fn items(&mut self, items: &[Item], out: &mut Vec<Value>) -> Result<(), TemplateError> {
         for it in items {
             match it {
@@ -401,6 +423,7 @@ impl Eval<'_> {
                         ev.entries(body, &mut r, &mut ex)?;
                         Ok(r)
                     })?;
+
                     for r in parts {
                         for (k, v) in r.into_entries() {
                             if explicit.contains(&k) {
@@ -418,6 +441,7 @@ impl Eval<'_> {
         Ok(())
     }
 
+    /// Evaluate a node to a value, charging every produced node against the budget.
     fn node(&mut self, n: &Node) -> Result<Value, TemplateError> {
         self.charge(1)?;
         Ok(match n {

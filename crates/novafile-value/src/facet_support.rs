@@ -10,6 +10,8 @@
 
 use crate::{Decimal, Duration, Rational, Timestamp, Value};
 
+/// Implement the `String` proxy conversions facet needs for each listed type:
+/// `TryFrom<String>` via `parse`, `From<&T> for String` via `Display`.
 macro_rules! text_proxy {
     ($($t:ty),*) => {$(
         impl TryFrom<String> for $t {
@@ -39,7 +41,9 @@ text_proxy!(Timestamp, Duration, Decimal, Rational);
 // no fields or variants that reflection could misuse.
 unsafe impl facet::Facet<'_> for Value {
     const SHAPE: &'static facet::Shape = &const {
+        /// Debug and equality, delegated to `Value`'s own impls.
         const VTABLE: facet::VTableDirect = facet::vtable_direct!(Value => Debug, PartialEq);
+        /// Cloning, delegated to `Value`'s `Clone` impl.
         const OPS: facet::TypeOpsDirect = facet::type_ops_direct!(Value => Clone);
         facet::ShapeBuilder::for_sized::<Value>("Value")
             .module_path("novafile_value")

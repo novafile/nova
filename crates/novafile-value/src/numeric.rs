@@ -9,14 +9,22 @@ use crate::Value;
 use num_bigint::{BigInt, Sign};
 use std::cmp::Ordering;
 
+/// A numeric value in a common exact form for [`numeric_cmp`].
 enum Num {
+    /// Negative infinity (from a float).
     NegInf,
+    /// Positive infinity (from a float).
     PosInf,
     /// sign * num / den * 10^exp10, with num, den > 0 (or num == 0).
     Finite {
+        /// Signed numerator; carries the sign of the value.
         num: BigInt,
+        /// Positive denominator.
         den: BigInt,
+        /// Decimal exponent, kept separate so huge exponents need no big powers of ten.
         exp10: i64,
+        /// Approximate `log10` of the magnitude, used to decide far-apart values without
+        /// exact arithmetic; `-inf` for zero.
         approx_log10: f64,
     },
 }
@@ -25,6 +33,7 @@ enum Num {
     clippy::cast_precision_loss,
     reason = "an approximation is intended; the u64 digit is only cast when it has at most 53 bits"
 )]
+/// Approximate `log10(|x|)`; `-inf` for zero.
 fn digits_log10(x: &BigInt) -> f64 {
     // log10 of a big integer, approximately (good to well under 1 decade).
     let bits = x.bits() as f64;
@@ -37,6 +46,8 @@ fn digits_log10(x: &BigInt) -> f64 {
     bits * std::f64::consts::LOG10_2
 }
 
+/// Convert a numeric value to [`Num`]; `None` for NaN and non-numeric kinds.
+/// Floats convert exactly (mantissa over a power of two).
 fn of(v: &Value) -> Option<Num> {
     Some(match v {
         Value::Int(i) => {
@@ -112,6 +123,7 @@ fn of(v: &Value) -> Option<Num> {
     })
 }
 
+/// Sign of `n` as `-1`, `0` or `1`.
 fn sign(n: &BigInt) -> i8 {
     match n.sign() {
         Sign::Minus => -1,
@@ -125,6 +137,7 @@ fn sign(n: &BigInt) -> i8 {
     clippy::cast_sign_loss,
     reason = "callers pass a non-negative exponent gap, bounded to a few dozen by the magnitude check"
 )]
+/// Multiply `n` by `10^exp10`; `exp10` must be non-negative and small.
 fn scale(n: BigInt, exp10: i64) -> BigInt {
     n * BigInt::from(10).pow(exp10 as u32)
 }

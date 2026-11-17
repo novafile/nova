@@ -1,3 +1,7 @@
+//! YAML adapter tests: core-schema resolution, tags, alias expansion and
+//! its budget, merge-key rejection, string quoting, block layout and
+//! lossy-mapping reports.
+
 use std::fmt::Write as _;
 
 use novafile_formats::yaml::{from_str, from_str_multi, to_string};

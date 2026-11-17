@@ -1,3 +1,5 @@
+//! Serde round trips through NOVA text, binary and `Value`, including error paths and JSON interop.
+
 use novafile_serde::{Profile, from_slice, from_str, from_value, to_string, to_string_with, to_value, to_vec};
 use novafile_value::{Decimal, Rational, Timestamp, Value};
 use serde::{Deserialize, Serialize};

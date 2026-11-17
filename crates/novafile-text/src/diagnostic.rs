@@ -14,18 +14,24 @@ use std::fmt;
 /// A diagnostic with source code, labels, help and related diagnostics.
 #[derive(Debug, Clone)]
 pub struct SourceDiagnostic {
+    /// Diagnostic code, e.g. `nova::syntax`.
     pub code: &'static str,
+    /// The headline message.
     pub message: String,
+    /// Advice shown below the source snippet.
     pub help: Option<String>,
     /// `(byte offset, length, label)`.
     pub labels: Vec<(usize, usize, String)>,
+    /// Further diagnostics reported with this one (e.g. one per issue).
     pub related: Vec<SourceDiagnostic>,
     /// Defaults to error.
     pub severity: Option<miette::Severity>,
+    /// The named source the labels point into.
     src: NamedSource<String>,
 }
 
 impl SourceDiagnostic {
+    /// A diagnostic without labels or help for the source `src`, displayed as `name`.
     pub fn new(code: &'static str, message: impl Into<String>, name: &str, src: &str) -> Self {
         SourceDiagnostic {
             code,
@@ -38,12 +44,14 @@ impl SourceDiagnostic {
         }
     }
 
+    /// Add a label covering `len` bytes at `offset`.
     #[must_use]
     pub fn with_label(mut self, offset: usize, len: usize, label: impl Into<String>) -> Self {
         self.labels.push((offset, len, label.into()));
         self
     }
 
+    /// Set the help text.
     #[must_use]
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
@@ -94,6 +102,8 @@ impl SourceDiagnostic {
     }
 }
 
+/// Length in bytes of the token at `offset`: up to whitespace or a flow delimiter, else one
+/// character (none at a line break).
 fn token_len(src: &str, offset: usize) -> usize {
     let rest = src.get(offset..).unwrap_or("");
     let n = rest.find(|c: char| c.is_whitespace() || ",[]{}()".contains(c)).unwrap_or(rest.len());
@@ -106,6 +116,7 @@ fn token_len(src: &str, offset: usize) -> usize {
     n.min(rest.len())
 }
 
+/// Byte offset of a 1-based line and character column, clamped to the end of the line or source.
 fn offset_of(src: &str, line: usize, col: usize) -> usize {
     let mut start = 0;
     for _ in 1..line {

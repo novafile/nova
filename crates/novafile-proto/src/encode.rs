@@ -7,8 +7,16 @@ use novafile_schema::Schema;
 use novafile_text::Segment;
 use novafile_value::Value;
 
+/// Nanoseconds per second, for splitting durations into `seconds` and `nanos`.
 const NANOS_PER_SEC: i128 = 1_000_000_000;
 
+/// Encode `value` as the schema's root message. The value is resolved against
+/// the schema first, so lexical conversions apply and defaults are written.
+///
+/// # Errors
+///
+/// Fails if the schema has no Protobuf mapping, the value does not match the
+/// schema, or a value does not fit its wire type; the message names the path.
 pub(crate) fn encode(value: &Value, schema: &Schema) -> Result<Vec<u8>, String> {
     let plan = Plan::new(schema)?;
     // Resolution applies the lexical conversions of spec §6.3 (so `"active"`
@@ -22,11 +30,16 @@ pub(crate) fn encode(value: &Value, schema: &Schema) -> Result<Vec<u8>, String> 
     Ok(buf)
 }
 
+/// Writes values as Protobuf messages according to a schema.
 struct Encoder<'s> {
+    /// The schema the value was resolved against; used to classify fields.
     schema: &'s Schema,
 }
 
 impl<'s> Encoder<'s> {
+    /// Write the fields of message `m` for `v` (without an outer tag or length).
+    /// Record fields are written in field-number order; absent fields are
+    /// skipped. `depth` is the message nesting depth, capped at [`MAX_DEPTH`].
     fn message(&self, buf: &mut Vec<u8>, v: &Value, m: Message<'s>, depth: usize) -> Result<(), Fail> {
         if depth > MAX_DEPTH {
             return Err(Fail::new(format!("nesting is deeper than {MAX_DEPTH} messages")));
@@ -90,6 +103,9 @@ impl<'s> Encoder<'s> {
         }
     }
 
+    /// Write record field `number` with value `v`. `null` writes nothing (absent
+    /// reads back as `null`) and is only allowed for nullable types; empty
+    /// repeated fields are omitted, and numeric repeated fields are packed.
     fn field(&self, buf: &mut Vec<u8>, number: u32, v: &Value, c: Classified<'s>, depth: usize) -> Result<(), Fail> {
         if let Value::Null = v {
             // proto3: an unset field reads back as null.
@@ -146,6 +162,8 @@ impl<'s> Encoder<'s> {
         }
     }
 
+    /// Write one tagged value of field `number`: a scalar directly, a message
+    /// length-delimited.
     fn single(&self, buf: &mut Vec<u8>, number: u32, v: &Value, s: Single<'s>, depth: usize) -> Result<(), Fail> {
         match s {
             Single::Scalar(sc) => {
@@ -199,6 +217,7 @@ fn scalar(buf: &mut Vec<u8>, v: &Value, s: Scalar<'_>) -> Result<(), Fail> {
     Ok(())
 }
 
+/// The error for a value of the wrong kind.
 fn mismatch(expected: &str, v: &Value) -> Fail {
     Fail::new(format!("expected {expected}, found {}", v.kind()))
 }

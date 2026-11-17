@@ -1,20 +1,35 @@
+//! The schema model (spec §6.1): type expressions, constraints and named
+//! definitions, plus their canonical text rendering.
+
 use novafile_value::Value;
 use std::fmt;
 
+/// An integer type: `int` (any integer the value model holds) or a
+/// fixed-width type that adds range bounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntKind {
+    /// `int`: no bounds beyond the value model's `i128`.
     Int,
+    /// `i8`: signed 8-bit.
     I8,
+    /// `i16`: signed 16-bit.
     I16,
+    /// `i32`: signed 32-bit.
     I32,
+    /// `i64`: signed 64-bit.
     I64,
+    /// `u8`: unsigned 8-bit.
     U8,
+    /// `u16`: unsigned 16-bit.
     U16,
+    /// `u32`: unsigned 32-bit.
     U32,
+    /// `u64`: unsigned 64-bit.
     U64,
 }
 
 impl IntKind {
+    /// Inclusive `(min, max)` of the kind; `int` spans all of `i128`.
     #[must_use]
     pub fn bounds(self) -> (i128, i128) {
         match self {
@@ -30,6 +45,7 @@ impl IntKind {
         }
     }
 
+    /// The schema keyword for this kind (`int`, `i8`, …).
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -45,6 +61,7 @@ impl IntKind {
         }
     }
 
+    /// The kind for a schema keyword, or `None` if `n` is not an integer type name.
     #[must_use]
     pub fn from_name(n: &str) -> Option<Self> {
         Some(match n {
@@ -62,23 +79,40 @@ impl IntKind {
     }
 }
 
+/// The shape of a type expression, without nullability or constraints.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TypeKind {
+    /// `any`: accepts every value.
     Any,
+    /// `null`: only the null value.
     Null,
+    /// `bool`.
     Bool,
+    /// An integer type, `int` or fixed-width.
     Int(IntKind),
+    /// `float`: IEEE 754 double; integers up to 2^53 in magnitude resolve to it.
     Float,
+    /// `decimal`: exact base-10 number; integers, finite floats and decimal strings resolve to it.
     Decimal,
+    /// `rational`: exact fraction; integers, decimals and rational strings resolve to it.
     Rational,
+    /// `string`.
     String,
+    /// `bytes`; a string resolves to it as standard base64.
     Bytes,
+    /// `timestamp`; a string in timestamp syntax resolves to it.
     Timestamp,
+    /// `duration`; a string in duration syntax resolves to it.
     Duration,
+    /// `list<T>` (also written `T[]`).
     List(Box<TypeRef>),
+    /// `set<T>`: distinct elements; a list without duplicates resolves to it.
     Set(Box<TypeRef>),
+    /// `map<K, V>`; a record resolves to it, with its field names as keys.
     Map(Box<TypeRef>, Box<TypeRef>),
+    /// `(A, B, …)`: fixed length, one type per position; `(T,)` is the 1-tuple.
     Tuple(Vec<TypeRef>),
+    /// A reference to a record, enum or alias definition by name.
     Named(String),
 }
 
@@ -115,6 +149,7 @@ impl Num {
         matches!(v, Value::Int(_) | Value::Float(_) | Value::Decimal(_) | Value::Rational(_)).then(|| Num(v.clone()))
     }
 
+    /// An integer bound.
     #[must_use]
     pub fn int(i: i128) -> Num {
         Num(Value::Int(i))
@@ -158,6 +193,7 @@ pub enum LenUnit {
 }
 
 impl LenUnit {
+    /// The unit's keyword in `@len(lo..hi, unit)`.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -168,6 +204,7 @@ impl LenUnit {
         }
     }
 
+    /// The unit for an `@len` keyword, or `None` if `s` names none.
     #[must_use]
     pub fn from_name(s: &str) -> Option<LenUnit> {
         Some(match s {
@@ -179,6 +216,7 @@ impl LenUnit {
         })
     }
 
+    /// The length of `s` in this unit.
     #[must_use]
     pub fn measure(self, s: &str) -> usize {
         match self {
@@ -190,21 +228,33 @@ impl LenUnit {
     }
 }
 
+/// Type-level attributes `@range` and `@len` (spec §6.1).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Constraints {
+    /// `@range(lo..hi)`: inclusive numeric bounds, either side optional.
+    /// Non-numeric values are not checked.
     pub range: Option<(Option<Num>, Option<Num>)>,
+    /// `@len(lo..hi)`: inclusive length bounds, either side optional. Applies to
+    /// strings, bytes, lists, sets, maps and records.
     pub len: Option<(Option<u64>, Option<u64>)>,
+    /// What `@len` counts for strings; other values always count elements.
     pub len_unit: LenUnit,
 }
 
+/// A type expression as used for a field, element, payload or alias: kind,
+/// nullability and constraints.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeRef {
+    /// The underlying type.
     pub kind: TypeKind,
+    /// Written `T?`: `null` is accepted as well.
     pub nullable: bool,
+    /// Attributes written after the type.
     pub constraints: Constraints,
 }
 
 impl TypeRef {
+    /// A non-nullable, unconstrained type of the given kind.
     #[must_use]
     pub fn new(kind: TypeKind) -> Self {
         TypeRef {
@@ -215,65 +265,95 @@ impl TypeRef {
     }
 }
 
+/// One field of a `record` definition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FieldDef {
+    /// The field name as written in data.
     pub name: String,
+    /// The field's type.
     pub ty: TypeRef,
+    /// Written `name?:`: the field may be absent. Unlike a nullable type, this
+    /// does not allow `null` when the field is present.
     pub optional: bool,
+    /// `= value`: the value of an absent field. [`Schema::resolve`] fills it in;
+    /// [`Schema::validate`] only accepts its absence.
     pub default: Option<Value>,
+    /// `@key`: part of the identity that must be unique among the records of a
+    /// list or set (spec §6.2). Key fields are required and non-null.
     pub key: bool,
+    /// `@id(n)`: stable field identity, unique within the record. Evolution
+    /// checks match fields by it across renames.
     pub id: Option<u32>,
+    /// `@deprecated`: informational only; validation ignores it.
     pub deprecated: bool,
 }
 
+/// A `record` definition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordDef {
+    /// Fields in declaration order, which positional encodings follow.
     pub fields: Vec<FieldDef>,
+    /// `@open`: undeclared fields are accepted and kept instead of reported.
     pub open: bool,
 }
 
 impl RecordDef {
+    /// The field named `name`, if declared.
     #[must_use]
     pub fn field(&self, name: &str) -> Option<&FieldDef> {
         self.fields.iter().find(|f| f.name == name)
     }
 
+    /// Names of the `@key` fields, in declaration order.
     #[must_use]
     pub fn key_fields(&self) -> Vec<&str> {
         self.fields.iter().filter(|f| f.key).map(|f| f.name.as_str()).collect()
     }
 }
 
+/// One variant of an `enum` definition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VariantDef {
+    /// The variant tag.
     pub name: String,
+    /// Payload type of a `Tag(T)` variant; `None` for a bare tag.
     pub payload: Option<TypeRef>,
 }
 
+/// A named definition.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)] // definitions are few; boxing would only add indirection
 pub enum Def {
+    /// `record Name:` with indented fields.
     Record(RecordDef),
+    /// `enum Name:` or `enum Name = a | b`: the variants in declaration order.
     Enum(Vec<VariantDef>),
+    /// `type Name = T`.
     Alias(TypeRef),
 }
 
+/// A parsed schema: optional identity, optional `@root`, and named definitions.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Schema {
     /// Schema name and `SemVer` version from `@schema name@X.Y.Z` (spec §6.7).
     /// Anonymous schemas (no `@schema` line) cannot be referenced or evolved.
     pub name: Option<String>,
+    /// The version from the `@schema` line; set together with `name`.
     pub version: Option<crate::Version>,
+    /// `@root`: the definition documents resolve against, if any.
     pub root: Option<String>,
+    /// Definitions in declaration order; names are unique.
     pub defs: Vec<(String, Def)>,
 }
 
 impl Schema {
+    /// The definition named `name`, if any.
     #[must_use]
     pub fn def(&self, name: &str) -> Option<&Def> {
         self.defs.iter().find(|(n, _)| n == name).map(|(_, d)| d)
     }
 
+    /// The `@root` definition as a named type, if the schema has a root.
     #[must_use]
     pub fn root_type(&self) -> Option<TypeRef> {
         self.root.as_ref().map(|r| TypeRef::new(TypeKind::Named(r.clone())))

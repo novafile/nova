@@ -10,7 +10,9 @@ use facet_reflect::{DeserStrategy, Partial};
 use novafile_value::{Decimal, Duration, Rational, Record, Timestamp, Value};
 use std::borrow::Cow;
 
+/// An owned value under construction; nothing is borrowed from the input.
 type P = Partial<'static, false>;
+/// The outcome of filling a frame: the partial to continue with, or the error.
 type R = Result<P, Error>;
 
 /// Build a `T` from a value.
@@ -22,22 +24,37 @@ pub(crate) fn build<T: Facet<'static>>(v: Value) -> Result<T, Error> {
 /// What to do with the current frame, copied out of facet's precomputed plan
 /// so the `Partial` can move on.
 enum Plan {
+    /// The field has a `proxy` attribute: fill the proxy type, then convert.
     FieldProxy,
+    /// The type has a container-level proxy: fill the proxy type, then convert.
     ContainerProxy,
+    /// A smart pointer, `Cow` or reference.
     Pointer,
+    /// A transparent wrapper, filled through its inner type.
     Transparent,
+    /// A scalar, with its primitive type when facet knows it.
     Scalar(Option<ScalarType>),
+    /// A struct or tuple.
     Struct,
+    /// An enum.
     Enum,
+    /// An `Option`; null becomes `None`.
     Option,
+    /// A `Result`, externally tagged as `Ok` or `Err`.
     Result,
+    /// A growable list such as `Vec`.
     List,
+    /// A fixed-size array of the given length.
     Array(usize),
+    /// A map, filled from a record or a NOVA map.
     Map,
+    /// A set.
     Set,
+    /// A type this module cannot build; the text says what kind.
     Unsupported(&'static str),
 }
 
+/// Classify the current frame by facet's deserialization strategy.
 fn plan(wip: &P) -> Plan {
     match wip.deser_strategy() {
         Some(DeserStrategy::FieldProxy) => Plan::FieldProxy,
@@ -60,6 +77,7 @@ fn plan(wip: &P) -> Plan {
     }
 }
 
+/// Fill the current frame from a value that is not a map key.
 fn fill(wip: P, v: Value) -> R {
     fill_as(wip, v, false)
 }
@@ -118,12 +136,15 @@ fn unexpected(v: &Value) -> String {
     }
 }
 
+/// A serde-style "invalid type" error for `v`, naming what was expected.
 fn invalid(v: &Value, expected: impl std::fmt::Display) -> Error {
     Error::new(format!("invalid type: {}, expected {expected}", unexpected(v)))
 }
 
 // ---------------------------------------------------------------- NOVA kinds
 
+/// Whether the shape is [`Value`], a NOVA rich kind or `std::time::Duration`,
+/// which [`nova_kind`] fills directly instead of following facet's plan.
 fn is_nova_kind(shape: &Shape) -> bool {
     [
         Value::SHAPE.id,
@@ -178,6 +199,7 @@ fn nova_kind(wip: P, v: Value) -> R {
     })
 }
 
+/// Read a NOVA duration from a duration value or its string spelling.
 fn duration(v: Value) -> Result<Duration, Error> {
     match v {
         Value::Duration(d) => Ok(d),
@@ -188,6 +210,8 @@ fn duration(v: Value) -> Result<Duration, Error> {
 
 // ------------------------------------------------------------------- scalars
 
+/// Set an integer target of type `T`; an out-of-range `i` fails with a
+/// serde-style message naming the target type `name`.
 fn int<T>(wip: P, i: i128, name: &str) -> R
 where
     T: TryFrom<i128> + Facet<'static>,
@@ -198,6 +222,7 @@ where
     }
 }
 
+/// Whether the scalar type is one of the integer primitives.
 fn is_integer(st: ScalarType) -> bool {
     use ScalarType as S;
     matches!(
@@ -206,6 +231,8 @@ fn is_integer(st: ScalarType) -> bool {
     )
 }
 
+/// Fill a scalar target. With `key` set, a string also converts into a number
+/// or boolean target; other scalars with a text form parse from a string.
 fn scalar(wip: P, st: Option<ScalarType>, v: Value, key: bool) -> R {
     use ScalarType as S;
     let shape = wip.shape();
@@ -251,6 +278,9 @@ fn scalar(wip: P, st: Option<ScalarType>, v: Value, key: bool) -> R {
 
 // ----------------------------------------------------------- smart pointers
 
+/// Fill a pointer-like target: `Cow<str>` from a string, other `Cow`s through
+/// their inner type, and owning smart pointers (slices included) through their
+/// pointee. Borrowed references are rejected.
 fn pointer(wip: P, v: Value) -> R {
     let shape = wip.shape();
     let Def::Pointer(pd) = shape.def else {
@@ -295,6 +325,8 @@ fn seq(v: Value, expected: &Shape) -> Result<Vec<Value>, Error> {
     }
 }
 
+/// Fill a sequence item by item, `begin` opening each item's frame. Errors
+/// carry the item's index.
 fn items(mut wip: P, v: Value, begin: fn(P) -> Result<P, facet_reflect::ReflectError>) -> R {
     for (i, item) in seq(v, wip.shape())?.into_iter().enumerate() {
         wip = fill(begin(wip)?, item).map_err(|e| e.at_index(i))?.end()?;
@@ -303,6 +335,8 @@ fn items(mut wip: P, v: Value, begin: fn(P) -> Result<P, facet_reflect::ReflectE
     Ok(wip)
 }
 
+/// Fill a list. Bytes go straight into a `Vec<u8>` and item by item into any
+/// other list.
 fn list(wip: P, v: Value) -> R {
     if let Value::Bytes(b) = v {
         if wip.shape().id == <Vec<u8>>::SHAPE.id {
@@ -320,10 +354,12 @@ fn list(wip: P, v: Value) -> R {
     items(wip.init_list_with_capacity(n)?, v, P::begin_list_item)
 }
 
+/// Fill a set from a sequence value.
 fn set(wip: P, v: Value) -> R {
     items(wip.init_set()?, v, P::begin_set_item)
 }
 
+/// Fill an array of length `n`; the sequence must have exactly `n` items.
 fn array(wip: P, n: usize, v: Value) -> R {
     let l = seq(v, wip.shape())?;
     if l.len() != n {
@@ -338,6 +374,8 @@ fn array(wip: P, n: usize, v: Value) -> R {
     Ok(wip)
 }
 
+/// Fill a map from a record (string keys) or a NOVA map. Keys are filled in
+/// key position; errors in a value carry its key as path segment.
 fn map(wip: P, v: Value) -> R {
     let entries: Vec<(Value, Value)> = match v {
         Value::Record(r) => r.into_entries().into_iter().map(|(k, v)| (Value::String(k), v)).collect(),
@@ -359,6 +397,8 @@ fn map(wip: P, v: Value) -> R {
     Ok(wip)
 }
 
+/// Fill a `Result` from an externally tagged `Ok`/`Err` value; a missing
+/// payload counts as null.
 fn result(wip: P, v: Value) -> R {
     let (tag, payload) = external_tag(v, wip.shape())?;
     let wip = match tag.as_str() {
@@ -372,6 +412,8 @@ fn result(wip: P, v: Value) -> R {
 
 // ------------------------------------------------------------------ structs
 
+/// Fill a struct: a unit struct from null, named fields from a record, a
+/// newtype from its content, and tuples from a tuple or list.
 fn structure(wip: P, v: Value) -> R {
     let shape = wip.shape();
     let Type::User(UserType::Struct(st)) = shape.ty else {
@@ -401,6 +443,7 @@ fn structure(wip: P, v: Value) -> R {
     }
 }
 
+/// Fill `n` positional fields from exactly `n` values; errors carry the index.
 fn positional(mut wip: P, n: usize, l: Vec<Value>) -> R {
     if l.len() != n {
         return Err(Error::new(format!("invalid length {}, expected a tuple of size {n}", l.len())));
@@ -413,6 +456,7 @@ fn positional(mut wip: P, n: usize, l: Vec<Value>) -> R {
     Ok(wip)
 }
 
+/// Whether the key `k` names field `f`, by effective name or alias.
 fn matches(f: &Field, k: &str) -> bool {
     f.effective_name() == k || f.alias == Some(k)
 }
@@ -518,6 +562,8 @@ fn external_tag(v: Value, shape: &Shape) -> Result<(String, Option<Value>), Erro
     }
 }
 
+/// Select the variant named `tag`, falling back to a unit variant marked
+/// `other`. Returns the partial with the variant selected and the variant.
 fn select(wip: P, variants: &'static [Variant], tag: &str) -> Result<(P, &'static Variant), Error> {
     let idx = variants
         .iter()
@@ -530,6 +576,10 @@ fn select(wip: P, variants: &'static [Variant], tag: &str) -> Result<(P, &'stati
     Ok((wip.select_nth_variant(idx)?, &variants[idx]))
 }
 
+/// Fill an enum. Numeric enums take their discriminant, untagged enums the
+/// first variant that fits, enums with a `tag` attribute an internally or
+/// (with `content`) adjacently tagged record, and all others an externally
+/// tagged value.
 fn enumeration(wip: P, v: Value) -> R {
     let shape = wip.shape();
     let Type::User(UserType::Enum(et)) = shape.ty else {

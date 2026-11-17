@@ -8,7 +8,9 @@
 use crate::writer::{Profile, to_text};
 use novafile_value::Value;
 
+/// Counts the tokens a model would spend on a piece of text.
 pub trait TokenCounter {
+    /// Number of tokens in `text`.
     fn count(&self, text: &str) -> usize;
 }
 
@@ -21,6 +23,7 @@ impl TokenCounter for HeuristicCounter {
     fn count(&self, text: &str) -> usize {
         let mut n = 0;
         let mut chars = text.chars().peekable();
+
         while let Some(c) = chars.next() {
             if c.is_alphabetic() {
                 let mut len: usize = 1;
@@ -63,8 +66,11 @@ impl TokenCounter for HeuristicCounter {
 /// A candidate representation and its measured cost.
 #[derive(Clone, Debug)]
 pub struct Candidate {
+    /// Profile the text was rendered in.
     pub profile: Profile,
+    /// The rendered text.
     pub text: String,
+    /// Token count of `text` according to the counter used.
     pub tokens: usize,
 }
 

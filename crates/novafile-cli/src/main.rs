@@ -1,3 +1,6 @@
+//! `nvf`, the NOVA command-line tool: format, convert, query, patch, validate, render and lint
+//! NOVA documents and schemas.
+
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use novafile_binary::{Frame, FrameOptions, MAGIC, decode_frame, encode_frame};
 use novafile_schema::{Schema, check_versions, parse_schema};
@@ -9,6 +12,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+/// Command-line arguments of `nvf`.
 #[derive(Parser)]
 #[command(
     name = "nvf",
@@ -20,17 +24,23 @@ struct Cli {
     /// agents (Claude Code, Codex, Copilot, Cursor, …); also settable via `NOVA_AGENT`.
     #[arg(long, value_enum, global = true, env = "NOVA_AGENT", default_value = "auto")]
     agent: AgentMode,
+    /// The subcommand to run.
     #[command(subcommand)]
     cmd: Cmd,
 }
 
+/// Whether to switch on agent mode (`--agent` / `NOVA_AGENT`).
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
 enum AgentMode {
+    /// Detect coding agents from the environment.
     Auto,
+    /// Always use agent mode.
     On,
+    /// Never use agent mode.
     Off,
 }
 
+/// Text printed by `nvf guide`: the read-narrow, patch-small workflow for coding agents.
 const AGENT_GUIDE: &str = r#"NOVA for agents — read narrow, write small, never rewrite whole files.
 
 1. Read only what you need (compact output, with the document revision):
@@ -54,6 +64,7 @@ const AGENT_GUIDE: &str = r#"NOVA for agents — read narrow, write small, never
    Quote strings that contain ": " or " #", or that start with a reserved character.
 "#;
 
+/// Output representation for `--to`.
 #[derive(Clone, Copy, ValueEnum)]
 enum Format {
     /// Human text (block layout).
@@ -84,26 +95,37 @@ enum Format {
     Positional,
 }
 
+/// Input representation for `--from`.
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
 enum InputFormat {
     /// Binary frames by magic; `.json`, `.jsonl`, `.yaml`/`.yml`, `.toml`, `.cbor`, `.pb` by extension; otherwise JSON if it parses, else NOVA text.
     Auto,
+    /// NOVA text.
     Nova,
+    /// JSON.
     Json,
+    /// JSON Lines (one value per line, read as a list).
     Jsonl,
+    /// Framed binary.
     Binary,
+    /// YAML 1.2.
     Yaml,
+    /// TOML 1.0.
     Toml,
+    /// CBOR (RFC 8949).
     Cbor,
     /// Protobuf wire format (needs --schema).
     Protobuf,
 }
 
+/// `nvf` subcommands.
 #[derive(Subcommand)]
 enum Cmd {
     /// Reformat a NOVA text document.
     Fmt {
+        /// Document or schema to reformat.
         file: PathBuf,
+        /// Output format.
         #[arg(long, value_enum, default_value = "nova")]
         to: Format,
         /// Rewrite the file in place.
@@ -112,7 +134,9 @@ enum Cmd {
     },
     /// Convert between NOVA text, JSON/JSONL and binary (input format is detected).
     Convert {
+        /// Input file.
         file: PathBuf,
+        /// Output format.
         #[arg(long, value_enum)]
         to: Format,
         /// Input format (detected by default).
@@ -121,6 +145,7 @@ enum Cmd {
         /// Schema, required for Protobuf input/output.
         #[arg(long)]
         schema: Option<PathBuf>,
+        /// Output file (default: stdout).
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Fail instead of warning when the conversion loses type information.
@@ -128,12 +153,18 @@ enum Cmd {
         strict: bool,
     },
     /// Print the document's revision (SHA-256 of the canonical encoding).
-    Hash { file: PathBuf },
+    Hash {
+        /// Document to hash.
+        file: PathBuf,
+    },
     /// Validate against a schema; with --resolve print the resolved document.
     Validate {
+        /// Document to validate.
         file: PathBuf,
+        /// Schema to validate against.
         #[arg(long)]
         schema: PathBuf,
+        /// Print the resolved document instead of a status line.
         #[arg(long)]
         resolve: bool,
     },
@@ -143,8 +174,11 @@ enum Cmd {
     /// `[?replicas>3]` (filter; also = != < <= >=, chainable), `.{a,b}` (projection).
     /// Use `-` as FILE to read stdin; JSON and JSON Lines are detected.
     Get {
+        /// Input document (`-` for stdin).
         file: PathBuf,
+        /// Query path, e.g. `services[id=api].replicas`.
         path: String,
+        /// Output format.
         #[arg(long, value_enum, default_value = "compact")]
         to: Format,
         /// Input format (detected by default).
@@ -163,8 +197,11 @@ enum Cmd {
     },
     /// Apply a patch atomically.
     Patch {
+        /// Document to patch.
         file: PathBuf,
+        /// Patch file.
         patch: PathBuf,
+        /// Schema the patched document must satisfy.
         #[arg(long)]
         schema: Option<PathBuf>,
         /// Rewrite the file in place.
@@ -172,23 +209,34 @@ enum Cmd {
         write: bool,
     },
     /// Print a conditional patch that turns A into B.
-    Diff { a: PathBuf, b: PathBuf },
+    Diff {
+        /// Original document.
+        a: PathBuf,
+        /// Target document.
+        b: PathBuf,
+    },
     /// Render a @template document.
     Render {
+        /// Template document.
         file: PathBuf,
-        /// Parameter as NAME=FLOW-VALUE (e.g. replicas=3, env=prod, tags=[a,b]).
+        /// Parameter as NAME=FLOW-VALUE (e.g. `replicas=3`, `env=prod`, `tags=[a,b]`).
         #[arg(long = "set", value_name = "NAME=VALUE")]
         set: Vec<String>,
         /// A NOVA record supplying parameters.
         #[arg(long)]
         values: Option<PathBuf>,
+        /// Schema passed to the template; also validates the rendered document.
         #[arg(long)]
         schema: Option<PathBuf>,
+        /// Output format.
         #[arg(long, value_enum, default_value = "nova")]
         to: Format,
     },
     /// Compare sizes of every representation (bytes and estimated tokens).
-    Stats { file: PathBuf },
+    Stats {
+        /// Document to measure.
+        file: PathBuf,
+    },
     /// Print a short guide for AI coding agents (read projections, write conditional patches).
     Guide,
     /// Check documents (.nova) and schemas (.novs) against NOVA conventions; exits 1 on warnings.
@@ -197,6 +245,7 @@ enum Cmd {
     /// (fixable), mixed-list, compat-loss (with `@compat json|yaml|toml`), field-case,
     /// variant-case, partial-ids. Configure in a file with `@x-lint case=camel allow=rule,…`.
     Lint {
+        /// Documents (.nova) and schemas (.novs) to check.
         #[arg(required = true)]
         files: Vec<PathBuf>,
         /// Naming convention: snake (default), camel or kebab.
@@ -214,31 +263,57 @@ enum Cmd {
     },
     /// Schema tools.
     Schema {
+        /// Schema subcommand to run.
         #[command(subcommand)]
         cmd: SchemaCmd,
     },
 }
 
+/// `nvf schema` subcommands.
 #[derive(Subcommand)]
 enum SchemaCmd {
     /// Print the canonical form of a schema.
-    Fmt { file: PathBuf },
+    Fmt {
+        /// Schema file.
+        file: PathBuf,
+    },
     /// Print `name#fingerprint`.
-    Fingerprint { file: PathBuf },
+    Fingerprint {
+        /// Schema file.
+        file: PathBuf,
+    },
     /// Classify changes between two schema versions and verify the `SemVer` bump; exits 1 if insufficient.
-    Check { old: PathBuf, new: PathBuf },
+    Check {
+        /// Previous schema version.
+        old: PathBuf,
+        /// New schema version.
+        new: PathBuf,
+    },
     /// Print the proto3 `.proto` file for a schema (fields need `@id`).
-    Proto { file: PathBuf },
+    Proto {
+        /// Schema file.
+        file: PathBuf,
+    },
     /// Print a schema as NOVA data (its descriptor, validated by `nvf schema meta`).
-    ToNova { file: PathBuf },
+    ToNova {
+        /// Schema file.
+        file: PathBuf,
+    },
     /// Convert a schema descriptor (NOVA data) back to the schema language.
-    FromNova { file: PathBuf },
+    FromNova {
+        /// Schema descriptor (NOVA data).
+        file: PathBuf,
+    },
     /// Print the meta-schema `nova-schema@0.1.0`, which describes schema descriptors.
     Meta,
     /// Print a JSON Schema (2020-12) describing the JSON form of valid documents.
-    JsonSchema { file: PathBuf },
+    JsonSchema {
+        /// Schema file.
+        file: PathBuf,
+    },
     /// Convert a JSON Schema (2020-12 or draft-07) into a NOVA schema.
     FromJsonSchema {
+        /// JSON Schema file.
         file: PathBuf,
         /// Schema name for `@schema name@version`.
         #[arg(long)]
@@ -270,12 +345,15 @@ impl From<SourceDiagnostic> for E {
     }
 }
 
+/// Result of a CLI step.
 type R<T> = Result<T, E>;
 
+/// Display name of a path, for diagnostics.
 fn name_of(p: &Path) -> String {
     p.display().to_string()
 }
 
+/// Reads a file, or stdin when the path is `-`.
 fn read_bytes(p: &Path) -> R<Vec<u8>> {
     if p.as_os_str() == "-" {
         let mut b = Vec::new();
@@ -286,19 +364,25 @@ fn read_bytes(p: &Path) -> R<Vec<u8>> {
     Ok(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?)
 }
 
+/// Reads a file (or stdin for `-`) as UTF-8 text.
 fn read_text(p: &Path) -> R<String> {
     Ok(String::from_utf8(read_bytes(p)?).map_err(|_| format!("{}: not UTF-8", p.display()))?)
 }
 
+/// A loaded document: its directives and its value.
 struct Loaded {
+    /// Document directives as `(name, argument)` pairs, e.g. `("schema", "app@1.0.0")`.
     directives: Vec<(String, String)>,
+    /// The document's value.
     value: Value,
 }
 
+/// Loads a document, detecting its input format.
 fn load(p: &Path) -> R<Loaded> {
     load_as(p, InputFormat::Auto)
 }
 
+/// Wraps a value without any directives.
 fn json_loaded(value: Value) -> Loaded {
     Loaded { directives: vec![], value }
 }
@@ -311,12 +395,18 @@ fn compat_loaded(value: Value, format: &str) -> Loaded {
     }
 }
 
+/// Loads a document in the given input format (`Auto` detects it).
 fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
     load_with(p, from, None)
 }
 
+/// Schema reference of the meta-schema that describes schema descriptors.
 const META_REF: &str = "nova-schema@0.1.0";
 
+/// Loads a document in the given input format.
+///
+/// `.novs` files load as their schema descriptor. Protobuf input and positional text need
+/// `schema`; everything else ignores it.
 fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> {
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
     if ext == "novs" && from == InputFormat::Auto {
@@ -419,6 +509,7 @@ fn is_nova_text(p: &Path, text: &str) -> bool {
     !matches!(ext, "json" | "jsonl" | "ndjson") && !text.as_bytes().starts_with(MAGIC) && novafile_text::parse(text).is_ok()
 }
 
+/// Loads a schema from the schema language or from a schema descriptor (NOVA data).
 fn load_schema(p: &Path) -> R<Schema> {
     let src = read_text(p)?;
     // A schema descriptor (NOVA data, spec §6.8) is accepted wherever a schema is.
@@ -455,10 +546,15 @@ fn lossy<W: std::fmt::Display>(what: &str, warnings: &[W], strict: bool) -> R<()
     Ok(())
 }
 
+/// Renders a loaded document in the given format, without a schema.
 fn render_as(l: &Loaded, f: Format, strict: bool) -> R<Vec<u8>> {
     render_with(l, f, strict, None)
 }
 
+/// Renders a loaded document in the given format.
+///
+/// `schema` is required for Protobuf and positional output. With `strict`, a lossy
+/// conversion is an error instead of a warning on stderr.
 fn render_with(l: &Loaded, f: Format, strict: bool, schema: Option<&Schema>) -> R<Vec<u8>> {
     let directives: Vec<(&str, &str)> = l.directives.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     let text = |p| document_to_text(&directives, &l.value, p).into_bytes();
@@ -523,6 +619,7 @@ fn render_with(l: &Loaded, f: Format, strict: bool, schema: Option<&Schema>) -> 
     })
 }
 
+/// Writes bytes to the given file, or to stdout.
 fn out(bytes: &[u8], to: Option<&Path>) -> R<()> {
     match to {
         Some(p) => Ok(std::fs::write(p, bytes).map_err(|e| format!("{}: {e}", p.display()))?),
@@ -530,10 +627,12 @@ fn out(bytes: &[u8], to: Option<&Path>) -> R<()> {
     }
 }
 
+/// Formats validation issues as an indented list, one per line.
 fn issues(i: &[novafile_schema::Issue]) -> String {
     i.iter().map(|i| format!("  {i}")).collect::<Vec<_>>().join("\n")
 }
 
+/// Turns a patch error into a diagnostic that points into the patch source.
 fn patch_error(e: &novafile_patch::PatchError, file: &Path, src: &str) -> E {
     use novafile_patch::PatchError as P;
     match e {
@@ -568,6 +667,7 @@ fn patch_error(e: &novafile_patch::PatchError, file: &Path, src: &str) -> E {
     }
 }
 
+/// Runs the parsed command and returns the process exit code.
 #[expect(clippy::too_many_lines, reason = "one dispatch arm per subcommand")]
 fn run(cli: Cli) -> R<ExitCode> {
     match cli.cmd {
@@ -896,6 +996,7 @@ fn run(cli: Cli) -> R<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Runs `nvf lint` over files and prints findings; exits 1 if any warning remains.
 fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, format: &str) -> R<ExitCode> {
     let mut config = novafile_lint::Config::default();
     if let Some(c) = case {

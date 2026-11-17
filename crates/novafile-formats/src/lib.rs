@@ -24,7 +24,10 @@ pub mod yaml;
 /// empty for the root).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Warning {
+    /// Where the mapping happened: `.key` and `[i]` segments from the root, empty
+    /// for the root itself.
     pub path: String,
+    /// What was lost or reinterpreted, e.g. "tuple written as an array".
     pub message: String,
 }
 
@@ -37,11 +40,14 @@ impl std::fmt::Display for Warning {
 /// Collects warnings while tracking the path of the value being written.
 #[derive(Default)]
 pub(crate) struct Reporter {
+    /// Path of the value currently being written, in [`Warning::path`] notation.
     pub(crate) path: String,
+    /// Every warning recorded so far, in output order.
     pub(crate) warnings: Vec<Warning>,
 }
 
 impl Reporter {
+    /// Record `message` as a warning at the current path.
     pub(crate) fn warn(&mut self, message: &str) {
         self.warnings.push(Warning {
             path: self.path.clone(),

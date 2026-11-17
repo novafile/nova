@@ -24,7 +24,10 @@ use std::collections::HashSet;
 /// Collects named definitions while type expressions are generated.
 #[derive(Default)]
 pub struct SchemaGen {
+    /// Completed definitions, in the order they were finished.
     defs: Vec<(String, Def)>,
+    /// Names whose definition is being built; a reference to one of them is a
+    /// recursive use and is not built again.
     in_progress: HashSet<String>,
 }
 
@@ -44,6 +47,8 @@ impl SchemaGen {
         r
     }
 
+    /// Build the schema from the collected definitions, with the given
+    /// `@root` and optional `@schema` name and version.
     ///
     /// # Panics
     ///
@@ -125,6 +130,7 @@ pub fn __default(text: &str, field: &str) -> novafile_value::Value {
     novafile_text::parse_flow(text).unwrap_or_else(|e| panic!("#[nova(default)] on {field}: {e}"))
 }
 
+/// Implements [`NovaSchema`] for types that map to one fixed type kind.
 macro_rules! simple {
     ($($t:ty => $k:expr),* $(,)?) => {$(
         impl NovaSchema for $t {
@@ -194,10 +200,12 @@ impl<T: NovaSchema> NovaSchema for Option<T> {
     }
 }
 
+/// Wrap `t` in a `list<…>` type.
 fn list_of(t: TypeRef) -> TypeRef {
     TypeRef::new(TypeKind::List(Box::new(t)))
 }
 
+/// Wrap `t` in a `set<…>` type.
 fn set_of(t: TypeRef) -> TypeRef {
     TypeRef::new(TypeKind::Set(Box::new(t)))
 }
@@ -252,6 +260,7 @@ impl<K: NovaSchema, V: NovaSchema> NovaSchema for std::collections::BTreeMap<K, 
     }
 }
 
+/// Implements [`NovaSchema`] for Rust tuples (arity 1 to 8) as NOVA tuple types.
 macro_rules! tuples {
     ($(($($n:ident),+)),*) => {$(
         impl<$($n: NovaSchema),+> NovaSchema for ($($n,)+) {

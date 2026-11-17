@@ -50,10 +50,12 @@ pub fn to_json_schema(schema: &Schema) -> Json {
     Json::Object(root)
 }
 
+/// The `$ref` target of a named definition.
 fn def_ref(name: &str) -> String {
     format!("#/$defs/{name}")
 }
 
+/// A record as a JSON object schema. Fields with a default are not `required`.
 fn record(schema: &Schema, r: &RecordDef) -> Json {
     let mut props = Map::new();
     for f in &r.fields {
@@ -67,6 +69,7 @@ fn record(schema: &Schema, r: &RecordDef) -> Json {
         .filter(|f| !f.optional && f.default.is_none())
         .map(|f| f.name.as_str())
         .collect();
+
     let mut o = Map::new();
     o.insert("type".into(), "object".into());
     o.insert("properties".into(), Json::Object(props));
@@ -84,6 +87,7 @@ fn record(schema: &Schema, r: &RecordDef) -> Json {
     Json::Object(o)
 }
 
+/// The schema of a field, with its default, deprecation, `@id` and `@key` attached.
 fn field(schema: &Schema, f: &FieldDef) -> Json {
     let s = ty(schema, &f.ty);
     if f.default.is_none() && !f.deprecated && f.id.is_none() && !f.key {
@@ -165,6 +169,7 @@ fn ty(schema: &Schema, t: &TypeRef) -> Json {
     s
 }
 
+/// Let a schema also accept `null`: via its `type` when it has one, else via `anyOf`.
 fn nullable(s: Json) -> Json {
     match s {
         Json::Bool(true) => s,
@@ -188,6 +193,7 @@ fn nullable(s: Json) -> Json {
     }
 }
 
+/// The JSON Schema `format` of a sized integer kind; `None` for `int`.
 fn int_format(k: IntKind) -> Option<&'static str> {
     Some(match k {
         IntKind::Int => return None,
@@ -202,6 +208,7 @@ fn int_format(k: IntKind) -> Option<&'static str> {
     })
 }
 
+/// An integer as a JSON number; beyond 64 bits it becomes a (rounded) float.
 fn int_json(i: i128) -> Json {
     if let Ok(v) = i64::try_from(i) {
         v.into()
@@ -214,6 +221,7 @@ fn int_json(i: i128) -> Json {
     }
 }
 
+/// The JSON Schema for a type kind, before constraints and nullability.
 fn kind(schema: &Schema, k: &TypeKind) -> Json {
     match k {
         TypeKind::Any => Json::Bool(true),
@@ -268,17 +276,25 @@ fn kind(schema: &Schema, k: &TypeKind) -> Json {
 
 /// What a constraint applies to, after following aliases.
 enum Target {
+    /// An integer, with the bounds of its sized kind (`None` for `int` or an alias).
     Int(Option<(i128, i128)>),
+    /// A float.
     Float,
+    /// A decimal or rational, written as a string.
     ExactNumber,
+    /// A string (`true`) or bytes (`false`).
     Text(bool),
+    /// A list, set, or map without string keys.
     Items,
+    /// A record.
     Properties,
     /// A string-keyed map: an object or an array of pairs.
     ItemsOrProperties,
+    /// Anything else; constraints become `x-nova-*` annotations.
     Other,
 }
 
+/// Classify `t` for constraint mapping.
 fn target(schema: &Schema, t: &TypeRef) -> Target {
     let (rt, def) = schema.deref(t);
     match (&rt.kind, def) {
@@ -294,6 +310,8 @@ fn target(schema: &Schema, t: &TypeRef) -> Target {
     }
 }
 
+/// Add the `@range` and `@len` constraints of `t` to `s`, as JSON Schema
+/// keywords where they apply and as `x-nova-range`/`x-nova-len` otherwise.
 fn constrain(schema: &Schema, t: &TypeRef, s: &mut Json) {
     let c = &t.constraints;
     if *c == Constraints::default() {

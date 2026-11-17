@@ -37,25 +37,42 @@ use std::hash::{Hash, Hasher};
 /// never influences equality, hashing or canonical bytes.
 #[derive(Clone, Debug)]
 pub enum Value {
+    /// The absence of a value.
     Null,
+    /// `true` or `false`.
     Bool(bool),
+    /// A signed integer in the `i128` range.
     Int(i128),
+    /// An IEEE 754 binary64 number; all NaNs are equal to each other.
     Float(f64),
+    /// An exact decimal number (spec §2.3).
     Decimal(Decimal),
+    /// An exact fraction (spec §2.4).
     Rational(Rational),
+    /// A UTF-8 string.
     String(String),
+    /// An opaque byte string.
     Bytes(Vec<u8>),
+    /// A UTC instant (spec §2.6).
     Timestamp(Timestamp),
+    /// A signed span of time (spec §2.7).
     Duration(Duration),
+    /// An ordered sequence.
     List(Vec<Value>),
+    /// A fixed-length sequence whose positions may have different kinds.
     Tuple(Vec<Value>),
+    /// An unordered collection of distinct values.
     Set(Vec<Value>),
+    /// String-keyed fields (spec §2.10).
     Record(Record),
+    /// An unordered association with arbitrary keys, unique by value equality.
     Map(Vec<(Value, Value)>),
+    /// A named alternative with an optional payload.
     Variant(String, Option<Box<Value>>),
 }
 
 impl Value {
+    /// The lowercase kind name (`"int"`, `"record"`, ...), as used in messages.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
@@ -78,6 +95,8 @@ impl Value {
         }
     }
 
+    /// Whether this is a list, tuple, set, record or map, or a variant whose
+    /// payload is one.
     #[must_use]
     pub fn is_container(&self) -> bool {
         matches!(self, Value::List(_) | Value::Tuple(_) | Value::Set(_) | Value::Record(_) | Value::Map(_))
@@ -116,6 +135,7 @@ impl Value {
         Ok(Value::Map(entries))
     }
 
+    /// The record, if this is a record.
     #[must_use]
     pub fn as_record(&self) -> Option<&Record> {
         match self {
@@ -124,6 +144,7 @@ impl Value {
         }
     }
 
+    /// The record, mutably, if this is a record.
     pub fn as_record_mut(&mut self) -> Option<&mut Record> {
         match self {
             Value::Record(r) => Some(r),
@@ -131,6 +152,7 @@ impl Value {
         }
     }
 
+    /// The string, if this is a string.
     #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         match self {
@@ -139,6 +161,7 @@ impl Value {
         }
     }
 
+    /// The elements, if this is a list (not a tuple or set).
     #[must_use]
     pub fn as_list(&self) -> Option<&Vec<Value>> {
         match self {

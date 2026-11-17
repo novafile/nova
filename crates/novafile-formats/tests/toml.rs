@@ -1,3 +1,6 @@
+//! TOML adapter tests: import of every TOML kind, date-time handling,
+//! export errors, round trips and lossy-mapping reports.
+
 use novafile_formats::toml::{from_str, to_string};
 use novafile_value::{Decimal, Duration, Rational, Record, Timestamp, Value};
 

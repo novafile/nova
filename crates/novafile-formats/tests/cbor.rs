@@ -1,3 +1,6 @@
+//! CBOR adapter tests: RFC 8949 Appendix A vectors, float widths,
+//! deterministic encoding, lossy-mapping reports and decoder robustness.
+
 use novafile_formats::cbor::{from_slice, to_vec};
 use novafile_value::{Decimal, Duration, Rational, Record, Timestamp, Value};
 

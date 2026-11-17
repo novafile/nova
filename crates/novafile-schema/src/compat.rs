@@ -3,10 +3,14 @@
 
 use crate::model::{Def, IntKind, Num, Schema, TypeKind, TypeRef};
 
+/// One difference between two schema versions, as found by [`check_compatibility`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Change {
+    /// Whether data valid under the old schema may be rejected by the new one.
     pub breaking: bool,
+    /// Where the change is: `@root`, a definition name, or `Definition.member`.
     pub at: String,
+    /// Human-readable description of the change.
     pub message: String,
 }
 
@@ -16,6 +20,8 @@ impl std::fmt::Display for Change {
     }
 }
 
+/// The effective numeric range of `t`: its `@range`, narrowed to the bounds
+/// of a fixed-width integer kind (`int` adds no bounds).
 fn range_of(t: &TypeRef) -> (Option<Num>, Option<Num>) {
     let (mut lo, mut hi) = t.constraints.range.clone().unwrap_or((None, None));
     if let TypeKind::Int(k) = t.kind {
@@ -84,6 +90,11 @@ pub fn widens(old: &TypeRef, new: &TypeRef) -> bool {
     lo_ok && hi_ok && len_ok && unit_ok
 }
 
+/// List every change from `old` to `new` (spec §6.5), each marked breaking or not.
+///
+/// Record fields are matched by `@id` first, then by name. Compatibility is
+/// judged for new readers of old data, so additions old readers would reject
+/// (such as new enum variants) are reported, but not as breaking.
 #[must_use]
 pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
     let mut out = Vec::new();

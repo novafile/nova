@@ -43,6 +43,10 @@ fn order_preserving(a: &[Value], b: &[Value], f: &str) -> bool {
     expected == kb
 }
 
+/// Append the operations that turn `a` into `b`, both found at `path`.
+/// Records diff field by field; lists diff by identity field when one exists
+/// and order allows, else index by index when lengths agree. Anything else is
+/// a conditional replace (an unconditional set at the root).
 fn walk(a: &Value, b: &Value, path: &mut Vec<Segment>, ops: &mut Vec<Op>) {
     if a == b {
         return;

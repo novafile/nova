@@ -6,9 +6,12 @@ use novafile_text::{Path, Segment};
 use novafile_value::{Decimal, Duration, Rational, Record, Timestamp, Value};
 use std::collections::HashSet;
 
+/// A problem found while resolving or validating a value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Issue {
+    /// Where in the value the problem is.
     pub path: Path,
+    /// What is wrong.
     pub message: String,
 }
 
@@ -18,14 +21,21 @@ impl std::fmt::Display for Issue {
     }
 }
 
+/// State of one resolution or validation pass.
 struct Ctx<'s> {
+    /// The schema that named types are looked up in.
     schema: &'s Schema,
+    /// Path of the value being checked.
     path: Vec<Segment>,
+    /// Problems found so far.
     issues: Vec<Issue>,
+    /// Whether absent fields get their default (resolution) or stay absent
+    /// (validation).
     apply_defaults: bool,
 }
 
 impl<'s> Ctx<'s> {
+    /// Record a problem at the current path.
     fn issue(&mut self, m: impl Into<String>) {
         self.issues.push(Issue {
             path: Path(self.path.clone()),
@@ -33,6 +43,8 @@ impl<'s> Ctx<'s> {
         });
     }
 
+    /// Follow aliases to the underlying type (and its record or enum
+    /// definition, if any). Relies on the parser having rejected alias cycles.
     fn deref(&self, t: &'s TypeRef) -> (&'s TypeRef, Option<&'s Def>) {
         let mut cur = t;
         loop {
@@ -47,6 +59,9 @@ impl<'s> Ctx<'s> {
         }
     }
 
+    /// Resolve `v` against `t`: apply permitted conversions, record issues, and
+    /// return the possibly converted value. The constraints of both the use site
+    /// and the alias target apply.
     fn check(&mut self, v: Value, t: &'s TypeRef) -> Value {
         if matches!(v, Value::Null) && (t.nullable || matches!(t.kind, TypeKind::Null | TypeKind::Any)) {
             return v;
@@ -76,10 +91,13 @@ impl<'s> Ctx<'s> {
         v
     }
 
+    /// Record that a value of the `expected` type was required.
     fn mismatch(&mut self, expected: &str, v: &Value) {
         self.issue(format!("expected {expected}, found {}", v.kind()));
     }
 
+    /// Resolve against a built-in type kind, applying the lexical and numeric
+    /// conversions of spec §6.3.
     #[expect(clippy::match_same_arms, reason = "one arm per kind keeps the conversion table readable")]
     #[expect(clippy::cast_precision_loss, reason = "the int-to-float arm only takes integers up to 2^53, exact in f64")]
     fn structural(&mut self, v: Value, kind: &'s TypeKind) -> Value {
@@ -187,6 +205,8 @@ impl<'s> Ctx<'s> {
         }
     }
 
+    /// Parse the string `s` with `f` as a `what`; on failure, record an issue
+    /// and keep the string.
     fn lexical(&mut self, s: String, what: &str, f: impl Fn(&str) -> Result<Value, String>) -> Value {
         match f(&s) {
             Ok(v) => v,
@@ -197,6 +217,8 @@ impl<'s> Ctx<'s> {
         }
     }
 
+    /// Resolve each element against `et`, then check `@key` uniqueness if the
+    /// elements are records.
     fn elements(&mut self, items: Vec<Value>, et: &'s TypeRef) -> Vec<Value> {
         let out: Vec<Value> = items
             .into_iter()
@@ -208,6 +230,7 @@ impl<'s> Ctx<'s> {
                 r
             })
             .collect();
+
         // @key uniqueness (spec §6.2).
         if let (_, Some(Def::Record(r))) = self.deref(et) {
             let keys = r.key_fields();
@@ -229,6 +252,9 @@ impl<'s> Ctx<'s> {
         out
     }
 
+    /// Resolve a record against its definition: check declared fields, fill
+    /// defaults if enabled, and report missing required fields and (unless
+    /// `@open`) unknown ones.
     fn record(&mut self, v: Value, def: &'s RecordDef) -> Value {
         let Value::Record(r) = v else {
             self.mismatch("record", &v);
@@ -237,6 +263,7 @@ impl<'s> Ctx<'s> {
 
         let mut out = Record::new();
         let mut entries = r.into_entries();
+
         for f in &def.fields {
             let pos = entries.iter().position(|(k, _)| *k == f.name);
             self.path.push(Segment::Field(f.name.clone()));
@@ -273,6 +300,8 @@ impl<'s> Ctx<'s> {
         Value::Record(out)
     }
 
+    /// Resolve an enum value given as a bare tag string, a variant, or a
+    /// single-entry `{tag: payload}` record.
     fn variant(&mut self, v: Value, vs: &'s [VariantDef]) -> Value {
         // `{tag: payload}` — how JSON and other formats spell a variant (§6.3).
         let v = match v {
@@ -325,6 +354,8 @@ impl<'s> Ctx<'s> {
         }
     }
 
+    /// Check `v` against `@range` and `@len`; a constraint that does not apply
+    /// to the value's kind passes.
     fn constraints(&mut self, v: &Value, c: &Constraints) {
         if let Some((lo, hi)) = &c.range
             && let Some(n) = Num::of(v)
@@ -365,11 +396,13 @@ impl<'s> Ctx<'s> {
     }
 }
 
+/// The path segment for element index `i`.
 #[expect(clippy::cast_possible_wrap, reason = "an element index is at most isize::MAX")]
 fn index_segment(i: usize) -> Segment {
     Segment::Index(i as i64)
 }
 
+/// The rational equal to `d`, or `None` if it does not fit in `i128`.
 fn decimal_to_rational(d: Decimal) -> Option<Rational> {
     let (c, e) = (d.coefficient(), d.exponent());
     if e >= 0 {
@@ -379,6 +412,7 @@ fn decimal_to_rational(d: Decimal) -> Option<Rational> {
     }
 }
 
+/// Variant names joined as `a | b | c`, for messages.
 fn names(vs: &[VariantDef]) -> String {
     vs.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(" | ")
 }
@@ -431,6 +465,7 @@ impl Schema {
                 message: "schema has no @root".into(),
             }]
         })?;
+
         let mut c = Ctx {
             schema: self,
             path: Vec::new(),

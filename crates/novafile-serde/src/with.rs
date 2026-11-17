@@ -13,6 +13,7 @@ pub mod set {
     use novafile_value::serde_support::magic;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+    /// Borrowed elements, serialized as a plain sequence inside the set marker.
     struct Seq<'a, T>(Vec<&'a T>);
 
     impl<T: Serialize> Serialize for Seq<'_, T> {

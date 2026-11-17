@@ -5,6 +5,7 @@ use facet::{Def, ScalarType, StructKind, Type, UserType};
 use facet_reflect::{HasFields, Peek, PeekEnum, PeekStruct};
 use novafile_value::{Decimal, Duration, Rational, Record, Timestamp, Value};
 
+/// The outcome of serializing one value.
 type R = Result<Value, Error>;
 
 /// Serialize any reflected value.
@@ -133,7 +134,10 @@ fn nova_kind(p: Peek<'_, '_>) -> Result<Option<Value>, Error> {
     }))
 }
 
+/// Serialize a scalar of type `st`. Integers must fit NOVA's integer range;
+/// other scalars with a `Display` form (addresses, …) become strings.
 fn scalar(p: Peek<'_, '_>, st: ScalarType) -> R {
+    /// Reads the scalar as integer type `$t` and widens it into a NOVA integer.
     macro_rules! int {
         ($t:ty) => {
             Value::Int((*p.get::<$t>()?).into())
@@ -207,6 +211,8 @@ fn record<'mem, 'facet>(fields: impl Iterator<Item = (facet_reflect::FieldItem, 
     Ok(Value::Record(r))
 }
 
+/// Serialize a struct: a unit struct as null, named fields as a record, a
+/// newtype as its content, and other tuples as a tuple.
 fn structure(s: PeekStruct<'_, '_>) -> R {
     match s.ty().kind {
         StructKind::Unit => Ok(Value::Null),

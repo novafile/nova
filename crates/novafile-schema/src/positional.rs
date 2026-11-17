@@ -13,8 +13,10 @@
 use crate::model::{Def, Schema, TypeKind, TypeRef};
 use novafile_value::{Record, Value};
 
+/// Tag of the `!_` marker that stands for an absent optional field.
 const ABSENT: &str = "_";
 
+/// The `!_` marker.
 fn absent() -> Value {
     Value::Variant(ABSENT.into(), None)
 }
@@ -51,6 +53,9 @@ impl Schema {
             .map_err(|i| i.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; "))
     }
 
+    /// Named to positional form for a value of type `t`; `at` is the path used
+    /// in error messages. Fails on undeclared record fields and on the reserved
+    /// `_` tag.
     fn pos_out(&self, v: &Value, t: &TypeRef, at: &str) -> Result<Value, String> {
         if matches!(v, Value::Variant(tag, _) if tag == ABSENT) {
             return Err(format!("{at}: the variant tag `_` is reserved in the positional profile"));
@@ -100,10 +105,13 @@ impl Schema {
         })
     }
 
+    /// [`Self::pos_out`] for each element of a list or set.
     fn each_out(&self, l: &[Value], et: &TypeRef, at: &str) -> Result<Vec<Value>, String> {
         l.iter().enumerate().map(|(i, x)| self.pos_out(x, et, &format!("{at}[{i}]"))).collect()
     }
 
+    /// Positional to named form for a value of type `t`; the inverse of
+    /// [`Self::pos_out`]. Fails if a record tuple has the wrong number of fields.
     fn pos_in(&self, v: &Value, t: &TypeRef, at: &str) -> Result<Value, String> {
         let (t, def) = self.deref(t);
         Ok(match (v, def, &t.kind) {
@@ -151,6 +159,7 @@ impl Schema {
         })
     }
 
+    /// [`Self::pos_in`] for each element of a list or set.
     fn each_in(&self, l: &[Value], et: &TypeRef, at: &str) -> Result<Vec<Value>, String> {
         l.iter().enumerate().map(|(i, x)| self.pos_in(x, et, &format!("{at}[{i}]"))).collect()
     }

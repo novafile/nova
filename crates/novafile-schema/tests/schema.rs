@@ -1,3 +1,6 @@
+//! Integration tests: parsing, resolution, evolution and version checks,
+//! positional round trips and schema descriptors.
+
 use novafile_schema::{ChangeKind, check_compatibility, check_versions, parse_schema};
 use novafile_value::Value;
 

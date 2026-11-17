@@ -182,6 +182,7 @@ impl std::error::Error for Error {}
 /// construct that was approximated or dropped.
 #[derive(Clone, Debug)]
 pub struct Conversion {
+    /// The converted schema.
     pub schema: novafile_schema::Schema,
     /// Each warning starts with the JSON pointer of the construct, e.g.
     /// `#/$defs/Point/properties/x: exclusiveMinimum on a float is kept inclusive`.

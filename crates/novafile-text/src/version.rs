@@ -5,7 +5,9 @@ use std::fmt;
 /// A `MAJOR.MINOR` language version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LangVersion {
+    /// Major version; documents and implementations must agree on it.
     pub major: u32,
+    /// Minor version; must match exactly while the major version is 0.
     pub minor: u32,
 }
 

@@ -1,3 +1,6 @@
+//! The language server driven over an in-memory connection: diagnostics, hover,
+//! completion, symbols and formatting.
+
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
 use serde_json::{Value, json};
 use std::time::Duration;

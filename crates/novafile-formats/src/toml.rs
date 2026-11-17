@@ -50,6 +50,7 @@ pub fn from_str(s: &str) -> Result<Value, String> {
     table(t)
 }
 
+/// Convert a TOML table into a record, preserving key order.
 fn table(t: Table) -> Result<Value, String> {
     let mut r = Record::new();
     for (k, v) in t {
@@ -60,6 +61,7 @@ fn table(t: Table) -> Result<Value, String> {
     Ok(Value::Record(r))
 }
 
+/// Convert one TOML value into its NOVA counterpart (see the module table).
 fn import(v: Toml) -> Result<Value, String> {
     Ok(match v {
         Toml::String(s) => Value::String(s),
@@ -72,6 +74,9 @@ fn import(v: Toml) -> Result<Value, String> {
     })
 }
 
+/// Convert a TOML date-time. Only an offset date-time denotes an instant and
+/// becomes a timestamp; local date-times, dates and times are kept as their
+/// TOML text.
 fn datetime(d: &Datetime) -> Result<Value, String> {
     let (Some(date), Some(time), Some(offset)) = (d.date, d.time, d.offset) else {
         // Local date-times, dates and times have no instant: keep their text.
@@ -110,6 +115,7 @@ pub fn to_string(v: &Value) -> Result<(String, Vec<Warning>), String> {
     Ok((text, rep.warnings))
 }
 
+/// Export a record as a TOML table; errors carry the offending field's path.
 fn export_record(r: &Record, rep: &mut Reporter) -> Result<Table, String> {
     let mut t = Table::new();
     for (k, e) in r.iter() {
@@ -120,6 +126,8 @@ fn export_record(r: &Record, rep: &mut Reporter) -> Result<Table, String> {
     Ok(t)
 }
 
+/// Export a sequence as a TOML array, tracking each element's index in the
+/// path.
 fn export_list(l: &[Value], rep: &mut Reporter) -> Result<Toml, String> {
     let items = l
         .iter()
@@ -129,10 +137,13 @@ fn export_list(l: &[Value], rep: &mut Reporter) -> Result<Toml, String> {
     Ok(Toml::Array(items))
 }
 
+/// Fail with `m`, prefixed with the reporter's current path (`.` for the root).
 fn fail<T>(rep: &Reporter, m: &str) -> Result<T, String> {
     Err(format!("TOML: {}: {m}", if rep.path.is_empty() { "." } else { &rep.path }))
 }
 
+/// Export one value, warning on lossy mappings and failing on values TOML
+/// cannot hold at all (`null`, integers beyond i64).
 fn export(v: &Value, rep: &mut Reporter) -> Result<Toml, String> {
     Ok(match v {
         Value::Null => return fail(rep, "null cannot be represented in TOML"),

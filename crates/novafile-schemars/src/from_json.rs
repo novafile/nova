@@ -6,6 +6,7 @@ use novafile_value::{Decimal, Value};
 use serde_json::{Map, Value as Json};
 use std::collections::{HashMap, HashSet};
 
+/// A JSON object (schema).
 type Obj = Map<String, Json>;
 
 /// Keywords that carry no type information and are dropped without a warning
@@ -71,8 +72,10 @@ const HANDLED: &[&str] = &[
     "x-nova-range",
 ];
 
+/// The JSON Schema type name of `null`.
 const NULL_TYPE: &str = "null";
 
+/// Convert a JSON Schema document; `name` and `version` override what `$id` or `title` say.
 pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) -> Result<Conversion, Error> {
     let root_obj = match json {
         Json::Object(o) => o.clone(),
@@ -181,25 +184,36 @@ fn is_structural(k: &str) -> bool {
     !ANNOTATIONS.contains(&k)
 }
 
+/// State of one conversion.
 struct Conv<'a> {
+    /// The whole document, for resolving `$ref`s that are not definitions.
     doc: &'a Json,
     /// JSON pointer (`#/$defs/X`) → NOVA definition name.
     names: HashMap<String, String>,
+    /// Definition names already taken.
     used: HashSet<String>,
+    /// Definitions created so far.
     defs: Vec<(String, Def)>,
+    /// Warnings collected so far.
     warnings: Vec<String>,
+    /// Definition name of the root schema, the target of `$ref: "#"`; empty if none.
     root_name: String,
+    /// Current nesting depth, bounded to stop runaway recursion.
     depth: usize,
 }
 
 /// What a (non-nullable) schema maps to at definition level.
 enum Shape {
+    /// A record definition.
     Record,
+    /// An enum definition.
     Enum,
+    /// A type used inline (or an alias).
     Other,
 }
 
 impl Conv<'_> {
+    /// Record a warning about the construct at JSON pointer `at`.
     fn warn(&mut self, at: &str, m: impl AsRef<str>) {
         self.warnings.push(format!("{at}: {}", m.as_ref()));
     }
@@ -267,6 +281,7 @@ impl Conv<'_> {
         out
     }
 
+    /// A record definition from an object schema (or a tagged union).
     fn record(&mut self, o: &Obj, at: &str, name: &str) -> RecordDef {
         if let Some((tag, alts)) = tagged_alternatives(o) {
             return self.tagged_record(o, &tag, &alts, at, name);
@@ -654,6 +669,7 @@ impl Conv<'_> {
         t
     }
 
+    /// The type a `$ref` points to; unresolvable references become `any`.
     fn reference(&mut self, r: &str, at: &str, hint: &str) -> TypeRef {
         let r = normalize_ref(r);
         if r == "#" && !self.root_name.is_empty() {
@@ -673,6 +689,7 @@ impl Conv<'_> {
         any()
     }
 
+    /// A type marked with `x-nova-kind`; `None` if the marker is unknown or malformed.
     fn nova_kind(&mut self, k: &str, o: &Obj, at: &str, hint: &str) -> Option<TypeRef> {
         let kind = match k {
             "timestamp" => TypeKind::Timestamp,
@@ -725,6 +742,8 @@ impl Conv<'_> {
         Some(t)
     }
 
+    /// An integer type: the kind from `format` or from bounds that match a
+    /// sized kind exactly, other bounds as `@range`.
     fn integer(&mut self, o: &Obj, at: &str) -> TypeRef {
         let format = o.get("format").and_then(Json::as_str);
         let from_format = format.and_then(|f| match f {
@@ -774,6 +793,7 @@ impl Conv<'_> {
         t
     }
 
+    /// A string, or bytes/timestamp/duration by `contentEncoding` or `format`.
     fn string(&mut self, o: &Obj, at: &str) -> TypeRef {
         let format = o.get("format").and_then(Json::as_str);
         let encoding = o.get("contentEncoding").and_then(Json::as_str);
@@ -803,6 +823,7 @@ impl Conv<'_> {
         TypeRef::new(kind)
     }
 
+    /// A tuple (fixed-length `prefixItems`/array-form `items`), set or list.
     fn array(&mut self, o: &Obj, at: &str, hint: &str) -> TypeRef {
         let min = o.get("minItems").and_then(Json::as_u64);
         let max = o.get("maxItems").and_then(Json::as_u64);
@@ -848,6 +869,7 @@ impl Conv<'_> {
         t
     }
 
+    /// A map for an object schema without properties; integer keys come from a digits-only `patternProperties` pattern.
     fn map(&mut self, o: &Obj, at: &str, hint: &str) -> TypeRef {
         let mut key = TypeRef::new(TypeKind::String);
         let mut value = any();
@@ -924,6 +946,7 @@ impl Conv<'_> {
         }
     }
 
+    /// Apply an `x-nova-range` annotation, warning if it does not parse.
     fn nova_range(&mut self, t: &mut TypeRef, r: &str, at: &str) {
         match novafile_schema::parse_type(&format!("decimal @range({r})")) {
             Ok(p) => t.constraints.range = p.constraints.range,
@@ -932,6 +955,7 @@ impl Conv<'_> {
     }
 }
 
+/// Keywords handled next to a `$ref`.
 const CONSTRAINT_KEYWORDS: &[&str] = &[
     "$ref",
     "minimum",
@@ -947,7 +971,9 @@ const CONSTRAINT_KEYWORDS: &[&str] = &[
     "x-nova-range",
     "x-nova-len",
 ];
+/// Keywords handled for `type: number`.
 const NUMBER_KEYWORDS: &[&str] = &["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "x-nova-range"];
+/// Keywords handled for `type: string`.
 const STRING_KEYWORDS: &[&str] = &[
     "minLength",
     "maxLength",
@@ -958,6 +984,7 @@ const STRING_KEYWORDS: &[&str] = &[
     "const",
     "x-nova-len",
 ];
+/// Keywords handled for `type: array`.
 const ARRAY_KEYWORDS: &[&str] = &[
     "items",
     "prefixItems",
@@ -967,6 +994,7 @@ const ARRAY_KEYWORDS: &[&str] = &[
     "minItems",
     "maxItems",
 ];
+/// Keywords handled for `type: object` without properties (a map).
 const MAP_KEYWORDS: &[&str] = &[
     "additionalProperties",
     "unevaluatedProperties",
@@ -976,6 +1004,7 @@ const MAP_KEYWORDS: &[&str] = &[
     "maxProperties",
 ];
 
+/// Set `@len` from a pair of min/max keywords, if either is present.
 fn len(t: &mut TypeRef, o: &Obj, min: &str, max: &str) {
     let lo = o.get(min).and_then(Json::as_u64);
     let hi = o.get(max).and_then(Json::as_u64);
@@ -1007,7 +1036,9 @@ fn shape(o: &Obj) -> Shape {
     Shape::Other
 }
 
+/// One alternative of an externally tagged enum.
 enum Alt<'j> {
+    /// Unit variants, from a string `enum` or `const`.
     Units(Vec<String>),
     /// Tag, payload schema, index of the alternative.
     Payload(String, &'j Json, usize),
@@ -1092,6 +1123,7 @@ fn tagged_alternatives(o: &Obj) -> Option<(String, Vec<(usize, &Obj)>)> {
     valid_name(tag).then(|| (tag.clone(), alts))
 }
 
+/// The string of a `const` or a one-element `enum`.
 fn const_str(s: &Json) -> Option<String> {
     if let Some(c) = s.get("const").and_then(Json::as_str) {
         return Some(c.to_owned());
@@ -1103,6 +1135,7 @@ fn const_str(s: &Json) -> Option<String> {
     }
 }
 
+/// The `any` type.
 fn any() -> TypeRef {
     TypeRef::new(TypeKind::Any)
 }
@@ -1149,6 +1182,7 @@ fn pascal(s: &str) -> String {
     out
 }
 
+/// Whether `s` is `{"type": "null"}`, possibly with annotations.
 fn is_null_schema(s: &Json) -> bool {
     s.get("type").and_then(Json::as_str) == Some(NULL_TYPE) && s.as_object().is_some_and(|o| o.keys().all(|k| k == "type" || !is_structural(k)))
 }
@@ -1190,6 +1224,7 @@ fn strip_null(o: &Obj) -> (Obj, bool) {
     (o, nullable)
 }
 
+/// The `type` implied by type-specific keywords when `type` is missing.
 fn infer_type(o: &Obj) -> Option<Json> {
     let has = |ks: &[&str]| ks.iter().any(|k| o.contains_key(*k));
     let t = if has(&[
@@ -1215,6 +1250,7 @@ fn infer_type(o: &Obj) -> Option<Json> {
     Some(Json::String(t.into()))
 }
 
+/// The common `type` of `enum`/`const` values (integers widen to `number`).
 fn type_of_values(vals: &[Json]) -> Option<Json> {
     let names: HashSet<&str> = vals
         .iter()
@@ -1313,6 +1349,7 @@ fn normalize_ref(r: &str) -> String {
     }
 }
 
+/// Escape a key for use in a JSON pointer (RFC 6901).
 fn escape_pointer(s: &str) -> String {
     s.replace('~', "~0").replace('/', "~1")
 }

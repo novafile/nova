@@ -12,6 +12,7 @@ use serde_json::{Value as J, json};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+/// Lowercase hex encoding of `b`.
 fn hex(b: &[u8]) -> String {
     b.iter().fold(String::with_capacity(b.len() * 2), |mut s, x| {
         let _ = write!(s, "{x:02x}");
@@ -28,6 +29,7 @@ fn value_expect(v: &Value) -> J {
     })
 }
 
+/// Files in `dir` with extension `ext`, sorted; empty if `dir` is missing.
 fn files(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == ext)).collect())
@@ -36,6 +38,7 @@ fn files(dir: &Path, ext: &str) -> Vec<PathBuf> {
     v
 }
 
+/// Subdirectories of `dir`, sorted; empty if `dir` is missing.
 fn dirs(dir: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
@@ -44,10 +47,12 @@ fn dirs(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
+/// Reads a file as text, panicking with its path if that fails.
 fn read(p: &Path) -> String {
     std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 
+/// Expectation file for an input: `case.nova` maps to `case.expect.json` beside it.
 fn expect_path(input: &Path) -> PathBuf {
     let stem = input.file_stem().unwrap().to_string_lossy();
     input.with_file_name(format!("{stem}.expect.json"))

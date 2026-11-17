@@ -3,9 +3,13 @@
 use crate::model::{Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
 use novafile_text::Parser;
 
+/// A schema that failed to parse.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaError {
+    /// 1-based line of the problem; 0 for checks over the whole schema
+    /// (unknown references, alias cycles).
     pub line: usize,
+    /// What is wrong.
     pub message: String,
 }
 
@@ -19,33 +23,41 @@ impl std::error::Error for SchemaError {}
 
 /// Cursor over a single type expression.
 pub(crate) struct TyParser<'a> {
+    /// The text being parsed.
     s: &'a str,
+    /// Byte offset of the cursor in `s`.
     pub(crate) i: usize,
 }
 
 impl<'a> TyParser<'a> {
+    /// A cursor at the start of `s`.
     pub(crate) fn new(s: &'a str) -> Self {
         TyParser { s, i: 0 }
     }
 
+    /// The input as bytes.
     fn b(&self) -> &[u8] {
         self.s.as_bytes()
     }
 
+    /// The byte at the cursor, if any.
     fn peek(&self) -> Option<u8> {
         self.b().get(self.i).copied()
     }
 
+    /// Skip spaces (only `' '`, not tabs).
     fn ws(&mut self) {
         while self.peek() == Some(b' ') {
             self.i += 1;
         }
     }
 
+    /// The input after the cursor.
     pub(crate) fn rest(&self) -> &'a str {
         &self.s[self.i..]
     }
 
+    /// Consume an identifier (`[A-Za-z0-9_]+`); fails if there is none.
     fn ident(&mut self) -> Result<&'a str, String> {
         let st = self.i;
         while self.peek().is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_') {
@@ -59,6 +71,7 @@ impl<'a> TyParser<'a> {
         Ok(&self.s[st..self.i])
     }
 
+    /// Skip spaces, then consume `c` if it is next; returns whether it was.
     fn eat(&mut self, c: u8) -> bool {
         self.ws();
         if self.peek() == Some(c) {
@@ -69,6 +82,7 @@ impl<'a> TyParser<'a> {
         }
     }
 
+    /// Like [`Self::eat`], but `c` is required.
     fn need(&mut self, c: u8) -> Result<(), String> {
         if self.eat(c) {
             Ok(())
@@ -107,6 +121,7 @@ impl<'a> TyParser<'a> {
         Ok(t)
     }
 
+    /// A tuple, built-in or named type, before any `[]` or `?` suffix.
     fn atom(&mut self) -> Result<TypeRef, String> {
         self.ws();
         if self.eat(b'(') {
@@ -162,6 +177,7 @@ impl<'a> TyParser<'a> {
         Ok(TypeRef::new(kind))
     }
 
+    /// One side of a `@range`; empty means unbounded.
     fn bound_num(s: &str) -> Result<Option<Num>, String> {
         let s = s.trim();
         if s.is_empty() {
@@ -252,6 +268,7 @@ pub fn parse_type(s: &str) -> Result<TypeRef, String> {
     Ok(t)
 }
 
+/// The line without its trailing `#` comment.
 fn strip_comment(line: &str) -> &str {
     // `#` starts a comment when preceded by whitespace or at line start, outside quotes.
     let b = line.as_bytes();
@@ -284,6 +301,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
     let lines: Vec<&str> = src.lines().collect();
     let mut i = 0;
     let err = |line: usize, m: String| SchemaError { line: line + 1, message: m };
+
     while i < lines.len() {
         let raw = strip_comment(lines[i]).trim_end();
         if raw.trim().is_empty() {
@@ -400,6 +418,8 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
     Ok(schema)
 }
 
+/// Add a definition. Fails if the name does not start with an uppercase
+/// letter, contains characters other than `[A-Za-z0-9_]`, or is taken.
 fn push_def(s: &mut Schema, name: &str, d: Def) -> Result<(), String> {
     if !name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(format!("type names start with an uppercase letter: {name:?}"));
@@ -413,6 +433,7 @@ fn push_def(s: &mut Schema, name: &str, d: Def) -> Result<(), String> {
     Ok(())
 }
 
+/// Parse an enum variant: `name` or `name(Type)`.
 fn parse_variant(s: &str) -> Result<VariantDef, String> {
     match s.split_once('(') {
         Some((n, rest)) => {
@@ -429,11 +450,15 @@ fn parse_variant(s: &str) -> Result<VariantDef, String> {
     }
 }
 
+/// Accept a field or variant name: a letter or `_`, then letters, digits, `_`
+/// or `-`.
 fn check_name(n: &str) -> Result<String, String> {
     let ok = n.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     if ok { Ok(n.to_owned()) } else { Err(format!("invalid name {n:?}")) }
 }
 
+/// Parse a record field line without its indentation:
+/// `name[?]: type [attributes] [= default]`.
 fn parse_field(body: &str) -> Result<FieldDef, String> {
     let (lhs, rhs) = body.split_once(':').ok_or("expected `name: type`")?;
     let (name, optional) = match lhs.strip_suffix('?') {
@@ -482,7 +507,10 @@ fn parse_field(body: &str) -> Result<FieldDef, String> {
     Ok(f)
 }
 
+/// Check that every named type and the `@root` refer to a definition and
+/// that no alias chain is cyclic.
 fn check_refs(s: &Schema) -> Result<(), String> {
+    /// Checks that every named type reachable from `t` refers to a definition in `s`.
     fn walk(s: &Schema, t: &TypeRef) -> Result<(), String> {
         match &t.kind {
             TypeKind::Named(n) => s.def(n).map(|_| ()).ok_or_else(|| format!("unknown type {n}")),

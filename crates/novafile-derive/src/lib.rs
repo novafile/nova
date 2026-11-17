@@ -13,35 +13,53 @@ use quote::quote;
 use std::fmt::Write as _;
 use syn::{Attribute, Data, DeriveInput, Error, Fields, LitInt, LitStr, parse_macro_input, spanned::Spanned};
 
+/// Derives `NovaSchema`; see the crate documentation for the supported attributes.
 #[proc_macro_derive(NovaSchema, attributes(nova))]
 pub fn derive_nova_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     expand(&input).unwrap_or_else(Error::into_compile_error).into()
 }
 
+/// Container-level settings, from `#[nova(...)]` and the relevant `#[serde(...)]` keys.
 #[derive(Default)]
 struct Container {
+    /// Schema name for `nova_schema_id`; only valid together with `version`.
     name: Option<String>,
+    /// Schema version for `nova_schema_id`; only valid together with `name`.
     version: Option<String>,
+    /// Definition name to use instead of the Rust type name.
     rename: Option<String>,
+    /// Serde-style `rename_all` rule applied to field and variant names.
     rename_all: Option<String>,
+    /// Emit the record as `@open`, accepting unknown fields.
     open: bool,
 }
 
+/// Settings of a field or enum variant, from `#[nova(...)]`, `#[serde(...)]` and `#[deprecated]`.
 #[derive(Default)]
 #[expect(clippy::struct_excessive_bools, reason = "one flag per independent attribute")]
 struct FieldAttrs {
+    /// Explicit NOVA name; `#[nova(rename)]` wins over `#[serde(rename)]`.
     rename: Option<String>,
+    /// Mark the field as `@key`.
     key: bool,
+    /// Field id for `@id(N)`.
     id: Option<u32>,
+    /// Body of an `@range(...)` constraint, inserted verbatim.
     range: Option<String>,
+    /// Body of an `@len(...)` constraint, inserted verbatim.
     len: Option<String>,
+    /// Default value as a NOVA flow literal; makes the field non-optional.
     default: Option<String>,
+    /// `#[serde(default)]` is present, so the field may be absent (optional).
     serde_default: bool,
+    /// Mark the field as `@deprecated`.
     deprecated: bool,
+    /// Leave the field or variant out of the schema, as serde does.
     skip: bool,
 }
 
+/// The string literal of a `key = "..."` attribute.
 fn str_lit(meta: &syn::meta::ParseNestedMeta) -> syn::Result<String> {
     Ok(meta.value()?.parse::<LitStr>()?.value())
 }
@@ -59,6 +77,8 @@ fn ignore(meta: &syn::meta::ParseNestedMeta) -> syn::Result<()> {
     Ok(())
 }
 
+/// Read the container attributes. Unknown `#[nova]` keys and serde enum
+/// representations other than external tagging are errors; other serde keys are ignored.
 fn container_attrs(attrs: &[Attribute]) -> syn::Result<Container> {
     let mut c = Container::default();
     for a in attrs {
@@ -102,6 +122,8 @@ fn container_attrs(attrs: &[Attribute]) -> syn::Result<Container> {
     Ok(c)
 }
 
+/// Read the attributes of a field or variant. Unknown `#[nova]` keys and
+/// `#[serde(flatten)]` are errors; other serde keys are ignored.
 fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
     let mut f = FieldAttrs::default();
     for a in attrs {
@@ -266,6 +288,8 @@ fn record_fields(owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> 
     }})
 }
 
+/// Generate the `NovaSchema` impl: the type registers itself as a named
+/// definition, and `nova_schema_id` is emitted when name and version are given.
 fn expand(input: &DeriveInput) -> syn::Result<Ts> {
     if !input.generics.params.is_empty() {
         return Err(Error::new(input.generics.span(), "NovaSchema cannot be derived for generic types yet"));

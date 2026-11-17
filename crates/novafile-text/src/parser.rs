@@ -7,14 +7,19 @@ use base64::Engine;
 use novafile_value::{Decimal, Duration, Rational, Timestamp, Value};
 use std::fmt;
 
+/// Maximum nesting depth of values; deeper input is rejected to bound recursion.
 pub const MAX_DEPTH: usize = 128;
 
+/// A syntax error with its source position.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseError {
+    /// 1-based line.
     pub line: usize,
+    /// 1-based column, counted in characters.
     pub col: usize,
     /// Byte offset into the source.
     pub offset: usize,
+    /// Human-readable description; advice, if any, follows a `; `.
     pub message: String,
 }
 
@@ -26,15 +31,21 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Result type of the parser.
 type R<T> = Result<T, ParseError>;
 
 /// Characters that may not begin a bare word or plain scalar (spec §4.4).
 pub(crate) const RESERVED_START: &[u8] = b"!\"#$%&'*,:<=>?@[\\]^`{|}~()";
+/// Bytes that end a bare word in flow context.
 const FLOW_DELIMS: &[u8] = b",[]{}()\"";
 
+/// The kind of number a token spells.
 pub(crate) enum NumKind {
+    /// An integer.
     Int,
+    /// A float: has a fraction or an exponent.
     Float,
+    /// A rational `p/q`.
     Rational,
 }
 
@@ -131,6 +142,8 @@ pub(crate) fn classify(tok: &str) -> Result<Value, String> {
     }
 }
 
+/// Build the value of a scalar typed literal `@name("arg")` (`@set` and `@map` are parsed
+/// separately). Fails on an unknown name or an invalid argument.
 pub(crate) fn typed_literal(name: &str, arg: &str) -> Result<Value, String> {
     Ok(match name {
         "timestamp" => Value::Timestamp(Timestamp::parse(arg)?),
@@ -155,26 +168,41 @@ pub(crate) fn typed_literal(name: &str, arg: &str) -> Result<Value, String> {
     })
 }
 
+/// Whether an indented block is a list or a record.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BlockKind {
+    /// A block list (`- ` items or a table).
     List,
+    /// A block record (`key: value` lines).
     Record,
 }
 
+/// Recursive-descent parser over a source string; the cursor is a byte offset.
 pub struct Parser<'a> {
+    /// The source text.
     pub(crate) src: &'a str,
+    /// `src` as bytes, for byte-wise scanning.
     b: &'a [u8],
+    /// Cursor: byte offset of the next unread byte.
     pub pos: usize,
+    /// Whether template constructs (`$ref`, `...`, `${}`, `@if`, `@for`) are accepted; set by `@template`.
     pub template: bool,
+    /// Current nesting depth, checked against [`MAX_DEPTH`].
     depth: usize,
+    /// Recorded value spans, or `None` when span recording is off.
     spans: Option<Vec<Span>>,
+    /// Byte ranges of comments seen (recorded only with spans).
     comments: Vec<(usize, usize)>,
+    /// Number of flow brackets currently open around the cursor.
     bracket_depth: usize,
+    /// Path of the value being parsed, for span recording.
     cur: Vec<Segment>,
+    /// End offset of the most recently parsed value, excluding trailing whitespace and comments.
     last_end: usize,
 }
 
 impl<'a> Parser<'a> {
+    /// Create a parser at the start of `src`; `template` enables template constructs from the outset.
     #[must_use]
     pub fn new(src: &'a str, template: bool) -> Self {
         Parser {
@@ -198,6 +226,7 @@ impl<'a> Parser<'a> {
         self
     }
 
+    /// Take the spans recorded so far (empty unless created [`with_spans`](Self::with_spans)).
     pub fn take_spans(&mut self) -> Vec<Span> {
         self.spans.take().unwrap_or_default()
     }
@@ -245,6 +274,7 @@ impl<'a> Parser<'a> {
         r
     }
 
+    /// Build a [`ParseError`] for byte offset `pos` (clamped to the source length).
     pub fn error_at(&self, pos: usize, msg: impl Into<String>) -> ParseError {
         let pos = pos.min(self.src.len());
         let before = &self.src[..pos];
@@ -258,40 +288,49 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Fail at the cursor with `msg`.
     fn err<T>(&self, msg: impl Into<String>) -> R<T> {
         Err(self.error_at(self.pos, msg))
     }
 
+    /// The byte at the cursor.
     fn peek(&self) -> Option<u8> {
         self.b.get(self.pos).copied()
     }
 
+    /// The byte `n` bytes past the cursor.
     fn peek_at(&self, n: usize) -> Option<u8> {
         self.b.get(self.pos + n).copied()
     }
 
+    /// Whether the source at the cursor starts with `s`.
     fn starts_with(&self, s: &str) -> bool {
         self.src[self.pos..].starts_with(s)
     }
 
+    /// The byte at the cursor, or `None` at the end of input.
     #[must_use]
     pub fn peek_byte(&self) -> Option<u8> {
         self.peek()
     }
 
+    /// Whether the cursor is at the end of the source.
     #[must_use]
     pub fn at_eof(&self) -> bool {
         self.pos >= self.b.len()
     }
 
+    /// Whether the cursor is at a line break or the end of input.
     fn at_eol(&self) -> bool {
         matches!(self.peek(), None | Some(b'\n' | b'\r'))
     }
 
+    /// Whether the cursor is at a line break, the end of input or a `#` comment.
     fn at_eol_or_comment(&self) -> bool {
         self.at_eol() || self.peek() == Some(b'#')
     }
 
+    /// Skip spaces and tabs on the current line.
     pub fn skip_inline_ws(&mut self) {
         while matches!(self.peek(), Some(b' ' | b'\t')) {
             self.pos += 1;
@@ -373,6 +412,7 @@ impl<'a> Parser<'a> {
         Ok(Some(n))
     }
 
+    /// Parse an identifier at the cursor.
     fn ident(&mut self) -> R<String> {
         if !self.peek().is_some_and(is_ident_start) {
             return self.err("expected an identifier");
@@ -386,6 +426,7 @@ impl<'a> Parser<'a> {
         Ok(self.src[start..self.pos].to_owned())
     }
 
+    /// Consume byte `c`, or fail with "expected `what`".
     fn expect(&mut self, c: u8, what: &str) -> R<()> {
         if self.peek() == Some(c) {
             self.pos += 1;
@@ -463,6 +504,7 @@ impl<'a> Parser<'a> {
         Ok(parts)
     }
 
+    /// Parse the path inside `${...}` (cursor after `${`) through the closing `}`.
     fn interp_ref(&mut self) -> R<Path> {
         self.skip_inline_ws();
         let (p, n) = Path::parse_prefix(&self.src[self.pos..]).map_err(|m| self.error_at(self.pos, m))?;
@@ -476,6 +518,8 @@ impl<'a> Parser<'a> {
         Ok(p)
     }
 
+    /// Parse the rest of a `\u` escape (cursor after `u`): `{hex}` with 1 to 6 digits, or four hex
+    /// digits, where a high surrogate must be followed by a `\u` low surrogate.
     fn unicode_escape(&mut self) -> R<char> {
         if self.peek() == Some(b'{') {
             self.pos += 1;
@@ -532,6 +576,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a quoted string as a literal, or as [`Node::Interp`] if it interpolates `${...}` (templates only).
     fn quoted_node(&mut self) -> R<Node> {
         let mut parts = self.parse_quoted_parts(self.template)?;
         Ok(match (parts.len(), parts.first()) {
@@ -579,6 +624,7 @@ impl<'a> Parser<'a> {
         r
     }
 
+    /// Dispatch on the first byte of a flow value; [`parse_flow`](Self::parse_flow) wraps it with depth tracking.
     fn parse_flow_inner(&mut self) -> R<Node> {
         match self.peek() {
             None => self.err("expected a value"),
@@ -636,6 +682,7 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
+    /// Parse a `$path` reference (templates only).
     fn reference(&mut self) -> R<Node> {
         if !self.template {
             return self.err("`$` is reserved for template references; quote the string or add @template");
@@ -651,6 +698,8 @@ impl<'a> Parser<'a> {
         Ok(Node::Ref(p))
     }
 
+    /// Parse comma-separated items up to `close` (cursor after the opening bracket); a trailing comma
+    /// is allowed.
     fn flow_items(&mut self, close: u8) -> R<Vec<Item>> {
         let mut items = Vec::new();
         loop {
@@ -686,6 +735,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a record key: an identifier or a quoted string (interpolated in templates).
     fn key(&mut self) -> R<Key> {
         match self.peek() {
             Some(b'"') => {
@@ -703,9 +753,11 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse `{...}` entries (cursor after `{`), rejecting duplicate literal keys.
     fn flow_record(&mut self) -> R<Node> {
         let mut entries: Vec<Entry> = Vec::new();
         let mut seen = std::collections::HashSet::new();
+
         loop {
             self.skip_ws_multi();
             if self.peek() == Some(b'}') {
@@ -743,6 +795,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Append a field, failing at `kpos` if its literal key was already seen in this record.
     fn push_entry(&self, entries: &mut Vec<Entry>, seen: &mut std::collections::HashSet<String>, k: Key, v: Node, kpos: usize) -> R<()> {
         if let Key::Lit(name) = &k
             && !seen.insert(name.clone())
@@ -754,10 +807,12 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Parse `(...)` elements (cursor after `(`); a single element needs a trailing comma.
     fn flow_tuple(&mut self) -> R<Node> {
         let open = self.pos - 1;
         let mut items = Vec::new();
         let mut commas = 0;
+
         loop {
             self.skip_ws_multi();
             if self.peek() == Some(b')') {
@@ -789,6 +844,7 @@ impl<'a> Parser<'a> {
         Ok(Node::Tuple(items))
     }
 
+    /// Parse a typed value starting at `@`: `@set[...]`, `@map{...}` or a scalar `@name("arg")`.
     fn typed(&mut self) -> R<Node> {
         let start = self.pos;
         self.pos += 1;
@@ -850,6 +906,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse `!tag` with an optional `(payload)`.
     fn variant_flow(&mut self) -> R<Node> {
         self.pos += 1;
         let tag = self.ident()?;
@@ -865,6 +922,8 @@ impl<'a> Parser<'a> {
         Ok(Node::Variant(tag, None))
     }
 
+    /// Parse a bare flow word and classify it as keyword, number or string. A `:` ends the word only
+    /// when followed by whitespace, a delimiter or the end of input.
     fn word(&mut self) -> R<Node> {
         let start = self.pos;
         while let Some(c) = self.peek() {
@@ -939,10 +998,12 @@ impl<'a> Parser<'a> {
         b.get(p) == Some(&b':') && matches!(b.get(p + 1), None | Some(b' ' | b'\t' | b'\r' | b'\n' | b'#'))
     }
 
+    /// Whether the cursor is at a `-` list marker (followed by a space, a line break or the end of input).
     fn is_list_marker(&self) -> bool {
         self.peek() == Some(b'-') && matches!(self.peek_at(1), None | Some(b' ' | b'\r' | b'\n'))
     }
 
+    /// The template control keyword (`@if `, `@for ` or `@else`) at the cursor, if any.
     fn control_keyword(&self) -> Option<&'static str> {
         if !self.template {
             return None;
@@ -1012,9 +1073,13 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse block record lines at `indent`. With `inline_first`, the first entry starts at the
+    /// cursor (after the `- ` of a list item). Stops at a dedent, or before a list marker or an `@else`
+    /// at this indentation.
     fn block_record(&mut self, indent: usize, mut inline_first: bool) -> R<Vec<Entry>> {
         let mut entries: Vec<Entry> = Vec::new();
         let mut seen = std::collections::HashSet::new();
+
         loop {
             let line_start = self.pos;
             if !inline_first && !self.next_block_line(indent)? {
@@ -1085,9 +1150,11 @@ impl<'a> Parser<'a> {
         Ok(entries)
     }
 
+    /// Parse `- ` items at `indent`; stops at a dedent or before an `@else` at this indentation.
     fn block_list(&mut self, indent: usize) -> R<Vec<Item>> {
         let mut items = Vec::new();
         let mut node_count: i64 = 0;
+
         loop {
             let line_start = self.pos;
             if !self.next_block_line(indent)? {
@@ -1193,6 +1260,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse an unquoted scalar up to the end of the line (or a ` #` comment), rejecting text that
+    /// would be ambiguous in block context.
     fn plain_scalar(&mut self) -> R<Node> {
         let start = self.pos;
         let line_end = self.src[start..].find('\n').map_or(self.src.len(), |i| start + i);
@@ -1247,6 +1316,8 @@ impl<'a> Parser<'a> {
         Ok(Node::Lit(v))
     }
 
+    /// Parse a `|` (keep the final newline) or `|-` (strip it) block string whose lines are indented
+    /// `parent + 2`. Trailing blank lines are dropped.
     fn block_string(&mut self, parent: usize) -> R<Node> {
         self.pos += 1;
         let strip = self.peek() == Some(b'-');
@@ -1257,6 +1328,7 @@ impl<'a> Parser<'a> {
         self.end_line()?;
         let indent = parent + 2;
         let mut lines: Vec<&str> = Vec::new();
+
         while !self.at_eof() {
             let end = self.src[self.pos..].find('\n').map_or(self.src.len(), |i| self.pos + i);
             let raw = self.src[self.pos..end].strip_suffix('\r').unwrap_or(&self.src[self.pos..end]);
@@ -1294,6 +1366,8 @@ impl<'a> Parser<'a> {
         Ok(Node::Lit(Value::String(s)))
     }
 
+    /// Split a block string's text into literal and `${path}` parts (templates only); `$${` stands for a
+    /// literal `${`.
     fn interpolate_block(&self, s: &str) -> R<Node> {
         let mut parts = Vec::new();
         let mut buf = String::new();
@@ -1335,6 +1409,7 @@ impl<'a> Parser<'a> {
     // Tables
     // ------------------------------------------------------------------
 
+    /// Parse a table header `[N]{col, ...}` (without the trailing `:`) into the row count and column names.
     fn table_header(&mut self) -> R<(usize, Vec<String>)> {
         self.expect(b'[', "`[`")?;
         let s = self.pos;
@@ -1373,6 +1448,8 @@ impl<'a> Parser<'a> {
         Ok((n, fields))
     }
 
+    /// Parse exactly `n` table rows at `indent` into a list of records; an empty cell leaves its field
+    /// absent.
     fn table_rows(&mut self, indent: usize, n: usize, fields: &[String]) -> R<Node> {
         // `n` is untrusted; each row takes at least one source byte, so cap the hint.
         let mut rows = Vec::with_capacity(n.min(self.src.len()));
@@ -1463,6 +1540,7 @@ impl<'a> Parser<'a> {
     // Template control lines
     // ------------------------------------------------------------------
 
+    /// Parse the body of a control line, which must be indented exactly `indent`.
     fn children(&mut self, indent: usize, kind: BlockKind) -> R<Ctl2> {
         self.skip_blank_lines();
         if !matches!(self.line_indent()?, Some(i) if i == indent) {
@@ -1475,6 +1553,8 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Parse `@if cond:` (cursor at `@if `) with its body and an optional `@else:` or `@else if`
+    /// at the same indentation.
     fn if_block(&mut self, indent: usize, kind: BlockKind) -> R<Ctl> {
         self.pos += 4; // "@if "
         let cond = self.cond()?;
@@ -1523,6 +1603,7 @@ impl<'a> Parser<'a> {
         self.if_block(indent, kind)
     }
 
+    /// Parse `@for [index,] var in expr:` (cursor at `@for `) with its body.
     fn for_block(&mut self, indent: usize, kind: BlockKind) -> R<Ctl> {
         self.pos += 5; // "@for "
         self.skip_inline_ws();
@@ -1554,10 +1635,12 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Whether the keyword `w` is at the cursor as a whole word.
     fn word_ahead(&self, w: &str) -> bool {
         self.starts_with(w) && !self.peek_at(w.len()).is_some_and(is_ident_char)
     }
 
+    /// Parse a condition: `or`-joined `and` terms (lowest precedence).
     fn cond(&mut self) -> R<Cond> {
         let mut l = self.cond_and()?;
         loop {
@@ -1572,6 +1655,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse `and`-joined unary conditions.
     fn cond_and(&mut self) -> R<Cond> {
         let mut l = self.cond_unary()?;
         loop {
@@ -1586,6 +1670,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse `not c`, a parenthesized condition, or an operand optionally compared with `==` / `!=`.
     fn cond_unary(&mut self) -> R<Cond> {
         self.skip_inline_ws();
         if self.word_ahead("not") {
@@ -1625,6 +1710,7 @@ impl<'a> Parser<'a> {
     // Documents
     // ------------------------------------------------------------------
 
+    /// Whether a header directive `@name` starts at the cursor (in templates, not `@if`, `@for` or `@else`).
     fn directive_ahead(&self) -> bool {
         if self.peek() != Some(b'@') {
             return false;
@@ -1640,6 +1726,8 @@ impl<'a> Parser<'a> {
         !(self.template && matches!(name, "if" | "for" | "else"))
     }
 
+    /// Take the rest of the line as a directive argument, trimmed and without a trailing comment, and
+    /// move the cursor to the next line.
     fn rest_of_line_arg(&mut self) -> String {
         let start = self.pos;
         let end = self.src[start..].find('\n').map_or(self.src.len(), |i| start + i);
@@ -1675,6 +1763,7 @@ impl<'a> Parser<'a> {
 
         let mut directives = Vec::new();
         let mut tpl: Option<TemplateHeader> = None;
+
         loop {
             self.skip_blank_lines();
             if !self.directive_ahead() {
@@ -1806,6 +1895,8 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Parse the document body (a table, a block list or record, or one flow value) and require that
+    /// only blank lines and comments follow.
     fn parse_body(&mut self) -> R<Node> {
         self.skip_blank_lines();
         let body_start = self.pos;
@@ -1852,6 +1943,7 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// The path segment of a record key; interpolated keys get an empty field name.
 fn seg_of(k: &Key) -> Segment {
     match k {
         Key::Lit(s) => Segment::Field(s.clone()),
@@ -1859,12 +1951,18 @@ fn seg_of(k: &Key) -> Segment {
     }
 }
 
+/// A control block parsed in list or record context.
 enum Ctl {
+    /// In a record.
     Entry(Entry),
+    /// In a list.
     Item(Item),
 }
 
+/// The body of a control block: record entries or list items.
 enum Ctl2 {
+    /// Record context.
     Entries(Vec<Entry>),
+    /// List context.
     Items(Vec<Item>),
 }

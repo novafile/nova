@@ -17,48 +17,83 @@ use novafile_text::{Parser, Path, PathError, Segment, flow_string};
 use novafile_value::{Revision, Value, revision};
 use std::fmt;
 
+/// What an operation does at its path.
 #[derive(Clone, Debug, PartialEq)]
 pub enum OpKind {
-    Replace { old: Value, new: Value },
+    /// `path: old -> new`: replace the value, only if it currently equals `old`.
+    Replace {
+        /// The value the path must hold for the replace to apply.
+        old: Value,
+        /// The replacement value.
+        new: Value,
+    },
+    /// `= path: value`: set the value, inserting or replacing it.
     Set(Value),
+    /// `+ path: value`: append to a list, insert into a set, add a new field or
+    /// map entry, or insert before a list index (the length appends).
     Add(Value),
+    /// `- path[: old]`: remove the value, only if it equals `old` when given.
     Remove(Option<Value>),
+    /// `? path[: value]`: test that the path exists and, when given, equals `value`.
     Test(Option<Value>),
 }
 
+/// One operation of a patch.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Op {
+    /// Target path, relative to the patch's `@scope`.
     pub path: Path,
+    /// What to do at the path.
     pub kind: OpKind,
+    /// Line of the operation in the patch text (1-based); 0 for operations not
+    /// parsed from text, such as those [`diff`](crate::diff()) produces.
     pub line: usize,
 }
 
+/// A parsed patch: header directives and operations, applied in order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Patch {
+    /// Schema id from `@patch` or `@schema`, if any.
     pub schema: Option<String>,
+    /// Revision the document must still be at (`sha256:<rev>`), from `@patch` or
+    /// `@base`; a prefix of the full revision is accepted.
     pub base: Option<String>,
+    /// Path all operation paths are relative to; the root if there is no `@scope`.
     pub scope: Path,
+    /// The operations, in application order.
     pub ops: Vec<Op>,
 }
 
+/// Why a patch could not be parsed or applied.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PatchError {
+    /// The patch text is malformed.
     Syntax {
+        /// Line of the error (1-based).
         line: usize,
+        /// Column of the error (1-based).
         col: usize,
+        /// What is wrong.
         message: String,
     },
     /// The document is no longer at the patch's base revision.
     StaleBase {
+        /// The revision the patch expects.
         expected: String,
+        /// The revision the document is at.
         actual: Revision,
     },
+    /// The `@scope` path does not resolve in the document; nothing was applied.
     Scope(PathError),
     /// An operation failed; nothing was applied.
     Op {
+        /// Position of the failing operation in the patch (0-based).
         index: usize,
+        /// Line of the failing operation in the patch text.
         line: usize,
+        /// The failing operation, in patch syntax.
         op: String,
+        /// Why it failed.
         message: String,
     },
     /// The patched document failed validation; nothing was applied.
@@ -259,15 +294,20 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
     Ok(patch)
 }
 
+/// The next byte at the parser's position, if any.
 fn p_peek(p: &Parser) -> Option<u8> {
     // Parser keeps its byte view private; re-derive from the shared source.
     p.peek_byte()
 }
 
+/// The result of a successful [`apply`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Applied {
+    /// The patched document.
     pub value: Value,
+    /// Revision of the patched document.
     pub revision: Revision,
+    /// Revision of the document before the patch.
     pub base: Revision,
 }
 
@@ -313,6 +353,7 @@ pub fn apply(doc: &Value, patch: &Patch, validate: &dyn Fn(&Value) -> Result<(),
     })
 }
 
+/// A value in flow syntax for error messages, cut to about 60 bytes.
 fn show(v: &Value) -> String {
     let s = flow_string(v);
     if s.len() > 60 {
@@ -322,6 +363,8 @@ fn show(v: &Value) -> String {
     }
 }
 
+/// Apply one operation to `root` in place, at the absolute `path`. On error
+/// `root` may be partly changed; [`apply`] works on a copy for atomicity.
 #[expect(clippy::too_many_lines, reason = "one arm per operation kind; each is self-contained")]
 pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(), String> {
     let to_msg = |e: PathError| e.to_string();
@@ -338,6 +381,7 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
             if cur != old {
                 return Err(format!("conflict: expected {}, found {}", show(old), show(cur)));
             }
+
             *cur = new.clone();
             Ok(())
         }
@@ -480,6 +524,8 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
     }
 }
 
+/// The map key a path segment addresses: a field name as a string, an index
+/// as an integer, or the key itself. Only for field, index and key segments.
 fn seg_key(seg: &Segment) -> Value {
     match seg {
         Segment::Field(s) => Value::String(s.clone()),

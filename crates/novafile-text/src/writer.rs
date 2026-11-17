@@ -17,8 +17,10 @@ pub enum Profile {
     Canonical,
 }
 
+/// Maximum width of a line holding an inline list; longer lists are written as blocks.
 const FLOW_WIDTH: usize = 80;
 
+/// Whether `s` is a bare identifier, usable as an unquoted key.
 pub(crate) fn is_ident(s: &str) -> bool {
     let b = s.as_bytes();
     !b.is_empty() && is_ident_start(b[0]) && b.iter().all(|&c| is_ident_char(c))
@@ -30,6 +32,7 @@ pub fn key_text(k: &str) -> String {
     if is_ident(k) { k.to_owned() } else { quote(k) }
 }
 
+/// `s` as a double-quoted string literal, escaping quotes, backslashes and control characters.
 #[must_use]
 pub fn quote(s: &str) -> String {
     let mut o = String::with_capacity(s.len() + 2);
@@ -52,6 +55,8 @@ pub fn quote(s: &str) -> String {
     o
 }
 
+/// Whether `s` must be quoted in every context: it is empty, starts with a reserved character or
+/// `...`, contains a control character, or would read back as something other than a string.
 fn common_unsafe(s: &str) -> bool {
     s.is_empty()
         || RESERVED_START.contains(&s.as_bytes()[0])
@@ -70,6 +75,7 @@ pub(crate) fn plain_safe(s: &str) -> bool {
     !common_unsafe(s) && s.trim() == s && !s.ends_with(':') && !s.contains(": ") && !s.contains(" #") && s != "-" && !s.starts_with("- ")
 }
 
+/// Float literal text; NaN and the infinities use the `@float("...")` form.
 fn float_text(f: f64) -> String {
     if f.is_nan() {
         "@float(\"nan\")".into()
@@ -80,6 +86,7 @@ fn float_text(f: f64) -> String {
     }
 }
 
+/// Text of a scalar that is not a string, or `None` for strings and containers.
 fn scalar_text(v: &Value) -> Option<String> {
     Some(match v {
         Value::Null => "null".into(),
@@ -103,6 +110,7 @@ pub fn flow_string(v: &Value) -> String {
     s
 }
 
+/// Append the flow form of `v` to `o`, separating elements with `sep`.
 fn write_flow(o: &mut String, v: &Value, sep: &str) {
     if let Some(t) = scalar_text(v) {
         o.push_str(&t);
@@ -185,6 +193,7 @@ fn write_flow(o: &mut String, v: &Value, sep: &str) {
 
 /// Put sets and maps (recursively) in canonical order and sort record keys.
 pub fn canonicalize(v: &mut Value) {
+    /// Sorts set elements and map entries by canonical bytes, children first; record keys are left to `sort_keys`.
     fn walk(v: &mut Value) {
         match v {
             Value::List(l) | Value::Tuple(l) => {
@@ -217,8 +226,11 @@ pub fn canonicalize(v: &mut Value) {
     walk(v);
 }
 
+/// Block writer state shared by all profiles.
 pub(crate) struct W<'t> {
+    /// Text written so far.
     pub(crate) out: String,
+    /// Compact profile: uniform record lists become tables and flow elements get no space after `,`.
     pub(crate) compact: bool,
     /// Comments, blank lines and spellings to carry over (document-preserving formatting).
     pub(crate) trivia: Option<&'t crate::format::Trivia>,
@@ -227,6 +239,7 @@ pub(crate) struct W<'t> {
 }
 
 impl<'t> W<'t> {
+    /// A writer with empty output, positioned at the root path.
     pub(crate) fn new(compact: bool, trivia: Option<&'t crate::format::Trivia>) -> Self {
         W {
             out: String::new(),
@@ -236,6 +249,7 @@ impl<'t> W<'t> {
         }
     }
 
+    /// The current path as displayed; the key into the trivia maps.
     fn here(&self) -> String {
         crate::path::Path(self.path.clone()).to_string()
     }
@@ -299,14 +313,17 @@ impl<'t> W<'t> {
         (t.keep_spelling && orig == v).then(|| text.clone())
     }
 
+    /// Separator between flow elements for this profile.
     fn sep(&self) -> &'static str {
         if self.compact { "," } else { ", " }
     }
 
+    /// Append `n` spaces.
     fn pad(&mut self, n: usize) {
         self.out.extend(std::iter::repeat_n(' ', n));
     }
 
+    /// The flow form of `v` with this profile's separator.
     fn flow(&self, v: &Value) -> String {
         let mut s = String::new();
         write_flow(&mut s, v, self.sep());
@@ -324,6 +341,9 @@ impl<'t> W<'t> {
         }
     }
 
+    /// Column names if `l` should be written as a table: it was a table in the source or, in the
+    /// Compact profile, has at least two rows; every element is a non-empty record of scalars; and at
+    /// least half the cells are filled. Columns are in first-seen order.
     fn table_fields(&self, l: &[Value]) -> Option<Vec<String>> {
         let was_table = self.trivia.is_some_and(|t| t.tables.contains(&self.here()));
         if !(was_table || (self.compact && l.len() >= 2)) || l.is_empty() {
@@ -332,6 +352,7 @@ impl<'t> W<'t> {
 
         let mut fields: Vec<String> = Vec::new();
         let mut present = 0usize;
+
         for v in l {
             let r = v.as_record()?;
             if r.is_empty() {
@@ -361,6 +382,7 @@ impl<'t> W<'t> {
             .then(|| self.spelling(v).unwrap_or_else(|| self.scalar_line(v)))
     }
 
+    /// Single-line text of `v`: a plain scalar for strings that allow it, otherwise flow.
     fn scalar_line(&self, v: &Value) -> String {
         match v {
             Value::String(s) if plain_safe(s) => s.clone(),
@@ -421,6 +443,8 @@ impl<'t> W<'t> {
         }
     }
 
+    /// Write the entry `k: v` at `indent` with its comments. Without `pad`, the line is already
+    /// started (first field after a `- `), so neither indentation nor leading comments are written.
     pub(crate) fn entry(&mut self, k: &str, v: &Value, indent: usize, pad: bool) {
         self.path.push(crate::path::Segment::Field(k.to_owned()));
         let key = key_text(k);
@@ -452,6 +476,8 @@ impl<'t> W<'t> {
         self.path.pop();
     }
 
+    /// Write a table header `[N]{cols}:` after the already-written key, then one row per record at
+    /// `indent + 2`; absent fields become empty cells.
     fn table(&mut self, l: &[Value], fields: &[String], indent: usize) {
         let header: Vec<String> = fields.iter().map(|f| key_text(f)).collect();
         let _ = writeln!(self.out, "[{}]{{{}}}:", l.len(), header.join(","));
@@ -481,6 +507,7 @@ impl<'t> W<'t> {
         }
     }
 
+    /// Write `- value` at `indent` with its comments.
     pub(crate) fn item(&mut self, v: &Value, indent: usize) {
         self.emit_leading(indent);
         if v.is_container() && !matches!(v, Value::Record(r) if !r.is_empty()) && !self.wants_block(v, indent + 2) {
@@ -493,6 +520,7 @@ impl<'t> W<'t> {
         self.emit_trailing(mark);
     }
 
+    /// Write the `-` marker and the item; a non-empty record starts on the marker's line.
     fn item_body(&mut self, v: &Value, indent: usize) {
         self.out.push('-');
         match v {
@@ -512,6 +540,8 @@ impl<'t> W<'t> {
     }
 }
 
+/// Whether `s` survives a round trip as a `|`/`|-` block string: multi-line, no control characters
+/// other than tab, no whitespace-only lines, at most one trailing newline, and not just a newline.
 fn block_string_ok(s: &str) -> bool {
     s.contains('\n')
         && !s.ends_with("\n\n")
@@ -538,6 +568,8 @@ pub fn to_text(v: &Value, profile: Profile) -> String {
     w.out
 }
 
+/// Write the document body: a non-empty record or list as a block (or a top-level table), anything
+/// else as one flow line.
 pub(crate) fn write_body(w: &mut W, v: &Value) {
     match v {
         Value::Record(r) if !r.is_empty() => w.block(v, 0),

@@ -14,6 +14,9 @@ pub fn select(root: &Value, path: &Path) -> Result<Value, PathError> {
     sel(root, &path.0, 0, path)
 }
 
+/// Evaluate `segs`, the rest of `full` after its first `depth` segments, on
+/// `cur`. Filters and `[*]` map over the elements and collect a list; errors
+/// name the path up to the failing step.
 fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value, PathError> {
     let Some((seg, rest)) = segs.split_first() else {
         return Ok(cur.clone());
@@ -75,6 +78,8 @@ fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value
     }
 }
 
+/// Keep only `fields` of a record, or of each record in a list; fields a
+/// record lacks are left out.
 fn project(v: &Value, fields: &[String], at: &Path) -> Result<Value, PathError> {
     match v {
         Value::Record(r) => {
@@ -103,10 +108,13 @@ pub struct Response {
     pub revision: Revision,
     /// The single location the answer came from, if any — usable as `@scope` in a patch.
     pub scope: Option<Path>,
+    /// The selected value.
     pub value: Value,
 }
 
 impl Response {
+    /// Render the response as a NOVA document: the value with `@revision` and,
+    /// unless it is the root, `@scope` directives.
     #[must_use]
     pub fn to_text(&self, profile: Profile) -> String {
         let rev = self.revision.to_string();

@@ -1,3 +1,5 @@
+//! Checks the expectation files of the conformance suite against this implementation.
+
 /// The reference implementation must reproduce every expectation file.
 #[test]
 fn conformance_suite() {

@@ -1,14 +1,18 @@
+//! The error type shared by serialization and deserialization.
+
 use std::fmt;
 
 /// A (de)serialization error, with the path of the offending value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
+    /// What went wrong, without the path.
     message: String,
     /// Path segments, outermost first (`services`, `[1]`, `port`).
     path: Vec<String>,
 }
 
 impl Error {
+    /// An error with message `m` at the root path.
     pub fn new(m: impl Into<String>) -> Self {
         Error {
             message: m.into(),
@@ -16,6 +20,7 @@ impl Error {
         }
     }
 
+    /// What went wrong, without the path.
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
@@ -36,15 +41,19 @@ impl Error {
         s
     }
 
+    /// Prefix the path with the segment `seg` (already in NOVA path syntax), as
+    /// the error propagates out of a nested value.
     pub(crate) fn at(mut self, seg: String) -> Self {
         self.path.insert(0, seg);
         self
     }
 
+    /// Prefix the path with the record key `key`, quoted if needed.
     pub(crate) fn at_field(self, key: &str) -> Self {
         self.at(novafile_text::key_text(key))
     }
 
+    /// Prefix the path with the list index `i`.
     pub(crate) fn at_index(self, i: usize) -> Self {
         self.at(format!("[{i}]"))
     }

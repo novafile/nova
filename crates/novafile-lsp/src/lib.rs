@@ -28,6 +28,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+/// Error type of the server loop: transport and (de)serialization failures.
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// Run the server on an established connection until shutdown.
@@ -76,18 +77,24 @@ pub fn run(conn: Connection) -> Result<(), Error> {
     server.main_loop()
 }
 
+/// Server state: open documents and the workspace's schemas.
 struct Server<'c> {
+    /// Text of every open document, as last sent by the client.
     docs: HashMap<Url, String>,
     /// Schemas found on disk at startup: (path, schema).
     disk_schemas: Vec<(PathBuf, Schema)>,
+    /// The client connection.
     conn: &'c Connection,
 }
 
 /// What kind of file a text is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
+    /// A schema (`.novs`).
     Schema,
+    /// A patch: starts with `@patch` or has the `.patch` extension.
     Patch,
+    /// A data document (anything else).
     Document,
 }
 
@@ -96,6 +103,7 @@ fn has_ext(path: &str, ext: &str) -> bool {
     std::path::Path::new(path).extension().is_some_and(|e| e == ext)
 }
 
+/// Classify a text by its URI extension and, for patches, its first directive.
 fn kind_of(uri: &Url, text: &str) -> Kind {
     if has_ext(uri.path(), "novs") {
         return Kind::Schema;
@@ -109,6 +117,7 @@ fn kind_of(uri: &Url, text: &str) -> Kind {
     }
 }
 
+/// LSP range between two byte offsets (an end before `start` is clamped to it).
 fn range(src: &str, start: usize, end: usize) -> Range {
     let (l1, c1) = line_col_utf16(src, start);
     let (l2, c2) = line_col_utf16(src, end.max(start));
@@ -134,6 +143,7 @@ fn point_range(src: &str, offset: usize) -> Range {
     range(src, offset, offset + n)
 }
 
+/// A diagnostic from the `nova` source.
 fn diag(range: Range, sev: DiagnosticSeverity, code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic {
         range,
@@ -147,11 +157,15 @@ fn diag(range: Range, sev: DiagnosticSeverity, code: &str, message: impl Into<St
 
 /// A successfully parsed data document.
 struct Parsed {
+    /// The document's value.
     value: Value,
+    /// Source spans of every path in the document.
     spans: SpanMap,
+    /// The `@schema` reference and the 1-based line of its directive.
     schema_ref: Option<(String, usize)>,
 }
 
+/// Parse a data document with spans; `Ok(None)` for templates.
 fn parse_data(text: &str) -> Result<Option<Parsed>, novafile_text::ParseError> {
     let (doc, spans) = novafile_text::parse_with_spans(text)?;
     if doc.is_template() {
@@ -169,7 +183,11 @@ fn parse_data(text: &str) -> Result<Option<Parsed>, novafile_text::ParseError> {
 }
 
 impl Server<'_> {
+    /// Collect every parseable `.novs` file under `root` (at most 8 directories deep,
+    /// skipping hidden directories, `target` and `node_modules`).
     fn scan_schemas(&mut self, root: &std::path::Path) {
+        /// Appends every `.novs` file below `dir` to `out`, recursing at most 8 levels and
+        /// skipping hidden directories, `target` and `node_modules`.
         fn walk(dir: &std::path::Path, depth: usize, out: &mut Vec<PathBuf>) {
             if depth > 8 {
                 return;
@@ -231,10 +249,12 @@ impl Server<'_> {
         Ok(candidates.pop())
     }
 
+    /// The schema matching the document's `@schema` reference, if one is found.
     fn schema_for(&self, parsed: &Parsed) -> Option<Schema> {
         parsed.schema_ref.as_ref().and_then(|(r, _)| self.find_schema(r).ok().flatten())
     }
 
+    /// Syntax errors, and schema validation for documents with a resolvable `@schema`.
     fn diagnostics(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         match kind_of(uri, text) {
@@ -315,6 +335,7 @@ impl Server<'_> {
             .collect()
     }
 
+    /// Send the diagnostics and lint findings of an open document to the client.
     fn publish(&self, uri: &Url) -> Result<(), Error> {
         let Some(text) = self.docs.get(uri) else { return Ok(()) };
         let mut diagnostics = self.diagnostics(uri, text);
@@ -331,6 +352,7 @@ impl Server<'_> {
         Ok(())
     }
 
+    /// Republish every open document, e.g. after a schema changed.
     fn publish_all(&self) -> Result<(), Error> {
         let uris: Vec<Url> = self.docs.keys().cloned().collect();
         for u in uris {
@@ -340,6 +362,7 @@ impl Server<'_> {
         Ok(())
     }
 
+    /// Handle messages until the client requests shutdown.
     fn main_loop(&mut self) -> Result<(), Error> {
         for msg in &self.conn.receiver {
             match msg {
@@ -364,6 +387,7 @@ impl Server<'_> {
         Ok(())
     }
 
+    /// Track open documents and republish diagnostics on open, change and close.
     fn notification(&mut self, n: Notification) -> Result<(), Error> {
         match n.method.as_str() {
             DidOpenTextDocument::METHOD => {
@@ -408,7 +432,9 @@ impl Server<'_> {
         Ok(())
     }
 
+    /// Answer a request; unsupported methods yield `MethodNotFound`.
     fn request(&self, req: Request) -> Result<serde_json::Value, (i32, String)> {
+        /// Serializes a response result, reporting a failure as an LSP `InternalError`.
         fn json<T: serde::Serialize>(v: T) -> Result<serde_json::Value, (i32, String)> {
             serde_json::to_value(v).map_err(|e| (lsp_server::ErrorCode::InternalError as i32, e.to_string()))
         }
@@ -438,6 +464,7 @@ impl Server<'_> {
         }
     }
 
+    /// The text and parse result of an open data document, if it parses.
     fn parsed(&self, uri: &Url) -> Option<(&str, Parsed)> {
         let text = self.docs.get(uri)?;
         if kind_of(uri, text) != Kind::Document {
@@ -447,6 +474,7 @@ impl Server<'_> {
         Some((text.as_str(), parse_data(text).ok()??))
     }
 
+    /// Hover: the path, kind and value under the cursor, with its schema type and field notes.
     fn hover(&self, uri: &Url, pos: Position) -> Option<Hover> {
         let (text, p) = self.parsed(uri)?;
         let off = offset_of_utf16(text, pos.line, pos.character);
@@ -504,11 +532,13 @@ impl Server<'_> {
         })
     }
 
+    /// Document outline of an open data document.
     fn symbols(&self, uri: &Url) -> Option<Vec<DocumentSymbol>> {
         let (text, p) = self.parsed(uri)?;
         Some(children_of(text, &p, &Path::root()))
     }
 
+    /// Document-preserving formatting (human profile) as one whole-document edit.
     fn format(&self, uri: &Url) -> Option<Vec<TextEdit>> {
         let text = self.docs.get(uri)?;
         if kind_of(uri, text) != Kind::Document {
@@ -527,6 +557,8 @@ impl Server<'_> {
         }])
     }
 
+    /// Completion from the schema: enum variants and booleans after `key:`, else the
+    /// missing fields of the enclosing record.
     fn complete(&self, uri: &Url, pos: Position) -> Option<Vec<CompletionItem>> {
         let text = self.docs.get(uri)?;
         if kind_of(uri, text) != Kind::Document {
@@ -542,6 +574,7 @@ impl Server<'_> {
             .iter()
             .map(|&u| char::from_u32(u32::from(u)).unwrap_or('?'))
             .collect();
+
         // Parse with the line being edited blanked out, so incomplete input does not hide the structure.
         let mut blanked: Vec<&str> = lines.clone();
         blanked[pos.line as usize] = "";
@@ -675,6 +708,7 @@ fn enclosing_record(text: &str, spans: &SpanMap, line: usize, indent: usize) -> 
     (indent == 0).then(Path::root)
 }
 
+/// Outline symbol kind for a value.
 fn symbol_kind(v: &Value) -> SymbolKind {
     match v {
         Value::Record(_) | Value::Map(_) => SymbolKind::OBJECT,
@@ -687,6 +721,8 @@ fn symbol_kind(v: &Value) -> SymbolKind {
     }
 }
 
+/// Outline symbols for the children of `parent`, recursively; list items holding a
+/// record are named after its `id`, `name` or `key` field.
 #[allow(deprecated)]
 fn children_of(text: &str, p: &Parsed, parent: &Path) -> Vec<DocumentSymbol> {
     p.spans

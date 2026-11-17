@@ -28,34 +28,49 @@ use novafile_text::{Path, Segment};
 use novafile_value::Value;
 use std::collections::HashMap;
 
+/// Severity of a finding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
+    /// A suggestion; does not affect the exit status of `nvf lint`.
     Hint,
+    /// A convention violation; `nvf lint` exits 1 if any remains.
     Warning,
 }
 
 /// A text replacement that fixes a finding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fix {
+    /// Start byte offset of the replaced text.
     pub start: usize,
+    /// End byte offset (exclusive) of the replaced text.
     pub end: usize,
+    /// Text to put in its place.
     pub replacement: String,
 }
 
+/// One rule violation in a linted source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finding {
+    /// Rule name, e.g. `key-case`.
     pub rule: &'static str,
+    /// Whether the finding is a warning or only a hint.
     pub level: Level,
+    /// Human-readable explanation.
     pub message: String,
     /// Byte range in the source.
     pub start: usize,
+    /// End of the byte range (exclusive).
     pub end: usize,
+    /// A fix, if the finding can be repaired automatically.
     pub fix: Option<Fix>,
 }
 
+/// Lint settings: naming convention and disabled rules.
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// Expected naming convention (default snake case).
     pub case: Case,
+    /// Names of disabled rules.
     pub allow: Vec<String>,
 }
 
@@ -69,6 +84,7 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Whether `rule` is enabled.
     fn on(&self, rule: &str) -> bool {
         !self.allow.iter().any(|a| a == rule)
     }
@@ -91,6 +107,7 @@ impl Config {
     }
 }
 
+/// Whether `s` is a bare key that needs no quotes.
 fn is_ident(s: &str) -> bool {
     let b = s.as_bytes();
     !b.is_empty() && (b[0].is_ascii_alphabetic() || b[0] == b'_') && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-')
@@ -124,6 +141,7 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
         offset: 0,
         message: m,
     })?;
+
     let has_schema = doc.directive("schema").is_some();
     let compat = doc.directive("compat").map(str::trim).filter(|c| !c.is_empty());
     let mut out = Vec::new();
@@ -174,6 +192,8 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
     Ok(out)
 }
 
+/// Key rules: `key-collision` and `quoted-key` within each record, and `key-case`
+/// (with a fix when the new name is free) unless the document has a schema.
 fn keys(_src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schema: bool, out: &mut Vec<Finding>) {
     // Group record entries by their parent record.
     let mut by_parent: HashMap<String, Vec<(&novafile_text::spans::Span, String)>> = HashMap::new();
@@ -255,6 +275,7 @@ fn keys(_src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schema:
     }
 }
 
+/// Value rules: `untyped-timestamp` (no schema) and `mixed-list`.
 fn scalars(src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schema: bool, out: &mut Vec<Finding>) {
     for s in spans.iter() {
         let Ok(v) = s.path.get(value) else { continue };

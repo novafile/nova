@@ -5,10 +5,14 @@ use novafile_value::serde_support::{__capture_begin, __capture_take, magic};
 use novafile_value::{Decimal, Duration, Rational, Record, Timestamp, Value};
 use serde::ser::{self, Serialize};
 
+/// Serializes into a [`Value`]. String-keyed maps and structs become records,
+/// enum variants NOVA variants; see the crate documentation for the full mapping.
 pub struct ValueSerializer;
 
+/// What every serializer method returns.
 type R = Result<Value, Error>;
 
+/// The string a NOVA kind marker serialized to; `what` names the kind in the error.
 fn text_of(v: Value, what: &str) -> Result<String, Error> {
     match v {
         Value::String(s) => Ok(s),
@@ -192,12 +196,16 @@ impl ser::Serializer for ValueSerializer {
     }
 }
 
+/// Collects the elements of a sequence, tuple or tuple struct.
 pub struct SeqSer {
+    /// Elements serialized so far.
     items: Vec<Value>,
+    /// Produce a tuple instead of a list.
     tuple: bool,
 }
 
 impl SeqSer {
+    /// Serialize and append an element, adding its index to error paths.
     fn push<T: ?Sized + Serialize>(&mut self, v: &T) -> Result<(), Error> {
         let i = self.items.len();
         self.items.push(v.serialize(ValueSerializer).map_err(|e| e.at(format!("[{i}]")))?);
@@ -241,8 +249,11 @@ impl ser::SerializeTupleStruct for SeqSer {
     }
 }
 
+/// Collects the elements of a tuple variant.
 pub struct VariantSeqSer {
+    /// Variant name.
     tag: &'static str,
+    /// Elements serialized so far.
     items: Vec<Value>,
 }
 
@@ -261,8 +272,11 @@ impl ser::SerializeTupleVariant for VariantSeqSer {
     }
 }
 
+/// Collects map entries; see `end` for whether the result is a record or a map.
 pub struct MapSer {
+    /// Entries serialized so far.
     entries: Vec<(Value, Value)>,
+    /// The last key, waiting for its value.
     key: Option<Value>,
 }
 
@@ -302,7 +316,9 @@ impl ser::SerializeMap for MapSer {
     }
 }
 
+/// Collects the fields of a struct into a record.
 pub struct StructSer {
+    /// Fields serialized so far.
     record: Record,
 }
 
@@ -319,8 +335,11 @@ impl ser::SerializeStruct for StructSer {
     }
 }
 
+/// Collects the fields of a struct variant into a record payload.
 pub struct VariantStructSer {
+    /// Variant name.
     tag: &'static str,
+    /// Fields serialized so far.
     record: Record,
 }
 

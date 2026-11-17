@@ -8,13 +8,19 @@ use std::fmt::Write as _;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "facet", derive(facet::Facet), facet(opaque, proxy = String))]
 pub struct Timestamp {
+    /// Seconds since the Unix epoch, within [`MIN_SECS`]`..=`[`MAX_SECS`].
     secs: i64,
+    /// Nanoseconds within the second, below 1 000 000 000.
     nanos: u32,
 }
 
+/// Earliest representable instant in Unix seconds.
 const MIN_SECS: i64 = -62_135_596_800; // 0001-01-01T00:00:00Z
+/// Latest representable whole second in Unix seconds.
 const MAX_SECS: i64 = 253_402_300_799; // 9999-12-31T23:59:59Z
 
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
+/// `days_from_civil`); `m` is 1-based.
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -30,6 +36,7 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     clippy::cast_sign_loss,
     reason = "day of month is in 1..=31 and month in 1..=12"
 )]
+/// Inverse of [`days_from_civil`]: `(year, month, day)` for days since 1970-01-01.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -53,6 +60,7 @@ fn frac_nanos(digits: &[u8]) -> u32 {
         .fold(0, |acc, &c| acc * 10 + u32::from(c - b'0'))
 }
 
+/// Days in month `m` (1-based) of year `y`, with Gregorian leap years.
 fn days_in_month(y: i64, m: u32) -> u32 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -77,11 +85,13 @@ impl Timestamp {
         Ok(Timestamp { secs, nanos })
     }
 
+    /// Whole seconds since the Unix epoch (floored, so negative before 1970).
     #[must_use]
     pub fn unix_seconds(&self) -> i64 {
         self.secs
     }
 
+    /// Nanoseconds past [`Timestamp::unix_seconds`], below 1 000 000 000.
     #[must_use]
     pub fn subsec_nanos(&self) -> u32 {
         self.nanos
@@ -179,10 +189,13 @@ impl fmt::Display for Timestamp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "facet", derive(facet::Facet), facet(opaque, proxy = String))]
 pub struct Duration {
+    /// Signed nanoseconds; magnitude at most [`MAX_DURATION`].
     nanos: i128,
 }
 
+/// Nanoseconds per second.
 const NS: i128 = 1_000_000_000;
+/// Largest magnitude in nanoseconds: `i64::MAX` seconds.
 const MAX_DURATION: i128 = i64::MAX as i128 * NS;
 
 impl Duration {
@@ -199,6 +212,7 @@ impl Duration {
         Ok(Duration { nanos })
     }
 
+    /// The signed length in nanoseconds.
     #[must_use]
     pub fn as_nanos(&self) -> i128 {
         self.nanos

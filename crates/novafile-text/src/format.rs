@@ -34,13 +34,17 @@ pub struct Trivia {
     pub footer: Vec<String>,
     /// Whether a blank line separated header and body.
     pub blank_before_body: bool,
+    /// Whether the writer reuses the source spellings in `spelling` (set for the Human profile and
+    /// for fragments).
     pub(crate) keep_spelling: bool,
 }
 
+/// Byte offset of the start of the line containing `at`.
 fn line_start(src: &str, at: usize) -> usize {
     src[..at].rfind('\n').map_or(0, |i| i + 1)
 }
 
+/// Whether the line before the one containing `at` is blank.
 fn prev_line_blank(src: &str, at: usize) -> bool {
     let ls = line_start(src, at);
     if ls == 0 {
@@ -182,6 +186,9 @@ pub fn render_preserving(src: &str, value: &Value, profile: Profile) -> Result<S
     Ok(render_parsed(src, &doc, &spans, &orig, value, profile))
 }
 
+/// Render `value` with the directives and trivia of the parsed `src` (comments are dropped in the
+/// Compact profile). `orig` is the value `src` denotes; spellings are reused only where `value`
+/// still has the same value at that path.
 fn render_parsed(src: &str, doc: &crate::Document, spans: &SpanMap, orig: &Value, value: &Value, profile: Profile) -> String {
     let mut trivia = Trivia::collect(src, spans, orig);
     trivia.keep_spelling = profile == Profile::Human;

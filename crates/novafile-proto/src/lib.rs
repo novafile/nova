@@ -7,8 +7,8 @@
 //!
 //! - [`proto_file`] renders the proto3 `.proto` source for every definition
 //!   reachable from `@root`;
-//! - [`encode`] writes a value of the root type as the root message's wire bytes;
-//! - [`decode`] reads such bytes back and validates the result against the schema.
+//! - [`encode`](fn@encode) writes a value of the root type as the root message's wire bytes;
+//! - [`decode`](fn@decode) reads such bytes back and validates the result against the schema.
 //!
 //! # Mapping
 //!
@@ -95,7 +95,7 @@ use novafile_schema::{Issue, Schema};
 use novafile_text::{Path, Segment};
 use novafile_value::Value;
 
-/// Maximum message nesting depth accepted by [`encode`] and [`decode`].
+/// Maximum message nesting depth accepted by [`encode`](fn@encode) and [`decode`](fn@decode).
 pub const MAX_DEPTH: usize = 128;
 
 /// Render the proto3 `.proto` source for every definition reachable from the
@@ -163,11 +163,15 @@ pub(crate) fn index(i: usize) -> Segment {
 /// An error with the path (innermost segment first) at which it happened.
 #[derive(Debug)]
 pub(crate) struct Fail {
+    /// Path segments from the failure point outwards; reversed by [`Self::render`].
     rev_path: Vec<Segment>,
+    /// What went wrong, without the path.
     message: String,
 }
 
 impl Fail {
+    /// A failure at the current position; callers add the path with [`Self::at`]
+    /// while it propagates outwards.
     pub(crate) fn new(message: impl Into<String>) -> Self {
         Fail {
             rev_path: Vec::new(),
@@ -181,6 +185,7 @@ impl Fail {
         self
     }
 
+    /// Format as `path: message`, with the path in root-to-leaf order.
     pub(crate) fn render(self) -> String {
         let mut segs = self.rev_path;
         segs.reverse();

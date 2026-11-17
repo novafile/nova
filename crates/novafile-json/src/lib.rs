@@ -7,9 +7,13 @@ use std::fmt::Write as _;
 use base64::Engine;
 use novafile_value::{Record, Value};
 
+/// A lossy mapping performed while converting a NOVA value to JSON.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Warning {
+    /// Where the mapping happened: `.key` and `[i]` segments from the root, empty
+    /// for the root itself.
     pub path: String,
+    /// What was lost or reinterpreted, e.g. "decimal written as a string".
     pub message: String,
 }
 
@@ -19,24 +23,32 @@ impl std::fmt::Display for Warning {
     }
 }
 
+/// Recursive-descent JSON parser state over a single input string.
 struct P<'a> {
+    /// The input as bytes, for cheap single-byte lookahead.
     b: &'a [u8],
+    /// The same input as `str`, for slicing literals and multi-byte characters.
     s: &'a str,
+    /// Current byte offset into the input; reported in error messages.
     i: usize,
+    /// Current nesting depth of arrays and objects, capped at 128.
     depth: usize,
 }
 
 impl P<'_> {
+    /// Fail with `m`, prefixed with the current byte offset.
     fn err<T>(&self, m: &str) -> Result<T, String> {
         Err(format!("JSON byte {}: {m}", self.i))
     }
 
+    /// Skip JSON whitespace (space, tab, LF, CR).
     fn ws(&mut self) {
         while matches!(self.b.get(self.i), Some(b' ' | b'\t' | b'\n' | b'\r')) {
             self.i += 1;
         }
     }
 
+    /// Consume the keyword `word` (`null`, `true`, `false`) and yield `v`.
     fn lit(&mut self, word: &str, v: Value) -> Result<Value, String> {
         if self.s[self.i..].starts_with(word) {
             self.i += word.len();
@@ -46,6 +58,9 @@ impl P<'_> {
         }
     }
 
+    /// Parse one value after optional leading whitespace.
+    ///
+    /// Rejects nesting beyond 128 levels and duplicate object keys.
     fn value(&mut self) -> Result<Value, String> {
         self.ws();
         self.depth += 1;
@@ -129,6 +144,12 @@ impl P<'_> {
         Ok(v)
     }
 
+    /// Parse a number token. Integer-looking tokens become exact `int` values
+    /// (error if out of range); anything with a fraction or exponent becomes a
+    /// `float`, which must not overflow binary64.
+    ///
+    /// The token is first scanned greedily and then validated against the strict
+    /// JSON grammar (no leading zeros, no `+`, digits after `.` and `e`).
     fn number(&mut self) -> Result<Value, String> {
         let st = self.i;
         while matches!(self.b.get(self.i), Some(b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')) {
@@ -204,6 +225,10 @@ impl P<'_> {
         Ok(Value::Float(f))
     }
 
+    /// Parse a string literal starting at its opening quote, decoding escapes.
+    ///
+    /// `\u` surrogate pairs are combined; a lone or malformed surrogate is an
+    /// error, as are raw control characters below U+0020.
     fn string(&mut self) -> Result<String, String> {
         self.i += 1;
         let mut out = String::new();
@@ -244,6 +269,7 @@ impl P<'_> {
         }
     }
 
+    /// Read the four hex digits of a `\u` escape.
     fn hex4(&mut self) -> Result<u32, String> {
         let h = self.s.get(self.i..self.i + 4).ok_or("JSON: bad \\u escape")?;
         self.i += 4;
@@ -290,6 +316,8 @@ pub fn from_jsonl_str(s: &str) -> Result<Vec<Value>, String> {
         .collect()
 }
 
+/// Append `s` to `out` as a JSON string literal, escaping quotes, backslashes
+/// and control characters.
 fn quote(s: &str, out: &mut String) {
     out.push('"');
     for c in s.chars() {
@@ -319,6 +347,8 @@ pub fn to_json_string(v: &Value, pretty: bool) -> (String, Vec<Warning>) {
     (out, w)
 }
 
+/// In pretty mode (`indent` is `Some`), start a new line indented by that many
+/// spaces; in compact mode, do nothing.
 fn nl(out: &mut String, indent: Option<usize>) {
     if let Some(n) = indent {
         out.push('\n');
@@ -326,6 +356,11 @@ fn nl(out: &mut String, indent: Option<usize>) {
     }
 }
 
+/// Serialize `value` into `out`, recording a [`Warning`] at `path` for every
+/// mapping JSON cannot represent exactly.
+///
+/// `indent` is the current indentation in pretty mode, or `None` for compact
+/// output. `path` is extended while descending and restored afterwards.
 #[expect(clippy::too_many_lines, reason = "flat dispatcher over every Value variant")]
 fn write(value: &Value, out: &mut String, path: &mut String, warnings: &mut Vec<Warning>, indent: Option<usize>) {
     let mut warn = |m: &str| {

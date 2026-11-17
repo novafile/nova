@@ -8,8 +8,17 @@ use novafile_text::Segment;
 use novafile_value::{Decimal, Duration, Rational, Record, Timestamp, Value};
 use std::collections::HashMap;
 
+/// Nanoseconds per second, for combining `seconds` and `nanos`.
 const NANOS_PER_SEC: i64 = 1_000_000_000;
 
+/// Decode `bytes` as the schema's root message and validate the result
+/// against the schema.
+///
+/// # Errors
+///
+/// Fails on malformed wire data, wire types that do not match the schema,
+/// values outside their NOVA range, or a result the schema rejects; the
+/// message names the path.
 pub(crate) fn decode(bytes: &[u8], schema: &Schema) -> Result<Value, String> {
     let plan = Plan::new(schema)?;
     let value = Decoder { schema }.message(&[bytes], plan.root, 0).map_err(Fail::render)?;
@@ -19,7 +28,10 @@ pub(crate) fn decode(bytes: &[u8], schema: &Schema) -> Result<Value, String> {
     Ok(value)
 }
 
+/// Reads Protobuf messages into NOVA values according to a schema.
 struct Decoder<'s> {
+    /// The schema whose plan is being decoded; used to classify fields and
+    /// resolve defaults.
     schema: &'s Schema,
 }
 
@@ -211,6 +223,7 @@ impl<'s> Decoder<'s> {
     }
 }
 
+/// A non-nullable classification of `s`.
 fn single(s: Single<'_>) -> Classified<'_> {
     Classified {
         shape: Shape::Single(s),
@@ -218,6 +231,7 @@ fn single(s: Single<'_>) -> Classified<'_> {
     }
 }
 
+/// The payload of a length-delimited value, or a wire-type error.
 fn len(w: Wire<'_>) -> Result<&[u8], Fail> {
     match w {
         Wire::Len(b) => Ok(b),
@@ -225,6 +239,7 @@ fn len(w: Wire<'_>) -> Result<&[u8], Fail> {
     }
 }
 
+/// The error for a value read with wire type `w` where `expected` belongs.
 fn wire_mismatch(w: Wire<'_>, expected: WireType) -> Fail {
     Fail::new(format!("wire type {} where {} was expected", w.wire_type() as u8, expected as u8))
 }
@@ -254,6 +269,9 @@ fn packed(bytes: &[u8], s: Scalar<'_>, items: &mut Vec<Value>) -> Result<(), Fai
     Ok(())
 }
 
+/// Decode one scalar value, checking its wire type first. An empty string
+/// reads as the zero decimal or rational (the proto3 zero value); enum value 0
+/// (`UNSPECIFIED`) and unknown enum numbers are errors.
 #[expect(clippy::cast_possible_truncation, reason = "uint32 and enum (int32) fields use the low 32 bits of the varint")]
 fn scalar(w: Wire<'_>, s: Scalar<'_>) -> Result<Value, Fail> {
     if w.wire_type() != s.wire_type() {

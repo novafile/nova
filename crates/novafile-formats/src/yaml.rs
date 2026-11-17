@@ -71,6 +71,7 @@ use crate::{MAX_DEPTH, Reporter, Warning};
 /// every node produced by alias expansion (spec §9.5).
 pub const NODE_BUDGET: usize = 1_000_000;
 
+/// Handle prefix of the YAML core tags (`!!str` expands to `tag:yaml.org,2002:str`).
 const CORE: &str = "tag:yaml.org,2002:";
 
 /// Parse a single-document YAML stream. An empty stream is `null`; a
@@ -109,26 +110,37 @@ pub fn from_str_multi(s: &str) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
+/// Format `msg` as an error at the parser position `m` (1-based column).
 fn err_at(m: &Marker, msg: impl Display) -> String {
     format!("YAML line {} column {}: {msg}", m.line(), m.col() + 1)
 }
 
+/// Builds NOVA values from `yaml-rust2` parser events, expanding aliases
+/// under the node budget.
 struct Loader<'a> {
+    /// The underlying event parser.
     parser: Parser<Chars<'a>>,
     /// Completed anchored nodes with their node counts.
     anchors: HashMap<usize, (Value, usize)>,
+    /// Value nodes produced so far in the whole stream, including alias copies;
+    /// checked against [`NODE_BUDGET`].
     nodes: usize,
+    /// Current collection nesting depth, capped at [`MAX_DEPTH`].
     depth: usize,
 }
 
 /// How a node's tag constrains it.
 enum TagKind {
+    /// No tag: plain scalars are resolved with the core schema.
     None,
+    /// The non-specific tag `!`: the scalar is a string.
     NonSpecific,
+    /// An accepted core tag, by its suffix (`str`, `int`, `binary`, …).
     Core(String),
 }
 
 impl<'a> Loader<'a> {
+    /// A loader at the start of the YAML stream `s`.
     fn new(s: &'a str) -> Self {
         Loader {
             parser: Parser::new_from_str(s),
@@ -138,6 +150,7 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// The next parser event with its position.
     fn next(&mut self) -> Result<(Event, Marker), String> {
         self.parser.next_token().map_err(|e| format!("YAML: {e}"))
     }
@@ -165,6 +178,7 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// Count `n` more nodes against [`NODE_BUDGET`], failing once it is exceeded.
     fn charge(&mut self, n: usize, m: &Marker) -> Result<(), String> {
         self.nodes += n;
         if self.nodes > NODE_BUDGET {
@@ -177,6 +191,8 @@ impl<'a> Loader<'a> {
         Ok(())
     }
 
+    /// Classify a node's tag, rejecting every tag other than the core tags,
+    /// `!!binary` and the non-specific `!`.
     fn tag(tag: Option<Tag>, m: &Marker) -> Result<TagKind, String> {
         let Some(t) = tag else { return Ok(TagKind::None) };
         if t.handle.is_empty() && t.suffix == "!" {
@@ -199,6 +215,8 @@ impl<'a> Loader<'a> {
         ))
     }
 
+    /// Descend one nesting level, failing beyond [`MAX_DEPTH`]. The caller
+    /// decrements `depth` again when the collection ends.
     fn enter(&mut self, m: &Marker) -> Result<(), String> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
@@ -208,6 +226,8 @@ impl<'a> Loader<'a> {
         Ok(())
     }
 
+    /// Store a completed node under `anchor` (0 means "no anchor") together with
+    /// its node count, so aliases can charge the full size when copied.
     fn remember(&mut self, anchor: usize, v: &Value, size: usize) {
         if anchor != 0 {
             self.anchors.insert(anchor, (v.clone(), size));
@@ -312,6 +332,9 @@ impl<'a> Loader<'a> {
     }
 }
 
+/// Convert a scalar's text according to its style and tag: untagged plain
+/// scalars go through core-schema resolution, quoted or `!`-tagged ones are
+/// strings, and core tags force their kind (an error if the text does not fit).
 fn scalar(text: String, style: TScalarStyle, tag: TagKind) -> Result<Value, String> {
     let core = match tag {
         TagKind::None if style == TScalarStyle::Plain => return resolve_plain(&text),
@@ -338,10 +361,12 @@ fn scalar(text: String, style: TScalarStyle, tag: TagKind) -> Result<Value, Stri
     }
 }
 
+/// Whether `s` is a core-schema null spelling.
 fn is_null(s: &str) -> bool {
     matches!(s, "" | "~" | "null" | "Null" | "NULL")
 }
 
+/// A core-schema boolean spelling, or `None`.
 fn parse_bool(s: &str) -> Option<bool> {
     match s {
         "true" | "True" | "TRUE" => Some(true),
@@ -483,6 +508,8 @@ fn plain_ok(s: &str) -> bool {
         && matches!(resolve_plain(s), Ok(Value::String(_)))
 }
 
+/// `s` as a YAML double-quoted scalar, escaping control characters and the
+/// line/byte-order separators readers might otherwise mangle.
 fn double_quoted(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -505,6 +532,7 @@ fn double_quoted(s: &str) -> String {
     out
 }
 
+/// `s` as a plain scalar when that is unambiguous, otherwise double-quoted.
 fn string_scalar(s: &str) -> String {
     if plain_ok(s) { s.to_owned() } else { double_quoted(s) }
 }
@@ -525,6 +553,8 @@ pub fn to_string(v: &Value) -> (String, Vec<Warning>) {
     (w.out, w.rep.warnings)
 }
 
+/// Where the writer is on the current line when it starts a node; decides
+/// whether a block collection needs a line break first.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pos {
     /// At the start of the document.
@@ -535,12 +565,16 @@ enum Pos {
     AfterKey,
 }
 
+/// Block-style YAML emitter for [`to_string`].
 struct Writer {
+    /// The YAML text written so far.
     out: String,
+    /// Collects lossy-mapping warnings and the path of the node being written.
     rep: Reporter,
 }
 
 impl Writer {
+    /// Write `n` spaces of indentation.
     fn pad(&mut self, n: usize) {
         self.out.extend(std::iter::repeat_n(' ', n));
     }
@@ -553,6 +587,8 @@ impl Writer {
         }
     }
 
+    /// Write a one-line value and end the line; after `key:` a separating space
+    /// is added first.
     fn inline(&mut self, text: &str, pos: Pos) {
         if pos == Pos::AfterKey {
             self.out.push(' ');
@@ -577,6 +613,8 @@ impl Writer {
         self.out.push(':');
     }
 
+    /// Write `v` at `indent`: non-empty collections and payload variants as
+    /// blocks, everything else on one line via [`Self::scalar`].
     fn node(&mut self, v: &Value, indent: usize, pos: Pos) {
         match v {
             Value::List(l) | Value::Tuple(l) | Value::Set(l) => {
@@ -655,6 +693,7 @@ impl Writer {
         self.rep.path.truncate(n);
     }
 
+    /// Run `f` with `[i]` appended to the warning path.
     fn indexed(&mut self, i: usize, f: impl FnOnce(&mut Self)) {
         let n = self.rep.path.len();
         let _ = write!(self.rep.path, "[{i}]");

@@ -1,3 +1,5 @@
+//! Lint rules, `@x-lint` configuration and fixes.
+
 use novafile_lint::{Config, Level, apply_fixes, lint_document, lint_schema};
 
 const DOC: &str = "# config\nserviceName: api   # the name\nhttpPort: 8080\nuser_id: 1\nuserId: 2\n\"display name\": x\nstartedAt: 2026-11-17T16:00:00Z\nmixed: [1, two, 3]\nnested:\n  maxRetries: 3\n";

@@ -14,11 +14,17 @@ use std::fmt;
 
 /// Reserved newtype-struct names understood by the NOVA (de)serializer.
 pub mod magic {
+    /// Wraps a whole [`Value`](crate::Value), letting it pass through unchanged between NOVA ends.
     pub const VALUE: &str = "$nova::value";
+    /// Wraps the canonical text of a [`Timestamp`](crate::Timestamp).
     pub const TIMESTAMP: &str = "$nova::timestamp";
+    /// Wraps the canonical text of a [`Duration`](crate::Duration).
     pub const DURATION: &str = "$nova::duration";
+    /// Wraps the canonical text of a [`Decimal`](crate::Decimal).
     pub const DECIMAL: &str = "$nova::decimal";
+    /// Wraps the canonical text of a [`Rational`](crate::Rational).
     pub const RATIONAL: &str = "$nova::rational";
+    /// Wraps a sequence that is a NOVA set rather than a list.
     pub const SET: &str = "$nova::set";
 }
 
@@ -52,6 +58,9 @@ pub fn __inject(v: Value) {
 // Text-backed scalar types
 // ---------------------------------------------------------------------------
 
+/// Implement `Serialize` and `Deserialize` for a text-backed scalar type:
+/// serialized as the newtype struct `$name` around its canonical text, and
+/// deserialized from a string with `$parse` (`$expect` names it in errors).
 macro_rules! text_type {
     ($ty:ty, $name:expr, $expect:expr, $parse:expr) => {
         impl Serialize for $ty {
@@ -188,6 +197,7 @@ impl Serialize for Natural<'_> {
     }
 }
 
+/// Deserializes any self-describing input into a [`Value`].
 struct ValueVisitor;
 
 impl<'de> Visitor<'de> for ValueVisitor {

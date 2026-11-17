@@ -16,6 +16,7 @@ use crate::writer::{flow_string, key_text};
 use novafile_value::Value;
 use std::fmt;
 
+/// One step of a [`Path`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Segment {
     /// `.name` — a record field.
@@ -34,17 +35,25 @@ pub enum Segment {
     Project(Vec<String>),
 }
 
+/// A sequence of segments addressing a location inside a value (or several, in queries using
+/// `[*]`, filters or projections). The empty path is the root.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Path(pub Vec<Segment>);
 
 /// Comparison operator in a filter selector (spec §7.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CmpOp {
+    /// `=`
     Eq,
+    /// `!=`
     Ne,
+    /// `<`
     Lt,
+    /// `<=`
     Le,
+    /// `>`
     Gt,
+    /// `>=`
     Ge,
     /// `[?p]`: the path resolves.
     Exists,
@@ -55,6 +64,7 @@ pub enum CmpOp {
 }
 
 impl CmpOp {
+    /// The operator as written in a selector; empty for the existence tests.
     #[must_use]
     pub fn symbol(self) -> &'static str {
         match self {
@@ -92,6 +102,7 @@ impl CmpOp {
     }
 }
 
+/// Order two values for filter comparisons, or `None` if they are not comparable (see [`CmpOp::holds`]).
 fn compare(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     use novafile_value::{Duration, Timestamp};
     match (a, b) {
@@ -108,11 +119,23 @@ fn compare(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     }
 }
 
+/// Why a path could not be resolved.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PathError {
+    /// The path, up to the failing step, does not exist.
     NotFound(Path),
+    /// A selector matched this many elements instead of exactly one.
     Ambiguous(Path, usize),
-    Type { at: Path, expected: &'static str, found: &'static str },
+    /// A step met a value of the wrong kind.
+    Type {
+        /// Path of the value the step was applied to.
+        at: Path,
+        /// The kind of value the step needs, e.g. `record`.
+        expected: &'static str,
+        /// The kind of value found there.
+        found: &'static str,
+    },
+    /// A singular path was required, but this one uses `[*]`, a filter or a projection.
     NotSingular(Path),
 }
 
@@ -129,20 +152,24 @@ impl fmt::Display for PathError {
 
 impl std::error::Error for PathError {}
 
+/// Whether `c` may start an identifier (ASCII letter or `_`).
 pub(crate) fn is_ident_start(c: u8) -> bool {
     c.is_ascii_alphabetic() || c == b'_'
 }
 
+/// Whether `c` may continue an identifier (ASCII alphanumeric, `_` or `-`).
 pub(crate) fn is_ident_char(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'-'
 }
 
 impl Path {
+    /// The empty path, addressing the whole value.
     #[must_use]
     pub fn root() -> Path {
         Path(Vec::new())
     }
 
+    /// Whether this is the root path.
     #[must_use]
     pub fn is_root(&self) -> bool {
         self.0.is_empty()
@@ -154,11 +181,13 @@ impl Path {
         !self.0.iter().any(|s| matches!(s, Segment::All | Segment::Filter(..) | Segment::Project(_)))
     }
 
+    /// `self` followed by the segments of `other`.
     #[must_use]
     pub fn join(&self, other: &Path) -> Path {
         Path(self.0.iter().chain(other.0.iter()).cloned().collect())
     }
 
+    /// The path without its last segment, and that segment; `None` for the root.
     #[must_use]
     pub fn parent(&self) -> Option<(Path, &Segment)> {
         let (last, rest) = self.0.split_last()?;
@@ -200,6 +229,7 @@ impl Path {
         let mut i = 0;
         let mut segs = Vec::new();
         let mut first = true;
+
         loop {
             let c = b.get(i).copied();
             match c {
@@ -345,6 +375,8 @@ pub fn step<'v>(cur: &'v Value, seg: &Segment, here: &dyn Fn() -> Path, upto: &d
     }
 }
 
+/// Turn index `i` (negative counts from the end) into a position in a sequence of `len` elements,
+/// or `None` if it is out of range.
 #[must_use]
 pub fn resolve_index(i: i64, len: usize) -> Option<usize> {
     if i < 0 {
@@ -354,6 +386,7 @@ pub fn resolve_index(i: i64, len: usize) -> Option<usize> {
     }
 }
 
+/// Positions of the records in `list` whose field `field` equals `want`.
 #[must_use]
 pub fn match_indices(list: &[Value], field: &str, want: &Value) -> Vec<usize> {
     list.iter()
@@ -363,6 +396,8 @@ pub fn match_indices(list: &[Value], field: &str, want: &Value) -> Vec<usize> {
         .collect()
 }
 
+/// Parse a field name (identifier or quoted string) at the start of `s`; returns it and the number
+/// of bytes consumed.
 fn parse_name(s: &str) -> Result<(String, usize), String> {
     let b = s.as_bytes();
     match b.first() {
@@ -379,6 +414,8 @@ fn parse_name(s: &str) -> Result<(String, usize), String> {
     }
 }
 
+/// Parse a selector after `[` through the closing `]`; returns the segment and the number of bytes
+/// consumed.
 #[expect(
     clippy::many_single_char_names,
     reason = "byte-scanner convention: s source, b bytes, j/k cursors, n length, p parser, v value"

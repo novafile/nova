@@ -1,3 +1,6 @@
+//! Integration tests for queries, patch parsing and application, diffing and
+//! source-preserving edits.
+
 use novafile_patch::{PatchError, apply_unchecked, diff, get, parse_patch};
 use novafile_text::{Profile, parse};
 use novafile_value::{Value, revision};

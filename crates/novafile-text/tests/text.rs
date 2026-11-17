@@ -1,3 +1,6 @@
+//! Integration tests: parsing, the writer profiles, paths, spans and document-preserving
+//! formatting.
+
 use std::fmt::Write as _;
 
 use novafile_text::{Path, Profile, parse, parse_document, parse_flow, split_stream, to_text};

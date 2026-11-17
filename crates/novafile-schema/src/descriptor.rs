@@ -23,6 +23,7 @@ pub fn meta_schema() -> Schema {
     crate::parse_schema(META_SCHEMA_SRC).expect("the meta-schema is valid")
 }
 
+/// A record value with the given entries, in order.
 fn rec(entries: Vec<(&str, Value)>) -> Value {
     let mut r = Record::new();
     for (k, v) in entries {
@@ -32,14 +33,17 @@ fn rec(entries: Vec<(&str, Value)>) -> Value {
     Value::Record(r)
 }
 
+/// A string value.
 fn s(x: &str) -> Value {
     Value::String(x.to_owned())
 }
 
+/// A variant value without payload, as used for enum tags such as `kind`.
 fn tag(x: &str) -> Value {
     Value::Variant(x.to_owned(), None)
 }
 
+/// The descriptor of a type expression (meta-schema record `Type`).
 fn type_value(t: &TypeRef) -> Value {
     let mut e: Vec<(&str, Value)> = Vec::new();
     let kind = match &t.kind {
@@ -286,6 +290,7 @@ impl Schema {
     }
 }
 
+/// Read a type expression back from its descriptor; the inverse of [`type_value`].
 fn value_type(v: &Value) -> Result<TypeRef, String> {
     let r = v.as_record().ok_or("type must be a record")?;
     let kind = match r.get("kind") {

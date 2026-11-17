@@ -24,20 +24,24 @@ pub(crate) fn put_len(buf: &mut Vec<u8>, bytes: &[u8]) {
     buf.extend_from_slice(bytes);
 }
 
+/// Zigzag-encode a `sint32` so small magnitudes of either sign get short varints.
 pub(crate) fn zigzag32(n: i32) -> u64 {
     u64::from(((n << 1) ^ (n >> 31)).cast_unsigned())
 }
 
+/// Zigzag-encode a `sint64`.
 pub(crate) fn zigzag64(n: i64) -> u64 {
     ((n << 1) ^ (n >> 63)).cast_unsigned()
 }
 
+/// Decode a zigzag `sint32`; only the low 32 bits of the varint are used.
 pub(crate) fn unzigzag32(v: u64) -> i32 {
     #[expect(clippy::cast_possible_truncation, reason = "sint32 fields use the low 32 bits of the varint")]
     let v = v as u32;
     (v >> 1).cast_signed() ^ -(v & 1).cast_signed()
 }
 
+/// Decode a zigzag `sint64`.
 pub(crate) fn unzigzag64(v: u64) -> i64 {
     (v >> 1).cast_signed() ^ -(v & 1).cast_signed()
 }
@@ -45,13 +49,18 @@ pub(crate) fn unzigzag64(v: u64) -> i64 {
 /// One field value as it appears on the wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Wire<'a> {
+    /// Wire type 0: a varint.
     Varint(u64),
+    /// Wire type 1: eight little-endian bytes.
     I64(u64),
+    /// Wire type 2: a length-delimited payload, borrowed from the input.
     Len(&'a [u8]),
+    /// Wire type 5: four little-endian bytes.
     I32(u32),
 }
 
 impl Wire<'_> {
+    /// The wire type this value was read with.
     pub(crate) fn wire_type(&self) -> WireType {
         match self {
             Wire::Varint(_) => WireType::Varint,
@@ -64,18 +73,23 @@ impl Wire<'_> {
 
 /// A cursor over a byte slice. Every read is bounds-checked.
 pub(crate) struct Reader<'a> {
+    /// The unread rest of the input.
     bytes: &'a [u8],
 }
 
 impl<'a> Reader<'a> {
+    /// A reader positioned at the start of `bytes`.
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Reader { bytes }
     }
 
+    /// Whether all input has been consumed.
     pub(crate) fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
 
+    /// Read a base-128 varint of at most 10 bytes. Truncated input and values
+    /// beyond 64 bits are errors.
     pub(crate) fn varint(&mut self) -> Result<u64, String> {
         let mut v: u64 = 0;
         for (i, &b) in self.bytes.iter().enumerate().take(10) {
@@ -99,6 +113,7 @@ impl<'a> Reader<'a> {
         .into())
     }
 
+    /// Consume the next `n` bytes, or fail without consuming if fewer remain.
     pub(crate) fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
         if n > self.bytes.len() {
             return Err(format!("truncated input: need {n} bytes, {} remain", self.bytes.len()));
@@ -109,11 +124,13 @@ impl<'a> Reader<'a> {
         Ok(head)
     }
 
+    /// Read an 8-byte little-endian value (wire type I64).
     pub(crate) fn fixed64(&mut self) -> Result<u64, String> {
         let b = self.take(8)?;
         Ok(u64::from_le_bytes(b.try_into().expect("8 bytes")))
     }
 
+    /// Read a 4-byte little-endian value (wire type I32).
     fn fixed32(&mut self) -> Result<u32, String> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes(b.try_into().expect("4 bytes")))

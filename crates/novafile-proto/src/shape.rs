@@ -10,14 +10,18 @@ pub(crate) const MAX_FIELD_NUMBER: u32 = 536_870_911;
 /// Field numbers reserved by the Protobuf implementation.
 pub(crate) const RESERVED_FIELD_NUMBERS: std::ops::RangeInclusive<u32> = 19_000..=19_999;
 
+/// Import path of the well-known `google.protobuf.Timestamp` message.
 pub(crate) const TIMESTAMP_PROTO: &str = "google/protobuf/timestamp.proto";
+/// Import path of the well-known `google.protobuf.Duration` message.
 pub(crate) const DURATION_PROTO: &str = "google/protobuf/duration.proto";
+/// Import path of the well-known `google.protobuf.Empty` message.
 pub(crate) const EMPTY_PROTO: &str = "google/protobuf/empty.proto";
 
 /// A Protobuf scalar (or enum) field type. Values are encoded without a
 /// nested message.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Scalar<'s> {
+    /// `bool`.
     Bool,
     /// `sint32`, for `i8`/`i16`/`i32`.
     SInt32,
@@ -29,7 +33,9 @@ pub(crate) enum Scalar<'s> {
     UInt64,
     /// `double`, for `float`.
     Double,
+    /// `string`.
     String,
+    /// `bytes`.
     Bytes,
     /// A NOVA decimal carried as its canonical text in a `string`.
     Decimal,
@@ -49,6 +55,7 @@ pub(crate) enum WireType {
 }
 
 impl Scalar<'_> {
+    /// How values of this scalar are written on the wire (outside packing).
     pub(crate) fn wire_type(self) -> WireType {
         match self {
             Scalar::Bool | Scalar::SInt32 | Scalar::SInt64 | Scalar::UInt32 | Scalar::UInt64 | Scalar::Enum(..) => WireType::Varint,
@@ -62,6 +69,7 @@ impl Scalar<'_> {
         self.wire_type() != WireType::Len
     }
 
+    /// The type name used in the generated `.proto` file.
     fn proto_name(self) -> String {
         match self {
             Scalar::Bool => "bool".into(),
@@ -93,6 +101,8 @@ pub(crate) enum Message<'s> {
 }
 
 impl Message<'_> {
+    /// The type name used in the generated `.proto` file; well-known types are
+    /// fully qualified.
     fn proto_name(self) -> String {
         match self {
             Message::Record(name, _) | Message::Union(name, _) => ident(name),
@@ -106,11 +116,14 @@ impl Message<'_> {
 /// A single (non-repeated) value.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Single<'s> {
+    /// A scalar or enum value.
     Scalar(Scalar<'s>),
+    /// A nested message.
     Message(Message<'s>),
 }
 
 impl Single<'_> {
+    /// The type name used in the generated `.proto` file.
     pub(crate) fn proto_name(self) -> String {
         match self {
             Single::Scalar(s) => s.proto_name(),
@@ -122,15 +135,20 @@ impl Single<'_> {
 /// The Protobuf shape of a NOVA type.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Shape<'s> {
+    /// One value of a non-collection type.
     Single(Single<'s>),
     /// `repeated T`; `set` records whether the NOVA type is a `set<T>`.
     Repeated {
+        /// The element type; never itself repeated, as Protobuf has no nested repeated fields.
         elem: Single<'s>,
+        /// Whether the field decodes back to a `set` rather than a `list`.
         set: bool,
     },
     /// `map<K, V>`.
     Map {
+        /// The map key type; Protobuf allows only integral and string keys.
         key: Scalar<'s>,
+        /// The map value type.
         value: Single<'s>,
     },
 }
@@ -139,7 +157,10 @@ pub(crate) enum Shape<'s> {
 /// the alias chain).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Classified<'s> {
+    /// How the type is laid out on the wire.
     pub shape: Shape<'s>,
+    /// Whether `null` is a valid value; it is encoded as an absent field, so a
+    /// missing field decodes as `null`.
     pub nullable: bool,
 }
 

@@ -1,3 +1,5 @@
+//! Template rendering: parameters, control flow, imports and limits.
+
 use std::fmt::Write as _;
 
 use novafile_template::{FsLoader, Limits, Options, render};
