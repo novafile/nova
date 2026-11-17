@@ -1,0 +1,15 @@
+[package]
+name = "nova-proto"
+description = "Schema-driven Protocol Buffers (proto3) adapter for NOVA values"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nova-value = { path = "../nova-value" }
+nova-schema = { path = "../nova-schema" }
+nova-text = { path = "../nova-text" }
+
+[dev-dependencies]
+prost-reflect = { version = "0.16.5", features = ["text-format"] }
+protox = "0.10.0"
