@@ -103,6 +103,7 @@ let bytes = nova_serde::to_vec(&svc)?;         // binary frame
 | [`nova-json`](crates/nova-json) | JSON and JSONL mapping with explicit loss reporting |
 | [`nova-formats`](crates/nova-formats) | YAML, TOML and CBOR adapters with explicit loss reporting |
 | [`nova-proto`](crates/nova-proto) | `.proto` generation and Protobuf encoding/decoding driven by NOVA schemas (`@id` = field number) |
+| [`nova-facet`](crates/nova-facet) | [facet](https://github.com/facet-rs/facet) reflection binding, same mapping and API as `nova-serde` |
 | [`nova-serde`](crates/nova-serde) | Serde integration: `to_string`/`from_str`, `to_vec`/`from_slice`, `to_value`/`from_value` |
 | [`nova-lint`](crates/nova-lint) | Conventions and lints with fixes (`nova lint`, also shown by the language server) |
 | [`nova-cli`](crates/nova-cli) | The `nova` command |

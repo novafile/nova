@@ -1172,6 +1172,14 @@ Bindings map NOVA kinds to native types. They SHOULD follow these rules:
 
 Serde has no data-model slots for NOVA's extra kinds. The binding therefore uses reserved newtype-struct names (`$nova::timestamp`, `$nova::decimal`, `$nova::set`, `$nova::value`, …). With other serde formats these degrade to natural forms: a timestamp becomes its canonical text, a set becomes a sequence, and a variant becomes a string or `{tag: payload}`. This means the same Rust types can also be serialized to JSON with the usual JSON conventions.
 
+**Rust / facet (`nova-facet`).** A reflection-based binding built on `facet` (`#[derive(Facet)]`), with the same mapping and API as `nova-serde`. It needs no reserved names: the NOVA types are recognised by their shapes. Its differences from the Serde binding are:
+- sets map to `set` natively, without an adapter;
+- `Vec<u8>` and byte arrays map to `bytes`;
+- fixed-size arrays map to `list`;
+- enums must declare a `repr`.
+
+Both bindings read each other's output.
+
 ---
 
 ## 12. Security considerations
@@ -1235,6 +1243,7 @@ The Rust workspace in this repository implements the specification.
 | `nova-formats` | §11.2: YAML, TOML and CBOR adapters with loss reporting |
 | `nova-proto` | §11.2: `.proto` generation and Protobuf wire encoding/decoding from NOVA schemas |
 | `nova-serde` | §11.3: Serde serializer/deserializer, text and binary helpers, `with::` adapters |
+| `nova-facet` | §11.3: facet (reflection) binding with the same mapping and API |
 | `nova-lsp` | Language server: diagnostics (syntax, patches, schemas, §6.7 schema lookup), outline, hover, completion, comment-safe formatting |
 | `nova-cli` | The `nova` command: `fmt`, `convert`, `hash`, `validate`, `get`, `patch`, `diff`, `render`, `stats`, `schema {fmt,fingerprint,check}` |
 
@@ -1303,7 +1312,7 @@ unary       = "not" unary | "(" cond ")" | flow-value [("==" | "!=") flow-value]
 1. **Positional binary.** The positional idea (§4.12) applied to the binary encoding: records as field values in declared order, i.e. Protobuf-like compactness without a separate wire format.
 2. **References.** Explicit references to independently identified records (`@ref(services, api)`) across documents, without general cyclic graphs.
 3. **Lossless syntax tree.** A full concrete syntax tree, which would also preserve intra-line whitespace and comments inside flow values, for refactoring tools and schema migrations.
-4. **Bindings** beyond Serde (e.g. the reflection-based `facet`), and a MessagePack adapter.
+4. **Adapters and bindings:** MessagePack, and bindings for languages other than Rust.
 5. **Constrained decoding.** Generate tokenizer-level grammars from schemas and the patch grammar.
 6. **Empirical evaluation** of the §10 objective across models, using the five workloads.
 7. **Scale-preserving decimals.** Should `1.50` and `1.5` be distinguishable? Version 0.1 says no; schemas can constrain scale.
