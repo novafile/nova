@@ -14,6 +14,7 @@ nova-value.workspace = true
 nova-text.workspace = true
 nova-schema.workspace = true
 nova-patch.workspace = true
+nova-lint = { path = "../nova-lint" }
 lsp-server = "0.7"
 lsp-types = "0.95"
 serde_json.workspace = true

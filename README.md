@@ -104,6 +104,7 @@ let bytes = nova_serde::to_vec(&svc)?;         // binary frame
 | [`nova-formats`](crates/nova-formats) | YAML, TOML and CBOR adapters with explicit loss reporting |
 | [`nova-proto`](crates/nova-proto) | `.proto` generation and Protobuf encoding/decoding driven by NOVA schemas (`@id` = field number) |
 | [`nova-serde`](crates/nova-serde) | Serde integration: `to_string`/`from_str`, `to_vec`/`from_slice`, `to_value`/`from_value` |
+| [`nova-lint`](crates/nova-lint) | Conventions and lints with fixes (`nova lint`, also shown by the language server) |
 | [`nova-cli`](crates/nova-cli) | The `nova` command |
 | [`nova-lsp`](crates/nova-lsp) | Language server: diagnostics with workspace schemas, outline, hover, completion, formatting |
 
@@ -131,6 +132,16 @@ nova convert infrastructure.nova --to positional --schema infrastructure.novs   
 nova hash infrastructure.novb          # same revision as the text form
 nova stats infrastructure.nova         # bytes and estimated tokens per representation
 nova schema check old.novs new.novs    # exits 1 on breaking changes
+```
+
+## Conventions and `nova lint`
+
+JSON never settled on naming conventions; NOVA has them: `snake_case` keys and variants, and `@id` on all fields or on none. `nova lint` checks documents and schemas, and `--fix` applies the safe fixes (renaming keys, typing timestamps) without disturbing comments. Data that mirrors an external JSON, YAML or TOML contract is marked `@compat json` (added automatically by `nova convert`). For such data, names are left alone and anything the format cannot represent is flagged. See [spec Appendix E](SPEC.md#appendix-e--conventions-and-lints).
+
+```bash
+nova lint config.nova examples/*.novs
+nova lint config.nova --fix
+nova lint config.nova --format json       # one finding per line, for tools and agents
 ```
 
 ## Coding agents

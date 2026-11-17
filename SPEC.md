@@ -25,6 +25,7 @@ Status: working draft accompanied by a reference implementation in Rust (this re
 - [Appendix A — Grammar summary](#appendix-a--grammar-summary)
 - [Appendix B — Comparison with existing formats](#appendix-b--comparison-with-existing-formats)
 - [Appendix C — Open questions and future work](#appendix-c--open-questions-and-future-work)
+- [Appendix E — Conventions and lints](#appendix-e--conventions-and-lints)
 
 ---
 
@@ -218,6 +219,7 @@ Directives defined for **data documents**:
 | `@scope <path>` | The location within that document the body was taken from (§7.3). |
 | `@envelope <kind>` | Marks an agent-result envelope (§8.2). |
 | `@mode positional` | The body is in the positional profile (§4.12). |
+| `@compat json` \| `yaml` \| `toml` | The document mirrors a contract in that format: names are dictated externally, and the data should stay representable in it. Tools SHOULD NOT apply naming conventions to such documents, and SHOULD report values the format cannot represent (Appendix E). |
 
 Template documents (§9), patch documents (§7.4) and query documents (§7.3) define their own directives. Directive names beginning with `x-` are reserved for extensions and MUST be ignored by implementations that do not understand them. Any other unknown directive MUST be rejected.
 
@@ -1303,3 +1305,38 @@ unary       = "not" unary | "(" cond ")" | flow-value [("==" | "!=") flow-value]
 7. **Scale-preserving decimals.** Should `1.50` and `1.5` be distinguishable? Version 0.1 says no; schemas can constrain scale.
 8. **Rational shorthand.** Is a bare `11/17` being a rational the right trade-off, or should rationals require `@rational(...)`? Version 0.1 treats bare `n/d` as a number, consistent with integers.
 9. **Tensors.** A `tensor` kind for vectors, matrices and n-dimensional arrays (dtype, shape and row-major data, e.g. `@tensor<f32>[2,3](1, 2, 3; 4, 5, 6)`, binary tag `0x12`, schema types such as `vector<f32, 1536>`) is proposed in [docs/proposals/0001-tensors.md](docs/proposals/0001-tensors.md).
+
+---
+
+## Appendix E — Conventions and lints
+
+*Non-normative, but recommended.* JSON never acquired naming conventions, so every project invents its own. NOVA recommends one set of conventions, and the reference tooling (`nova lint`, the language server) checks them.
+
+| Element | Convention |
+| --- | --- |
+| Record keys and schema field names | `snake_case` |
+| Enum variant tags | `snake_case` (`!active`, `!failed(…)`) |
+| Schema definition names | `PascalCase` (enforced by the schema grammar, §6.1) |
+| Schema names | lowercase with `-_./` (enforced, §6.7) |
+| Field identities | every field of a record has `@id`, or none does |
+
+Exceptions are explicit:
+- `@compat json|yaml|toml` (§4.2) marks data whose names belong to an external contract;
+- `@x-lint case=camel` (or `kebab`) selects another convention for a document;
+- `@x-lint allow=rule,…` turns individual rules off.
+
+Documents that declare `@schema` take their names from the schema, so naming rules apply to the schema rather than to the document.
+
+| Rule | Level | Checks | Fix |
+| --- | --- | --- | --- |
+| `key-case` | warning | keys follow the convention (not in `@compat` documents, nor in documents with `@schema`) | rename, unless the new name already exists |
+| `key-collision` | warning | keys in one record that differ only in case or separators (`userId` / `user_id`) | — |
+| `quoted-key` | hint | keys that need quotes | — |
+| `untyped-timestamp` | hint | plain strings that are RFC 3339 timestamps, in documents without a schema | wrap in `@timestamp(…)` |
+| `mixed-list` | hint | lists that mix scalar kinds | — |
+| `compat-loss` | warning | in `@compat F` documents, values that F cannot represent | — |
+| `field-case` / `variant-case` | warning | schema field and variant names | — |
+| `partial-ids` | warning | records where only some fields have `@id` | — |
+
+Fixes are text edits at source spans, so comments and layout are preserved. `nova convert` from JSON, YAML or TOML into NOVA text adds the matching `@compat` directive.
+

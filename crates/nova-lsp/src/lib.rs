@@ -257,11 +257,34 @@ impl<'c> Server<'c> {
         out
     }
 
+    /// Convention findings from `nova-lint` (spec Appendix E).
+    fn lints(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
+        let config = nova_lint::Config::default();
+        let findings = match kind_of(uri, text) {
+            Kind::Schema => nova_lint::lint_schema(text, &config).unwrap_or_default(),
+            Kind::Document => nova_lint::lint_document(text, &config).unwrap_or_default(),
+            Kind::Patch => vec![],
+        };
+        findings
+            .into_iter()
+            .map(|f| {
+                let sev = if f.level == nova_lint::Level::Warning {
+                    DiagnosticSeverity::WARNING
+                } else {
+                    DiagnosticSeverity::HINT
+                };
+                diag(range(text, f.start, f.end), sev, &format!("nova::lint::{}", f.rule), f.message)
+            })
+            .collect()
+    }
+
     fn publish(&self, uri: &Url) -> Result<(), Error> {
         let Some(text) = self.docs.get(uri) else { return Ok(()) };
+        let mut diagnostics = self.diagnostics(uri, text);
+        diagnostics.extend(self.lints(uri, text));
         let params = PublishDiagnosticsParams {
             uri: uri.clone(),
-            diagnostics: self.diagnostics(uri, text),
+            diagnostics,
             version: None,
         };
         self.conn

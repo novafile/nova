@@ -187,6 +187,27 @@ enum Cmd {
     Stats { file: PathBuf },
     /// Print a short guide for AI coding agents (read projections, write conditional patches).
     Guide,
+    /// Check documents (.nova) and schemas (.novs) against NOVA conventions; exits 1 on warnings.
+    ///
+    /// Rules: key-case (snake_case keys; fixable), key-collision, quoted-key, untyped-timestamp
+    /// (fixable), mixed-list, compat-loss (with `@compat json|yaml|toml`), field-case,
+    /// variant-case, partial-ids. Configure in a file with `@x-lint case=camel allow=rule,…`.
+    Lint {
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        /// Naming convention: snake (default), camel or kebab.
+        #[arg(long)]
+        case: Option<String>,
+        /// Disable a rule (repeatable).
+        #[arg(long)]
+        allow: Vec<String>,
+        /// Apply fixes in place.
+        #[arg(long)]
+        fix: bool,
+        /// Output: text (diagnostics) or json (one finding per line).
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
     /// Schema tools.
     Schema {
         #[command(subcommand)]
@@ -259,6 +280,14 @@ fn json_loaded(value: Value) -> Loaded {
     Loaded { directives: vec![], value }
 }
 
+/// Data from another format keeps that format's names: mark it `@compat` (spec §4.2).
+fn compat_loaded(value: Value, format: &str) -> Loaded {
+    Loaded {
+        directives: vec![("compat".into(), format.into())],
+        value,
+    }
+}
+
 fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
     load_with(p, from, None)
 }
@@ -298,21 +327,21 @@ fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> 
     }
     let text = String::from_utf8(bytes).map_err(|_| ctx("not UTF-8".into()))?;
     match from {
-        InputFormat::Jsonl => return Ok(json_loaded(Value::List(nova_json::from_jsonl_str(&text).map_err(ctx)?))),
-        InputFormat::Json => return Ok(json_loaded(nova_json::from_json_str(&text).map_err(ctx)?)),
-        InputFormat::Yaml => return Ok(json_loaded(nova_formats::yaml::from_str(&text).map_err(ctx)?)),
-        InputFormat::Toml => return Ok(json_loaded(nova_formats::toml::from_str(&text).map_err(ctx)?)),
+        InputFormat::Jsonl => return Ok(compat_loaded(Value::List(nova_json::from_jsonl_str(&text).map_err(ctx)?), "json")),
+        InputFormat::Json => return Ok(compat_loaded(nova_json::from_json_str(&text).map_err(ctx)?, "json")),
+        InputFormat::Yaml => return Ok(compat_loaded(nova_formats::yaml::from_str(&text).map_err(ctx)?, "yaml")),
+        InputFormat::Toml => return Ok(compat_loaded(nova_formats::toml::from_str(&text).map_err(ctx)?, "toml")),
         InputFormat::Auto => {
             // Sniff JSON (e.g. on stdin): a whole JSON value, or JSON Lines.
             let t = text.trim_start();
             if t.starts_with('{') || t.starts_with('[') || t.starts_with('"') {
                 if let Ok(v) = nova_json::from_json_str(&text) {
-                    return Ok(json_loaded(v));
+                    return Ok(compat_loaded(v, "json"));
                 }
                 let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
                 if lines.len() > 1 && lines.iter().all(|l| l.trim_start().starts_with('{') || l.trim_start().starts_with('[')) {
                     if let Ok(v) = nova_json::from_jsonl_str(&text) {
-                        return Ok(json_loaded(Value::List(v)));
+                        return Ok(compat_loaded(Value::List(v), "json"));
                     }
                 }
             }
@@ -484,6 +513,13 @@ fn patch_error(e: &nova_patch::PatchError, file: &Path, src: &str) -> E {
 fn run(cli: Cli) -> R<ExitCode> {
     match cli.cmd {
         Cmd::Guide => print!("{AGENT_GUIDE}"),
+        Cmd::Lint {
+            files,
+            case,
+            allow,
+            fix,
+            format,
+        } => return lint(files, case, allow, fix, &format),
         Cmd::Fmt { file, to, write } => {
             // NOVA text keeps its comments, blank lines and spellings (spec §3).
             let profile = match to {
@@ -741,6 +777,70 @@ fn run(cli: Cli) -> R<ExitCode> {
         },
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn lint(files: Vec<PathBuf>, case: Option<String>, allow: Vec<String>, fix: bool, format: &str) -> R<ExitCode> {
+    let mut config = nova_lint::Config::default();
+    if let Some(c) = case {
+        config.case = nova_lint::Case::parse(&c).ok_or_else(|| format!("unknown case {c:?} (snake, camel, kebab)"))?;
+    }
+    config.allow = allow;
+    let mut warnings = 0;
+    for file in &files {
+        let mut src = read_text(file)?;
+        let is_schema = file.extension().is_some_and(|e| e == "novs");
+        let run = |src: &str| -> R<Vec<nova_lint::Finding>> {
+            if is_schema {
+                Ok(nova_lint::lint_schema(src, &config).map_err(|e| format!("{}: {e}", file.display()))?)
+            } else {
+                Ok(nova_lint::lint_document(src, &config).map_err(|e| e.to_diagnostic(&name_of(file), src))?)
+            }
+        };
+        let mut findings = run(&src)?;
+        if fix && findings.iter().any(|f| f.fix.is_some()) {
+            let fixed = nova_lint::apply_fixes(&src, &findings);
+            let n = findings.iter().filter(|f| f.fix.is_some()).count();
+            std::fs::write(file, &fixed).map_err(|e| format!("{}: {e}", file.display()))?;
+            eprintln!("{}: applied {n} fix{}", file.display(), if n == 1 { "" } else { "es" });
+            src = fixed;
+            findings = run(&src)?;
+        }
+        warnings += findings.iter().filter(|f| f.level == nova_lint::Level::Warning).count();
+        for f in &findings {
+            if format == "json" {
+                let (line, col) = nova_text::spans::line_col_utf16(&src, f.start);
+                let mut rec = Record::new();
+                for (k, v) in [
+                    ("file", Value::String(file.display().to_string())),
+                    ("rule", Value::String(f.rule.into())),
+                    (
+                        "level",
+                        Value::String(if f.level == nova_lint::Level::Warning { "warning" } else { "hint" }.into()),
+                    ),
+                    ("message", Value::String(f.message.clone())),
+                    ("line", Value::Int(line as i128 + 1)),
+                    ("col", Value::Int(col as i128 + 1)),
+                    ("fixable", Value::Bool(f.fix.is_some())),
+                ] {
+                    rec.set(k, v);
+                }
+                println!("{}", nova_json::to_json_string(&Value::Record(rec), false).0);
+            } else {
+                let mut d = SourceDiagnostic::new("nova::lint", format!("[{}] {}", f.rule, f.message), &name_of(file), &src).with_label(
+                    f.start,
+                    f.end.saturating_sub(f.start),
+                    if f.fix.is_some() { "fixable with --fix" } else { "here" },
+                );
+                d.severity = Some(if f.level == nova_lint::Level::Warning {
+                    miette::Severity::Warning
+                } else {
+                    miette::Severity::Advice
+                });
+                eprintln!("{:?}", miette::Report::new(d));
+            }
+        }
+    }
+    Ok(if warnings > 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
 }
 
 /// Is the CLI driven by a coding agent?

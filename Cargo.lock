@@ -710,6 +710,7 @@ dependencies = [
  "nova-binary",
  "nova-formats",
  "nova-json",
+ "nova-lint",
  "nova-patch",
  "nova-proto",
  "nova-schema",
@@ -737,11 +738,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-lint"
+version = "0.1.0"
+dependencies = [
+ "nova-formats",
+ "nova-json",
+ "nova-schema",
+ "nova-text",
+ "nova-value",
+]
+
+[[package]]
 name = "nova-lsp"
 version = "0.1.0"
 dependencies = [
  "lsp-server",
  "lsp-types",
+ "nova-lint",
  "nova-patch",
  "nova-schema",
  "nova-text",

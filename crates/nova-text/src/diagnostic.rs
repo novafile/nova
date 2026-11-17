@@ -20,6 +20,8 @@ pub struct SourceDiagnostic {
     /// `(byte offset, length, label)`.
     pub labels: Vec<(usize, usize, String)>,
     pub related: Vec<SourceDiagnostic>,
+    /// Defaults to error.
+    pub severity: Option<miette::Severity>,
     src: NamedSource<String>,
 }
 
@@ -31,6 +33,7 @@ impl SourceDiagnostic {
             help: None,
             labels: Vec::new(),
             related: Vec::new(),
+            severity: None,
             src: NamedSource::new(name, src.to_owned()).with_language("nova"),
         }
     }
@@ -118,6 +121,9 @@ impl std::error::Error for SourceDiagnostic {}
 impl Diagnostic for SourceDiagnostic {
     fn code<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
         Some(Box::new(self.code))
+    }
+    fn severity(&self) -> Option<miette::Severity> {
+        self.severity
     }
     fn help<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
         self.help.as_ref().map(|h| Box::new(h) as Box<dyn fmt::Display>)

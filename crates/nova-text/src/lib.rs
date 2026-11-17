@@ -27,7 +27,7 @@ use nova_value::Value;
 
 /// Directives allowed in data and template documents (spec §4.2).
 pub fn is_data_directive(name: &str) -> bool {
-    matches!(name, "nova" | "schema" | "revision" | "scope" | "envelope" | "mode")
+    matches!(name, "nova" | "schema" | "revision" | "scope" | "envelope" | "mode" | "compat")
 }
 
 /// Parse a data or template document.

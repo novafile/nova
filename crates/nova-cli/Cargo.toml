@@ -19,6 +19,7 @@ nova-template.workspace = true
 nova-json.workspace = true
 nova-formats = { path = "../nova-formats" }
 nova-proto = { path = "../nova-proto" }
+nova-lint = { path = "../nova-lint" }
 clap.workspace = true
 miette = { workspace = true, features = ["fancy"] }
 detect-coding-agent = "0.2"
