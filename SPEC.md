@@ -1061,7 +1061,54 @@ JSON Lines maps to a list of the values on its non-empty lines.
 
 ### 11.2 Other formats
 
-Adapters for YAML, TOML, CBOR, MessagePack and Protobuf SHOULD follow the same discipline: lossless where the target can represent the kind, and an explicit report where it cannot. YAML input SHOULD be read with the YAML 1.2 core schema and aliases expanded under the limits of §9.5. YAML-specific tags and merge keys SHOULD be rejected, not guessed at.
+Adapters for other formats SHOULD follow the same discipline: lossless where the target can represent the kind, and an explicit report where it cannot. The reference adapters (`nova-formats`, `nova-proto`) implement the following.
+
+**YAML.**
+- *Reading:*
+  - YAML 1.2 core schema, applied to plain scalars only. YAML 1.1 surprises (`yes`, `on`, `0777`) stay strings.
+  - Integers are read exactly, including beyond 64 bits.
+  - Quoted and block scalars are strings.
+  - Aliases are expanded under the output budget of §9.5, which defeats "billion laughs" documents.
+  - Merge keys (`<<`) and tags other than the core tags and `!!binary` MUST be rejected (use templates, §9, instead).
+  - A mapping with only string keys becomes a record; any other mapping becomes a map.
+- *Writing:*
+  - A string is quoted whenever a YAML 1.1 or 1.2 reader could resolve it to another type.
+  - Decimals, rationals, timestamps, durations, tuples, sets and variants are written with loss warnings.
+  - Bytes are written as `!!binary`.
+
+**TOML.**
+- *Reading:* an offset date-time becomes a timestamp. Local dates and times become strings.
+- *Writing:*
+  - The root MUST be a record.
+  - `null`, and integers outside 64 bits, are errors.
+  - Timestamps are written as offset date-times.
+  - A list of records becomes an array of tables.
+  - NOVA-only kinds are written with loss warnings.
+
+**CBOR (RFC 8949).**
+- Tags:
+
+  | Kind | Tag |
+  | --- | --- |
+  | timestamp | 0 (RFC 3339 text; reading also accepts tag 1) |
+  | big integers | 2 and 3 |
+  | decimal | 4 (decimal fraction) |
+  | rational | 30 |
+  | set | 258 |
+  | map whose keys are all strings | 259, so it does not read back as a record |
+
+- Durations, tuples and variants have no registered tag and are written with loss warnings.
+- A deterministic mode implements RFC 8949 §4.2.1.
+
+**Protobuf (proto3).** Protobuf requires a schema; `nova-proto` derives it from a NOVA schema:
+- every record field MUST carry `@id(n)`, which becomes its field number;
+- records become messages;
+- enums with only unit variants become proto enums with a zero `…_UNSPECIFIED` value;
+- enums with payloads become messages with a `oneof`;
+- timestamps and durations use the well-known types; decimals and rationals are strings;
+- optional fields, nullable types and fields with defaults become `optional`.
+
+Values are resolved against the schema before encoding and validated after decoding. Features Protobuf cannot express are rejected with an error naming the definition and field: tuples, `any`, nested repeated values, nullable collections, non-scalar map keys and so on.
 
 ### 11.3 Language bindings
 
@@ -1133,6 +1180,8 @@ The Rust workspace in this repository implements the specification.
 | `nova-patch` | §7: queries and projections, the patch language, atomic application, diffs |
 | `nova-template` | §9: rendering, sandboxed file loader, limits |
 | `nova-json` | §11.1: JSON and JSON Lines mapping with loss reporting |
+| `nova-formats` | §11.2: YAML, TOML and CBOR adapters with loss reporting |
+| `nova-proto` | §11.2: `.proto` generation and Protobuf wire encoding/decoding from NOVA schemas |
 | `nova-serde` | §11.3: Serde serializer/deserializer, text and binary helpers, `with::` adapters |
 | `nova-lsp` | Language server: diagnostics (syntax, patches, schemas, §6.7 schema lookup), outline, hover, completion, comment-safe formatting |
 | `nova-cli` | The `nova` command: `fmt`, `convert`, `hash`, `validate`, `get`, `patch`, `diff`, `render`, `stats`, `schema {fmt,fingerprint,check}` |
@@ -1141,7 +1190,6 @@ The Rust workspace in this repository implements the specification.
 
 - **Fidelity.** The reference implementation is document-preserving without a separate concrete syntax tree. Instead, the parser records the source span of every value and every comment (`parse_with_spans`). `nova fmt` (`format_preserving`) re-renders with comments, blank lines and the author's spellings carried over. `nova patch` on text (`apply_to_source`) edits the source surgically and reports whether any part had to be re-rendered. Whitespace *inside* a line (for example, alignment after `key:`) is normalised whenever that line is re-rendered.
 - **Envelopes.** `@envelope` (§8.2) is accepted as a directive, but its body structure is not yet checked.
-- **Formats.** There are no YAML, TOML, CBOR or Protobuf adapters yet. The positional profile (Appendix C) is not implemented.
 
 ---
 
@@ -1203,7 +1251,7 @@ unary       = "not" unary | "(" cond ")" | flow-value [("==" | "!=") flow-value]
 1. **Positional profile (experimental).** With a known schema fingerprint, a record can be written as its field values in declared order, omitting names (`@mode positional`). This is opt-in transport only: it is not self-describing, and its exact tokenization and escaping rules are still open.
 2. **References.** Explicit references to independently identified records (`@ref(services, api)`) across documents, without general cyclic graphs.
 3. **Lossless syntax tree.** A full concrete syntax tree, which would also preserve intra-line whitespace and comments inside flow values, for refactoring tools and schema migrations.
-4. **Adapters** for YAML, TOML, CBOR and Protobuf, and bindings beyond Serde (e.g. the reflection-based `facet`).
+4. **Bindings** beyond Serde (e.g. the reflection-based `facet`), and a MessagePack adapter.
 5. **Constrained decoding.** Generate tokenizer-level grammars from schemas and the patch grammar.
 6. **Empirical evaluation** of the §10 objective across models, using the five workloads.
 7. **Scale-preserving decimals.** Should `1.50` and `1.5` be distinguishable? Version 0.1 says no; schemas can constrain scale.

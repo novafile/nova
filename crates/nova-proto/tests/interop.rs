@@ -281,25 +281,15 @@ fn prost_unpacked_and_merged_input() {
 }
 
 #[test]
-fn infrastructure_example_requires_ids() {
-    let schema = parse_schema(INFRA_SCHEMA).unwrap();
+fn fields_without_ids_are_rejected() {
+    let schema = parse_schema(&INFRA_SCHEMA.replace("  region: string @id(2)\n", "  region: string\n")).unwrap();
     let err = nova_proto::proto_file(&schema).unwrap_err();
-    assert!(err.contains("Infrastructure.") && err.contains("@id"), "{err}");
+    assert!(err.contains("Infrastructure.region") && err.contains("@id"), "{err}");
 }
 
-/// The example schema with `@id`s added to the root record's fields.
+/// The example schema (every field carries `@id`).
 fn infra_with_ids() -> Schema {
-    let mut src = INFRA_SCHEMA.to_owned();
-    for (field, id) in [
-        ("environment: string", 1),
-        ("region: string", 2),
-        ("deployed_at: timestamp", 3),
-        ("services: Service[]", 5),
-    ] {
-        src = src.replace(&format!("  {field}\n"), &format!("  {field} @id({id})\n"));
-    }
-    src = src.replace("  status: Status = !active\n", "  status: Status @id(4) = !active\n");
-    parse_schema(&src).unwrap()
+    parse_schema(INFRA_SCHEMA).unwrap()
 }
 
 #[test]

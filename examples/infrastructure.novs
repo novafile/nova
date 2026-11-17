@@ -19,8 +19,8 @@ enum Status:
   failed(string)
 
 record Infrastructure:
-  environment: string
-  region: string
-  deployed_at: timestamp
-  status: Status = !active
-  services: Service[]
+  environment: string @id(1)
+  region: string @id(2)
+  deployed_at: timestamp @id(3)
+  status: Status @id(4) = !active
+  services: Service[] @id(5)

@@ -32,16 +32,31 @@ enum Format {
     Binary,
     /// Framed binary in canonical form.
     BinaryCanonical,
+    /// YAML 1.2 (lossy for NOVA-only types; warnings on stderr).
+    Yaml,
+    /// TOML 1.0 (root must be a record; no null).
+    Toml,
+    /// CBOR (RFC 8949).
+    Cbor,
+    /// CBOR, core deterministic encoding.
+    CborDeterministic,
+    /// Protobuf wire format (needs --schema with @id on every field).
+    Protobuf,
 }
 
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
 enum InputFormat {
-    /// Binary frames by magic, `.json`/`.jsonl` by extension, otherwise JSON if it parses, else NOVA text.
+    /// Binary frames by magic; `.json`, `.jsonl`, `.yaml`/`.yml`, `.toml`, `.cbor`, `.pb` by extension; otherwise JSON if it parses, else NOVA text.
     Auto,
     Nova,
     Json,
     Jsonl,
     Binary,
+    Yaml,
+    Toml,
+    Cbor,
+    /// Protobuf wire format (needs --schema).
+    Protobuf,
 }
 
 #[derive(Subcommand)]
@@ -63,6 +78,9 @@ enum Cmd {
         /// Input format (detected by default).
         #[arg(long, value_enum, default_value = "auto")]
         from: InputFormat,
+        /// Schema, required for Protobuf input/output.
+        #[arg(long)]
+        schema: Option<PathBuf>,
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Fail instead of warning when the conversion loses type information.
@@ -146,6 +164,8 @@ enum SchemaCmd {
     Fingerprint { file: PathBuf },
     /// Classify changes between two schema versions and verify the SemVer bump; exits 1 if insufficient.
     Check { old: PathBuf, new: PathBuf },
+    /// Print the proto3 `.proto` file for a schema (fields need `@id`).
+    Proto { file: PathBuf },
 }
 
 /// CLI error: a miette report, so diagnostics with source spans render nicely.
@@ -202,6 +222,10 @@ fn json_loaded(value: Value) -> Loaded {
 }
 
 fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
+    load_with(p, from, None)
+}
+
+fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> {
     let bytes = read_bytes(p)?;
     let ctx = |e: String| format!("{}: {e}", p.display());
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -209,8 +233,23 @@ fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
         InputFormat::Auto if bytes.starts_with(MAGIC) => InputFormat::Binary,
         InputFormat::Auto if ext == "jsonl" || ext == "ndjson" => InputFormat::Jsonl,
         InputFormat::Auto if ext == "json" => InputFormat::Json,
+        InputFormat::Auto if ext == "yaml" || ext == "yml" => InputFormat::Yaml,
+        InputFormat::Auto if ext == "toml" => InputFormat::Toml,
+        InputFormat::Auto if ext == "cbor" => InputFormat::Cbor,
+        InputFormat::Auto if ext == "pb" || ext == "binpb" => InputFormat::Protobuf,
         f => f,
     };
+    match from {
+        InputFormat::Cbor => return Ok(json_loaded(nova_formats::cbor::from_slice(&bytes).map_err(ctx)?)),
+        InputFormat::Protobuf => {
+            let s = schema.ok_or_else(|| ctx("reading Protobuf needs --schema".into()))?;
+            return Ok(Loaded {
+                directives: s.reference().map(|r| vec![("schema".to_owned(), r.to_string())]).unwrap_or_default(),
+                value: nova_proto::decode(&bytes, s).map_err(ctx)?,
+            });
+        }
+        _ => {}
+    }
     if from == InputFormat::Binary {
         let (f, n) = decode_frame(&bytes).map_err(|e| ctx(e.to_string()))?;
         if n != bytes.len() {
@@ -223,6 +262,8 @@ fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
     match from {
         InputFormat::Jsonl => return Ok(json_loaded(Value::List(nova_json::from_jsonl_str(&text).map_err(ctx)?))),
         InputFormat::Json => return Ok(json_loaded(nova_json::from_json_str(&text).map_err(ctx)?)),
+        InputFormat::Yaml => return Ok(json_loaded(nova_formats::yaml::from_str(&text).map_err(ctx)?)),
+        InputFormat::Toml => return Ok(json_loaded(nova_formats::toml::from_str(&text).map_err(ctx)?)),
         InputFormat::Auto => {
             // Sniff JSON (e.g. on stdin): a whole JSON value, or JSON Lines.
             let t = text.trim_start();
@@ -268,7 +309,24 @@ fn load_schema(p: &Path) -> R<Schema> {
     })
 }
 
+/// Report lossy mappings: an error with `strict`, warnings otherwise.
+fn lossy<W: std::fmt::Display>(what: &str, warnings: &[W], strict: bool) -> R<()> {
+    if warnings.is_empty() {
+        return Ok(());
+    }
+    let msg = warnings.iter().map(|w| format!("  {w}")).collect::<Vec<_>>().join("\n");
+    if strict {
+        return Err(format!("conversion to {what} is lossy:\n{msg}").into());
+    }
+    eprintln!("warning: conversion to {what} is lossy:\n{msg}");
+    Ok(())
+}
+
 fn render_as(l: &Loaded, f: Format, strict: bool) -> R<Vec<u8>> {
+    render_with(l, f, strict, None)
+}
+
+fn render_with(l: &Loaded, f: Format, strict: bool, schema: Option<&Schema>) -> R<Vec<u8>> {
     let d: Vec<(&str, &str)> = l.directives.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     let text = |p| document_to_text(&d, &l.value, p).into_bytes();
     Ok(match f {
@@ -285,6 +343,25 @@ fn render_as(l: &Loaded, f: Format, strict: bool) -> R<Vec<u8>> {
                 eprintln!("warning: conversion to JSON is lossy:\n{msg}");
             }
             (s + "\n").into_bytes()
+        }
+        Format::Yaml => {
+            let (s, w) = nova_formats::yaml::to_string(&l.value);
+            lossy("YAML", &w, strict)?;
+            s.into_bytes()
+        }
+        Format::Toml => {
+            let (s, w) = nova_formats::toml::to_string(&l.value)?;
+            lossy("TOML", &w, strict)?;
+            s.into_bytes()
+        }
+        Format::Cbor | Format::CborDeterministic => {
+            let (b, w) = nova_formats::cbor::to_vec(&l.value, matches!(f, Format::CborDeterministic));
+            lossy("CBOR", &w, strict)?;
+            b
+        }
+        Format::Protobuf => {
+            let s = schema.ok_or("writing Protobuf needs --schema")?;
+            nova_proto::encode(&l.value, s)?
         }
         Format::Binary | Format::BinaryCanonical => {
             let canonical = matches!(f, Format::BinaryCanonical);
@@ -369,14 +446,16 @@ fn run(cli: Cli) -> R<ExitCode> {
             out(&bytes, write.then_some(file.as_path()))?;
         }
         Cmd::Convert {
+            schema,
             file,
             to,
             from,
             output,
             strict,
         } => {
-            let l = load_as(&file, from)?;
-            out(&render_as(&l, to, strict)?, output.as_deref())?;
+            let s = schema.as_deref().map(load_schema).transpose()?;
+            let l = load_with(&file, from, s.as_ref())?;
+            out(&render_with(&l, to, strict, s.as_ref())?, output.as_deref())?;
         }
         Cmd::Hash { file } => println!("{}", revision(&load(&file)?.value)),
         Cmd::Validate { file, schema, resolve } => {
@@ -551,8 +630,11 @@ fn run(cli: Cli) -> R<ExitCode> {
                 ("nova (canonical)", Format::Canonical),
                 ("json (pretty)", Format::Json),
                 ("json (compact)", Format::JsonCompact),
+                ("yaml", Format::Yaml),
+                ("toml", Format::Toml),
                 ("binary", Format::Binary),
                 ("binary canonical", Format::BinaryCanonical),
+                ("cbor", Format::Cbor),
             ] {
                 let plain = Loaded {
                     directives: vec![],
@@ -560,11 +642,17 @@ fn run(cli: Cli) -> R<ExitCode> {
                 };
                 let bytes = match f {
                     Format::Json | Format::JsonCompact => nova_json::to_json_string(&plain.value, matches!(f, Format::Json)).0.into_bytes(),
+                    Format::Yaml => nova_formats::yaml::to_string(&plain.value).0.into_bytes(),
+                    Format::Toml => match nova_formats::toml::to_string(&plain.value) {
+                        Ok((t, _)) => t.into_bytes(),
+                        Err(_) => continue, // not representable
+                    },
+                    Format::Cbor => nova_formats::cbor::to_vec(&plain.value, false).0,
                     _ => render_as(&plain, f, false)?,
                 };
                 let tokens = std::str::from_utf8(&bytes)
                     .ok()
-                    .filter(|_| !matches!(f, Format::Binary | Format::BinaryCanonical))
+                    .filter(|_| !matches!(f, Format::Binary | Format::BinaryCanonical | Format::Cbor))
                     .map(|t| c.count(t).to_string())
                     .unwrap_or_else(|| "-".into());
                 println!("{name:<18} {:>9} {tokens:>9}", bytes.len());
@@ -574,6 +662,7 @@ fn run(cli: Cli) -> R<ExitCode> {
         Cmd::Schema { cmd } => match cmd {
             SchemaCmd::Fmt { file } => print!("{}", load_schema(&file)?.to_canonical_text()),
             SchemaCmd::Fingerprint { file } => println!("{}", load_schema(&file)?.fingerprint()),
+            SchemaCmd::Proto { file } => print!("{}", nova_proto::proto_file(&load_schema(&file)?)?),
             SchemaCmd::Check { old, new } => {
                 let r = check_versions(&load_schema(&old)?, &load_schema(&new)?)?;
                 for c in &r.changes {

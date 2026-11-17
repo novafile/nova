@@ -101,6 +101,8 @@ let bytes = nova_serde::to_vec(&svc)?;         // binary frame
 | [`nova-patch`](crates/nova-patch) | `@get` queries and projections; the patch language; atomic apply; diff |
 | [`nova-template`](crates/nova-template) | Template rendering with typed parameters, output budget and sandboxed imports |
 | [`nova-json`](crates/nova-json) | JSON and JSONL mapping with explicit loss reporting |
+| [`nova-formats`](crates/nova-formats) | YAML, TOML and CBOR adapters with explicit loss reporting |
+| [`nova-proto`](crates/nova-proto) | `.proto` generation and Protobuf encoding/decoding driven by NOVA schemas (`@id` = field number) |
 | [`nova-serde`](crates/nova-serde) | Serde integration: `to_string`/`from_str`, `to_vec`/`from_slice`, `to_value`/`from_value` |
 | [`nova-cli`](crates/nova-cli) | The `nova` command |
 | [`nova-lsp`](crates/nova-lsp) | Language server: diagnostics with workspace schemas, outline, hover, completion, formatting |
@@ -122,6 +124,9 @@ nova patch infrastructure.nova scale-api.patch --schema infrastructure.novs
 nova diff before.nova after.nova
 nova render service.tpl.nova --set env=production --set 'services=[auth, api]' --set metrics=true --schema infrastructure.novs
 nova convert infrastructure.nova --to binary -o infrastructure.novb
+nova convert config.yaml --to nova                 # also toml, cbor; --to yaml/toml/cbor
+nova convert infrastructure.nova --to protobuf --schema infrastructure.novs -o infra.pb
+nova schema proto infrastructure.novs              # the matching .proto
 nova hash infrastructure.novb          # same revision as the text form
 nova stats infrastructure.nova         # bytes and estimated tokens per representation
 nova schema check old.novs new.novs    # exits 1 on breaking changes

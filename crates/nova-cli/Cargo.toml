@@ -17,5 +17,7 @@ nova-schema.workspace = true
 nova-patch.workspace = true
 nova-template.workspace = true
 nova-json.workspace = true
+nova-formats = { path = "../nova-formats" }
+nova-proto = { path = "../nova-proto" }
 clap.workspace = true
 miette = { workspace = true, features = ["fancy"] }
