@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use nova_binary::{decode_frame, encode_frame, Frame, FrameOptions, MAGIC};
-use nova_schema::{check_compatibility, parse_schema, Schema};
+use nova_schema::{check_versions, parse_schema, Schema};
 use nova_text::tokens::{HeuristicCounter, TokenCounter};
 use nova_text::{document_to_text, parse_document, Profile};
 use nova_value::{revision, Record, Value};
@@ -113,7 +113,7 @@ enum SchemaCmd {
     Fmt { file: PathBuf },
     /// Print `name#fingerprint`.
     Fingerprint { file: PathBuf },
-    /// Report changes between two schema versions; exits 1 if any is breaking.
+    /// Classify changes between two schema versions and verify the SemVer bump; exits 1 if insufficient.
     Check { old: PathBuf, new: PathBuf },
 }
 
@@ -239,6 +239,11 @@ fn run(cli: Cli) -> R<ExitCode> {
         Cmd::Validate { file, schema, resolve } => {
             let s = load_schema(&schema)?;
             let l = load(&file)?;
+            if let Some((_, r)) = l.directives.iter().find(|(n, _)| n == "schema") {
+                if s.reference().is_some() {
+                    s.accepts_reference(r).map_err(|e| format!("{}: {e}", file.display()))?;
+                }
+            }
             match s.resolve(&l.value) {
                 Ok(v) => {
                     if resolve {
@@ -268,6 +273,11 @@ fn run(cli: Cli) -> R<ExitCode> {
             let l = load(&file)?;
             let p = nova_patch::parse_patch(&read_text(&patch)?).map_err(|e| format!("{}: {e}", patch.display()))?;
             let s = schema.as_deref().map(load_schema).transpose()?;
+            if let (Some(s), Some(r)) = (&s, &p.schema) {
+                if s.reference().is_some() {
+                    s.accepts_reference(r).map_err(|e| format!("{}: {e}", patch.display()))?;
+                }
+            }
             let validate = |v: &Value| match &s {
                 Some(s) => s.validate(v).map_err(|i| i.iter().map(|i| i.to_string()).collect()),
                 None => Ok(()),
@@ -346,13 +356,23 @@ fn run(cli: Cli) -> R<ExitCode> {
             SchemaCmd::Fmt { file } => print!("{}", load_schema(&file)?.to_canonical_text()),
             SchemaCmd::Fingerprint { file } => println!("{}", load_schema(&file)?.fingerprint()),
             SchemaCmd::Check { old, new } => {
-                let changes = check_compatibility(&load_schema(&old)?, &load_schema(&new)?);
-                for c in &changes {
+                let r = check_versions(&load_schema(&old)?, &load_schema(&new)?)?;
+                for c in &r.changes {
                     println!("{c}");
                 }
-                if changes.iter().any(|c| c.breaking) {
+                let kind = match r.kind {
+                    nova_schema::ChangeKind::None => "no semantic changes",
+                    nova_schema::ChangeKind::Compatible => "backward-compatible changes",
+                    nova_schema::ChangeKind::Breaking => "breaking changes",
+                };
+                println!("{} -> {}: {kind}; minimum version {}", r.old, r.new, r.minimum);
+                if !r.problems.is_empty() {
+                    for p in &r.problems {
+                        eprintln!("error: {p}");
+                    }
                     return Ok(ExitCode::from(1));
                 }
+                println!("ok: version bump is valid");
             }
         },
     }

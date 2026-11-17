@@ -99,7 +99,7 @@ impl Node {
     }
 }
 
-/// A header directive line such as `@schema infrastructure/v1`.
+/// A header directive line such as `@schema infrastructure@1.0.0`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Directive {
     pub name: String,

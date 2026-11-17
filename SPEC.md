@@ -199,7 +199,7 @@ Directives defined for **data documents**:
 | Directive | Meaning |
 | --- | --- |
 | `@nova <version>` | The NOVA version the document targets. OPTIONAL. |
-| `@schema <ref>` | The schema the document claims to conform to: a name, optionally with a fingerprint (`infrastructure/v1#8c21a0f3d5e6b7c8`). Informational; parsers MUST NOT fetch it. |
+| `@schema <ref>` | The schema version the data was written against: `name@MAJOR.MINOR.PATCH`, optionally followed by `#` and a fingerprint (§6.6–6.7), e.g. `infrastructure@1.2.0#8c21a0f3d5e6b7c8`. Parsers MUST NOT fetch it. A validator that is given a schema MUST check the reference against it (§6.7). |
 | `@revision <rev>` | The revision of the document the body was taken from (used in query responses, §7.3). |
 | `@scope <path>` | The location within that document the body was taken from (§7.3). |
 | `@envelope <kind>` | Marks an agent-result envelope (§8.2). |
@@ -461,7 +461,7 @@ frame = magic  "NOVA" (4E 4F 56 41)
 
 | Flag bit | Meaning |
 | --- | --- |
-| `0x01` SCHEMA | A schema reference follows (§6.6). On a negotiated connection it MAY be omitted. |
+| `0x01` SCHEMA | A schema reference follows (`name@version[#fingerprint]`, §6.7). On a negotiated connection it MAY be omitted. |
 | `0x02` CANONICAL | The payload is in canonical form; the receiver can hash it directly. |
 | `0x04` CRC32 | A CRC-32 (IEEE 802.3, reflected polynomial `0xEDB88320`) of the payload follows it. |
 | `0x08` DEDUPE | The payload may contain back-references. Informational. |
@@ -483,7 +483,7 @@ Schemas are **optional**. Schema-free documents are fully self-describing. A sch
 Schemas are written in their own small line-oriented language (file extension `.novs`):
 
 ```
-@schema infrastructure/v1          # name (used in fingerprints and @schema references)
+@schema infrastructure@1.0.0          # name and SemVer 2.0.0 version (§6.7)
 @root Infrastructure               # the type of a whole document
 
 type Port = u16 @range(1..65535)   # alias
@@ -599,11 +599,41 @@ A new schema version is **backward compatible** with an old one if every value v
 
 The **canonical schema text** renders:
 
-1. `@schema`;
+1. `@schema name@version`;
 2. `@root`;
 3. every definition, sorted by name, with fields in declared order and types in their long form (`list<T>`, not `T[]`).
 
-The **fingerprint** is `<name>#<h>`, where `<h>` is the first 16 hexadecimal digits of the revision (§2.13) of the canonical text, taken as a NOVA string value. Fingerprints are unaffected by comments and formatting. A `@schema` directive or frame MAY carry a fingerprint so that the receiver can confirm it holds the exact schema.
+The **fingerprint** is the first 16 hexadecimal digits of the revision (§2.13) of the canonical text, taken as a NOVA string value. A full **schema reference with fingerprint** is written `name@version#fingerprint`, for example `infrastructure@1.2.0#8c21a0f3d5e6b7c8`. Fingerprints are unaffected by comments and formatting.
+
+### 6.7 Versioning
+
+Schema versions are **Semantic Versioning 2.0.0** (<https://semver.org>) versions, and this is enforced, not advisory:
+
+- A named schema MUST declare `@schema name@MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`. The version MUST conform exactly to the SemVer 2.0.0 grammar: no leading zeros, no `v` prefix, all three components present. Schema names consist of lowercase ASCII letters, digits and `-_./`, and start with a letter.
+- A schema without a `@schema` line is **anonymous**. It can validate documents, but it cannot be referenced, and it cannot take part in evolution checks.
+- Version precedence follows SemVer §11. Build metadata is ignored for precedence and compatibility.
+
+**Compatibility contract.** A reader holding schema version **R** can read data written against version **W** of the same schema if and only if:
+
+| Case | Condition |
+| --- | --- |
+| R or W is a pre-release, or either is `0.0.z` | R and W have equal precedence (pre-releases and `0.0.z` promise nothing) |
+| R and W are `0.y.z` | same `y`, and R ≥ W |
+| otherwise | same MAJOR, and R ≥ W |
+
+A validator given both a document's `@schema` reference and a schema MUST reject the document if the names differ, if the contract above does not hold, or if the reference carries a fingerprint and the versions are equal but the fingerprints differ.
+
+**Release rules.** Moving a schema from version *old* to version *new* MUST obey the change classification of §6.5:
+
+| Changes between old and new | Minimum new version (old ≥ 1.0.0) | Minimum for old = 0.y.z | Minimum for old = 0.0.z |
+| --- | --- | --- | --- |
+| None: canonical text without the `@schema` line is identical | PATCH + 1 | PATCH + 1 | PATCH + 1 |
+| Backward-compatible only | MINOR + 1 | PATCH + 1 | PATCH + 1 |
+| At least one breaking change | MAJOR + 1 | MINOR + 1 | PATCH + 1 |
+
+In every case *new* MUST have greater precedence than *old*. A breaking release MUST leave the old compatibility range: per the contract above, *new* must not be able to read data written for *old*. Pre-release versions MAY contain any change. Tools SHOULD reject a release that violates these rules; `nova schema check old.novs new.novs` does, exiting non-zero.
+
+> *Rationale (non-normative).* Because compatibility is decided by the schema diff (§6.5), a version number is a *checked claim*, not a convention. A consumer that pins `infrastructure@1.4.0` can rely on every `1.x` release at or above it to read its data.
 
 ---
 
@@ -693,7 +723,7 @@ op        = path ":" SP old SP "->" SP new NL    ; replace, only if current = ol
 Example:
 
 ```
-@patch infrastructure/v1 sha256:91cf16db2f4a
+@patch infrastructure@1.0.0 sha256:91cf16db2f4a
 @scope services[id=api]
 replicas: 5 -> 8
 + tags: canary
@@ -1006,7 +1036,7 @@ Serde has no data-model slots for NOVA's extra kinds. The binding therefore uses
 | **Text reader** | §4 parsing, including every error condition marked MUST. |
 | **Text writer** | §4.10: output re-parses to an equal value; canonical spellings for the canonical profile. |
 | **Binary implementation** | §5. |
-| **Schema implementation** | §6.1–6.4 (resolution performs exactly the listed conversions). §6.5–6.6 are RECOMMENDED. |
+| **Schema implementation** | §6.1–6.4 (resolution performs exactly the listed conversions) and §6.7 (SemVer versions and the compatibility contract). §6.5–6.6 are RECOMMENDED. |
 | **Patch host** | §7.1–7.5, including atomicity and conflict reporting. |
 | **Template renderer** | §9, including the output budget and import restrictions. |
 | **Editor** | Document-preserving fidelity (§3) for regions it does not intend to change. |

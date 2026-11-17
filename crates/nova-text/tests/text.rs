@@ -2,7 +2,7 @@ use nova_text::{parse, parse_document, parse_flow, split_stream, to_text, Path, 
 use nova_value::{Decimal, Duration, Record, Timestamp, Value};
 
 const HUMAN: &str = r#"# NOVA human syntax
-@schema infrastructure/v1
+@schema infrastructure@1.0.0
 
 environment: production
 region: eu-central-1
@@ -22,7 +22,7 @@ services:
     enabled: true
 "#;
 
-const COMPACT: &str = r#"@schema infrastructure/v1
+const COMPACT: &str = r#"@schema infrastructure@1.0.0
 environment: production
 region: eu-central-1
 deployed_at: "2026-11-17T16:00:00Z"
@@ -37,7 +37,7 @@ fn human_and_compact_agree() {
     let c = parse(COMPACT).unwrap();
     assert_eq!(h, c);
     let doc = parse_document(HUMAN).unwrap();
-    assert_eq!(doc.directive("schema"), Some("infrastructure/v1"));
+    assert_eq!(doc.directive("schema"), Some("infrastructure@1.0.0"));
     let r = h.as_record().unwrap();
     // Without a schema, an unmarked timestamp stays a string (spec §4.4).
     assert_eq!(r.get("deployed_at"), Some(&Value::String("2026-11-17T16:00:00Z".into())));

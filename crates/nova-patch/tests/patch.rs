@@ -36,7 +36,7 @@ fn table_projection() {
 fn all_operations_and_atomicity() {
     let doc = parse(DOC).unwrap();
     let p = parse_patch(
-        "@patch infrastructure/v1\n\
+        "@patch infrastructure@1.0.0\n\
          ? environment: production\n\
          + services: {id: metrics, image: \"ghcr.io/example/metrics:v1\", port: 9090, replicas: 2}\n\
          - services[id=auth]\n\
@@ -47,7 +47,7 @@ fn all_operations_and_atomicity() {
          services[0].port: 3000 -> 3001\n",
     )
     .unwrap();
-    assert_eq!(p.schema.as_deref(), Some("infrastructure/v1"));
+    assert_eq!(p.schema.as_deref(), Some("infrastructure@1.0.0"));
     let out = apply_unchecked(&doc, &p).unwrap_or_else(|e| panic!("{e}"));
     let v = &out.value;
     let at = |p: &str| nova_text::Path::parse(p).unwrap().get(v).cloned();

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: CC0-1.0
 # NOVA human syntax
-@schema infrastructure/v1
+@schema infrastructure@1.0.0
 
 environment: production
 region: eu-central-1

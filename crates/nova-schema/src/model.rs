@@ -187,7 +187,10 @@ pub enum Def {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Schema {
+    /// Schema name and SemVer version from `@schema name@X.Y.Z` (spec §6.7).
+    /// Anonymous schemas (no `@schema` line) cannot be referenced or evolved.
     pub name: Option<String>,
+    pub version: Option<crate::Version>,
     pub root: Option<String>,
     pub defs: Vec<(String, Def)>,
 }
@@ -254,8 +257,8 @@ impl fmt::Display for TypeRef {
 
 impl fmt::Display for Schema {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(n) = &self.name {
-            writeln!(f, "@schema {n}")?;
+        if let (Some(n), Some(v)) = (&self.name, &self.version) {
+            writeln!(f, "@schema {n}@{v}")?;
         }
         if let Some(r) = &self.root {
             writeln!(f, "@root {r}")?;

@@ -28,7 +28,7 @@ pub mod flags {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
-    /// Schema reference such as `infrastructure/v1#8c21a0f3d5e6b7c8`.
+    /// Schema reference such as `infrastructure@1.0.0#8c21a0f3d5e6b7c8`.
     pub schema: Option<String>,
     pub value: Value,
 }
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn frame_round_trip() {
         let f = Frame {
-            schema: Some("infrastructure/v1".into()),
+            schema: Some("infrastructure@1.0.0".into()),
             value: val(3),
         };
         for opts in [

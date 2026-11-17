@@ -1,4 +1,4 @@
-use nova_schema::{check_compatibility, parse_schema};
+use nova_schema::{check_compatibility, check_versions, parse_schema, ChangeKind};
 use nova_value::Value;
 
 const SCHEMA: &str = include_str!("../../../examples/infrastructure.novs");
@@ -46,7 +46,7 @@ fn fingerprint_ignores_formatting() {
     let reformatted = SCHEMA.replace("# Schema", "# Another comment\n# Schema");
     let b = parse_schema(&reformatted).unwrap();
     assert_eq!(a.fingerprint(), b.fingerprint());
-    assert!(a.fingerprint().starts_with("infrastructure/v1#"));
+    assert!(a.fingerprint().starts_with("infrastructure@1.0.0#"));
     // Canonical text re-parses to the same schema.
     assert_eq!(parse_schema(&a.to_canonical_text()).unwrap().fingerprint(), a.fingerprint());
 }
@@ -95,4 +95,47 @@ fn rational_resolution() {
     let bad = nova_text::parse("a: 1/3\nb: 1.5\nc: 1/3\nd: 1\n").unwrap();
     let e: Vec<String> = s.resolve(&bad).unwrap_err().iter().map(|i| i.to_string()).collect();
     assert_eq!(e, ["b: expected rational, found float", "c: expected decimal, found rational"]);
+}
+
+#[test]
+fn semver_bumps_are_enforced() {
+    let old = parse_schema(SCHEMA).unwrap();
+    let with = |src: &str, v: &str| parse_schema(&src.replace("@schema infrastructure@1.0.0", &format!("@schema infrastructure@{v}"))).unwrap();
+    let added = SCHEMA.replace("  tags?: set<string> @id(6)\n", "  tags?: set<string> @id(6)\n  owner?: string @id(7)\n");
+    let broken = SCHEMA.replace("port: Port @id(3)", "port: u8 @id(3)");
+    let reformatted = SCHEMA.replace("# Schema", "# Reformatted\n# Schema");
+
+    let r = check_versions(&old, &with(&added, "1.1.0")).unwrap();
+    assert_eq!((r.kind, r.problems.len()), (ChangeKind::Compatible, 0));
+    let r = check_versions(&old, &with(&added, "1.0.1")).unwrap();
+    assert_eq!(r.problems, ["these changes require at least 1.1.0, got 1.0.1"]);
+    let r = check_versions(&old, &with(&broken, "1.1.0")).unwrap();
+    assert_eq!(
+        (r.kind, r.problems.clone()),
+        (ChangeKind::Breaking, vec!["breaking changes require at least 2.0.0, got 1.1.0".to_string()])
+    );
+    assert!(check_versions(&old, &with(&broken, "2.0.0")).unwrap().problems.is_empty());
+    let r = check_versions(&old, &with(&reformatted, "1.0.1")).unwrap();
+    assert_eq!((r.kind, r.problems.len()), (ChangeKind::None, 0));
+    assert!(!check_versions(&old, &with(&reformatted, "1.0.0")).unwrap().problems.is_empty());
+    assert!(check_versions(&old, &with(&broken, "2.0.0-rc.1")).unwrap().problems.is_empty());
+}
+
+#[test]
+fn document_references() {
+    let s = parse_schema(&SCHEMA.replace("@1.0.0", "@1.3.0")).unwrap();
+    s.accepts_reference("infrastructure@1.2.0").unwrap();
+    s.accepts_reference(&format!("infrastructure@1.3.0#{}", s.fingerprint_hex())).unwrap();
+    assert!(s.accepts_reference("infrastructure@1.4.0").unwrap_err().contains("cannot read"));
+    assert!(s.accepts_reference("infrastructure@2.0.0").is_err());
+    assert!(s.accepts_reference("billing@1.0.0").unwrap_err().contains("not"));
+    assert!(s
+        .accepts_reference("infrastructure@1.3.0#0000000000000000")
+        .unwrap_err()
+        .contains("fingerprint"));
+    assert!(parse_schema("@schema infrastructure\n")
+        .unwrap_err()
+        .to_string()
+        .contains("name@MAJOR.MINOR.PATCH"));
+    assert!(parse_schema("@schema infrastructure@1.0\n").is_err());
 }

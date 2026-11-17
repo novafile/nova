@@ -245,7 +245,12 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
             return Err(err(i, "unexpected indentation".into()));
         }
         if let Some(rest) = raw.strip_prefix("@schema ") {
-            schema.name = Some(rest.trim().to_owned());
+            let r = crate::SchemaRef::parse(rest.trim()).map_err(|m| err(i, m))?;
+            if r.fingerprint.is_some() {
+                return Err(err(i, "a schema declares its version, not a fingerprint".into()));
+            }
+            schema.name = Some(r.name);
+            schema.version = Some(r.version);
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("@root ") {
             schema.root = Some(rest.trim().to_owned());

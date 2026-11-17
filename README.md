@@ -17,7 +17,7 @@ This repository contains the draft specification (v0.1) and a reference implemen
 The human text representation:
 
 ```
-@schema infrastructure/v1
+@schema infrastructure@1.0.0
 
 environment: production
 deployed_at: 2026-11-17T16:00:00Z   # a string, until a schema resolves it

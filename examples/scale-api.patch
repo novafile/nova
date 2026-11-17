@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: CC0-1.0
 # Scale the API service; conditional on the current value.
-@patch infrastructure/v1
+@patch infrastructure@1.0.0
 services[id=api].replicas: 5 -> 8
 + services: {id: metrics, image: "ghcr.io/example/metrics:v1", port: 9090, replicas: 2}
