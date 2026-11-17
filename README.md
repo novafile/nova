@@ -127,6 +127,7 @@ nova convert infrastructure.nova --to binary -o infrastructure.novb
 nova convert config.yaml --to nova                 # also toml, cbor; --to yaml/toml/cbor
 nova convert infrastructure.nova --to protobuf --schema infrastructure.novs -o infra.pb
 nova schema proto infrastructure.novs              # the matching .proto
+nova convert infrastructure.nova --to positional --schema infrastructure.novs   # field names omitted
 nova hash infrastructure.novb          # same revision as the text form
 nova stats infrastructure.nova         # bytes and estimated tokens per representation
 nova schema check old.novs new.novs    # exits 1 on breaking changes

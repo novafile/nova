@@ -5,6 +5,7 @@
 mod compat;
 mod model;
 mod parse;
+mod positional;
 mod resolve;
 mod version;
 

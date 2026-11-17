@@ -190,3 +190,20 @@ fn exact_ranges_and_len_units() {
         .to_string()
         .contains("unknown @len unit"));
 }
+
+#[test]
+fn positional_round_trip() {
+    let s = parse_schema(SCHEMA).unwrap();
+    let doc = nova_text::parse(DOC).unwrap();
+    let pos = s.to_positional(&doc).unwrap();
+    let text = nova_text::document_to_text(&[("schema", &s.fingerprint()), ("mode", "positional")], &pos, nova_text::Profile::Compact);
+    assert!(text.contains("- (auth,ghcr.io/example/auth:v2,8080,3,true,!_)"), "{text}");
+    assert!(text.contains("- (api,ghcr.io/example/api:v5,3000,5,true,@set[public,edge])"), "{text}");
+    assert!(text.contains("@mode positional"), "{text}");
+    // Reading back needs the schema and yields the resolved document.
+    let back = s.from_positional(&nova_text::parse(&text).unwrap()).unwrap();
+    assert_eq!(back, s.resolve(&doc).unwrap());
+    // Shape errors are reported.
+    let bad = nova_text::parse("- production\n- x\n").unwrap();
+    assert!(s.from_positional(&bad).unwrap_err().contains("expected 5 positional fields"));
+}

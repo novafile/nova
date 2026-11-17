@@ -166,7 +166,7 @@ A **representation** maps values to octets and back. NOVA defines:
 | Text, profile *compact* | §4.9 | yes | no |
 | Text, profile *canonical* | §4.10 | yes | no |
 | Binary value encoding and frames | §5 | yes | no |
-| Positional text (experimental) | Appendix C | no | yes |
+| Positional text | §4.12 | no | yes |
 
 Conversions are classified by **fidelity level**:
 
@@ -217,6 +217,7 @@ Directives defined for **data documents**:
 | `@revision <rev>` | The revision of the document the body was taken from (used in query responses, §7.3). |
 | `@scope <path>` | The location within that document the body was taken from (§7.3). |
 | `@envelope <kind>` | Marks an agent-result envelope (§8.2). |
+| `@mode positional` | The body is in the positional profile (§4.12). |
 
 Template documents (§9), patch documents (§7.4) and query documents (§7.3) define their own directives. Directive names beginning with `x-` are reserved for extensions and MUST be ignored by implementations that do not understand them. Any other unknown directive MUST be rejected.
 
@@ -408,6 +409,33 @@ Canonical scalar spellings, which all writers SHOULD use:
 ### 4.11 Text streams
 
 A text stream is a sequence of documents separated by lines consisting exactly of `---`. Each document is parsed independently; an error in one document does not prevent reading the others.
+
+### 4.12 Positional profile
+
+The positional profile is an opt-in transport form for peers that share a schema. It omits field names. A positional document is **ordinary NOVA text** — the grammar, escaping and tokenization are exactly those of §4 — whose *meaning* is defined by a schema:
+
+```
+@schema infrastructure@1.0.0#baf8ad5c15586601
+@mode positional
+- production
+- eu-central-1
+- @timestamp("2026-11-17T16:00:00Z")
+- !active
+-
+  - (auth,ghcr.io/example/auth:v2,8080,3,true,!_)
+  - (api,ghcr.io/example/api:v5,3000,5,true,@set[public,edge])
+```
+
+- The header MUST contain `@mode positional` and `@schema name@version#fingerprint` (§6.6).
+- A reader MUST hold a schema with exactly that fingerprint, and MUST reject the document otherwise. Field order is the whole contract, so even a compatible schema version is not enough.
+- The value is first resolved against the schema's `@root` type (§6.3). Then every value of a named record type becomes a tuple of its fields' values in declared order.
+- An absent field is written as the reserved unit variant `!_`. The variant tag `_` MUST NOT otherwise appear in a positional document.
+- Records of `@open` types that contain unknown fields cannot be written positionally.
+- When the root is a record, its tuple is written as a block list (one field per line).
+- All other kinds are unchanged.
+- Decoding inverts the mapping and MUST validate the result against the schema.
+
+Positional text saves the field names that the compact profile (§4.10) writes once per table, and it also saves them for nested records. The cost is self-description, so it SHOULD NOT be used for storage or for documents that people read.
 
 ---
 
@@ -1248,7 +1276,7 @@ unary       = "not" unary | "(" cond ")" | flow-value [("==" | "!=") flow-value]
 
 ## Appendix C — Open questions and future work
 
-1. **Positional profile (experimental).** With a known schema fingerprint, a record can be written as its field values in declared order, omitting names (`@mode positional`). This is opt-in transport only: it is not self-describing, and its exact tokenization and escaping rules are still open.
+1. **Positional binary.** The positional idea (§4.12) applied to the binary encoding: records as field values in declared order, i.e. Protobuf-like compactness without a separate wire format.
 2. **References.** Explicit references to independently identified records (`@ref(services, api)`) across documents, without general cyclic graphs.
 3. **Lossless syntax tree.** A full concrete syntax tree, which would also preserve intra-line whitespace and comments inside flow values, for refactoring tools and schema migrations.
 4. **Bindings** beyond Serde (e.g. the reflection-based `facet`), and a MessagePack adapter.

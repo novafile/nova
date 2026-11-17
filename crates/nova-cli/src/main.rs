@@ -42,6 +42,8 @@ enum Format {
     CborDeterministic,
     /// Protobuf wire format (needs --schema with @id on every field).
     Protobuf,
+    /// Positional text: field values in schema order, no names (needs --schema).
+    Positional,
 }
 
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -285,7 +287,18 @@ fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> 
     if doc.is_template() {
         return Err(ctx("this is a @template; use `nova render`".into()).into());
     }
-    let value = doc.body.to_value().map_err(ctx)?;
+    let mut value = doc.body.to_value().map_err(ctx)?;
+    if doc.directive("mode") == Some("positional") {
+        // Positional text is only meaningful with exactly the schema it was written for.
+        let s = schema.ok_or_else(|| ctx("this document uses @mode positional; pass --schema".into()))?;
+        let want = doc.directive("schema").unwrap_or("");
+        if want != s.fingerprint() {
+            return Err(ctx(format!("positional document was written for {want:?}, but the schema is {}", s.fingerprint())).into());
+        }
+        value = s.from_positional(&value).map_err(ctx)?;
+        let directives = vec![("schema".to_owned(), s.reference().map(|r| r.to_string()).unwrap_or_default())];
+        return Ok(Loaded { directives, value });
+    }
     Ok(Loaded {
         directives: doc.directives.into_iter().map(|d| (d.name, d.arg)).collect(),
         value,
@@ -362,6 +375,12 @@ fn render_with(l: &Loaded, f: Format, strict: bool, schema: Option<&Schema>) -> 
         Format::Protobuf => {
             let s = schema.ok_or("writing Protobuf needs --schema")?;
             nova_proto::encode(&l.value, s)?
+        }
+        Format::Positional => {
+            let s = schema.ok_or("writing positional text needs --schema")?;
+            let pos = s.to_positional(&l.value)?;
+            let fp = s.fingerprint();
+            document_to_text(&[("schema", fp.as_str()), ("mode", "positional")], &pos, Profile::Compact).into_bytes()
         }
         Format::Binary | Format::BinaryCanonical => {
             let canonical = matches!(f, Format::BinaryCanonical);
