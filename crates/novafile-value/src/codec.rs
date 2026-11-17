@@ -1,6 +1,6 @@
 //! NOVA binary value encoding (spec §5.1–5.3) and revisions.
 
-use crate::{Decimal, Duration, Rational, Record, Timestamp, Value};
+use crate::{Decimal, Duration, Rational, Timestamp, Value, ValueRef};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -49,6 +49,9 @@ pub(crate) mod tag {
     /// mode byte, then per row an optional presence bitmap and the present values.
     pub const RECORD_LIST: u8 = 0x13;
 }
+
+/// Records up to this many fields are checked for duplicate keys by scanning.
+const RECORD_SCAN: usize = 16;
 
 /// The single NaN bit pattern written for every NaN, so all NaNs encode (and compare) equal.
 const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
@@ -477,12 +480,12 @@ impl<'a> Decoder<'a> {
 
     /// Read a string header and resolve it: a literal is validated as UTF-8 and
     /// appended to the string table, a back-reference is looked up in it.
-    fn string(&mut self) -> Result<String, DecodeError> {
+    fn string(&mut self) -> Result<&'a str, DecodeError> {
         let h = self.varint()?;
         if h & 1 == 1 {
             let idx = (h >> 1) as usize;
             return match self.strings.get(idx) {
-                Some(s) => Ok((*s).to_owned()),
+                Some(s) => Ok(s),
                 None => self.err(format!("string back-reference {idx} out of range")),
             };
         }
@@ -503,13 +506,13 @@ impl<'a> Decoder<'a> {
         }
 
         self.strings.push(s);
-        Ok(s.to_owned())
+        Ok(s)
     }
 
     /// Decode one value, enforcing [`Limits`] and canonical-form invariants
     /// (normalized decimals and rationals, unique set elements, map keys and record keys).
     #[expect(clippy::too_many_lines, reason = "flat dispatcher over every wire tag")]
-    fn value(&mut self) -> Result<Value, DecodeError> {
+    fn value(&mut self) -> Result<ValueRef<'a>, DecodeError> {
         let start = self.pos;
         let kind = self.byte()?;
         if self.depth >= self.limits.max_depth && matches!(kind, tag::LIST..=tag::MAP | tag::VARIANT) {
@@ -517,13 +520,13 @@ impl<'a> Decoder<'a> {
         }
 
         Ok(match kind {
-            tag::NULL => Value::Null,
-            tag::FALSE => Value::Bool(false),
-            tag::TRUE => Value::Bool(true),
-            tag::INT => Value::Int(unzigzag(self.varint()?)),
+            tag::NULL => ValueRef::Null,
+            tag::FALSE => ValueRef::Bool(false),
+            tag::TRUE => ValueRef::Bool(true),
+            tag::INT => ValueRef::Int(unzigzag(self.varint()?)),
             tag::FLOAT => {
                 let b = self.take(8)?;
-                Value::Float(f64::from_bits(u64::from_be_bytes(b.try_into().unwrap())))
+                ValueRef::Float(f64::from_bits(u64::from_be_bytes(b.try_into().unwrap())))
             }
             tag::DECIMAL => {
                 let coeff = unzigzag(self.varint()?);
@@ -536,7 +539,7 @@ impl<'a> Decoder<'a> {
                     return self.err("decimal is not normalized");
                 }
 
-                Value::Decimal(d)
+                ValueRef::Decimal(d)
             }
             tag::RATIONAL => {
                 let num = unzigzag(self.varint()?);
@@ -546,15 +549,15 @@ impl<'a> Decoder<'a> {
                 };
 
                 match Rational::new(num, den) {
-                    Ok(r) if r.numerator() == num && r.denominator() == den => Value::Rational(r),
+                    Ok(r) if r.numerator() == num && r.denominator() == den => ValueRef::Rational(r),
                     Ok(_) => return self.err("rational is not normalized"),
                     Err(e) => return self.err(e),
                 }
             }
-            tag::STRING => Value::String(self.string()?),
+            tag::STRING => ValueRef::String(self.string()?),
             tag::BYTES => {
                 let n = self.count()?;
-                Value::Bytes(self.take(n)?.to_vec())
+                ValueRef::Bytes(self.take(n)?)
             }
             tag::TIMESTAMP => {
                 let secs = i64::try_from(unzigzag(self.varint()?));
@@ -564,12 +567,12 @@ impl<'a> Decoder<'a> {
                 };
 
                 match Timestamp::new(secs, nanos) {
-                    Ok(t) => Value::Timestamp(t),
+                    Ok(t) => ValueRef::Timestamp(t),
                     Err(e) => return self.err(e),
                 }
             }
             tag::DURATION => match Duration::from_nanos(unzigzag(self.varint()?)) {
-                Ok(d) => Value::Duration(d),
+                Ok(d) => ValueRef::Duration(d),
                 Err(e) => return self.err(e),
             },
             tag::LIST | tag::TUPLE | tag::SET => {
@@ -579,7 +582,7 @@ impl<'a> Decoder<'a> {
                 let mut seen = HashSet::new();
                 for _ in 0..n {
                     let v = self.value()?;
-                    if kind == tag::SET && !seen.insert(canonical_bytes(&v)) {
+                    if kind == tag::SET && !seen.insert(canonical_bytes(&v.to_value())) {
                         return Err(DecodeError {
                             offset: start,
                             message: "duplicate set element".into(),
@@ -591,28 +594,42 @@ impl<'a> Decoder<'a> {
 
                 self.depth -= 1;
                 match kind {
-                    tag::LIST => Value::List(items),
-                    tag::TUPLE => Value::Tuple(items),
-                    _ => Value::Set(items),
+                    tag::LIST => ValueRef::List(items),
+                    tag::TUPLE => ValueRef::Tuple(items),
+                    _ => ValueRef::Set(items),
                 }
             }
             tag::RECORD => {
                 let n = self.count()?;
                 self.depth += 1;
-                let mut r = Record::with_capacity(n);
+                let mut entries: Vec<(&str, ValueRef<'a>)> = Vec::with_capacity(n);
+                // Small records are scanned; past that, keys go into a set (as `Record` indexes them).
+                let mut keys = HashSet::new();
                 for _ in 0..n {
                     let k = self.string()?;
                     let v = self.value()?;
-                    if let Err(e) = r.insert(k, v) {
+                    let duplicate = if entries.len() < RECORD_SCAN {
+                        entries.iter().any(|(e, _)| *e == k)
+                    } else {
+                        if keys.is_empty() {
+                            keys.extend(entries.iter().map(|(e, _)| *e));
+                        }
+
+                        !keys.insert(k)
+                    };
+
+                    if duplicate {
                         return Err(DecodeError {
                             offset: start,
-                            message: e.to_string(),
+                            message: crate::DuplicateKey(k.to_owned()).to_string(),
                         });
                     }
+
+                    entries.push((k, v));
                 }
 
                 self.depth -= 1;
-                Value::Record(r)
+                ValueRef::Record(entries)
             }
             tag::MAP => {
                 let n = self.count()?;
@@ -621,7 +638,7 @@ impl<'a> Decoder<'a> {
                 let mut seen = HashSet::new();
                 for _ in 0..n {
                     let k = self.value()?;
-                    if !seen.insert(canonical_bytes(&k)) {
+                    if !seen.insert(canonical_bytes(&k.to_value())) {
                         return Err(DecodeError {
                             offset: start,
                             message: "duplicate map key".into(),
@@ -633,12 +650,12 @@ impl<'a> Decoder<'a> {
                 }
 
                 self.depth -= 1;
-                Value::Map(entries)
+                ValueRef::Map(entries)
             }
             tag::RECORD_LIST => {
                 let n = self.count()?;
                 let k = self.count()?;
-                let mut fields: Vec<String> = Vec::with_capacity(k);
+                let mut fields: Vec<&'a str> = Vec::with_capacity(k);
                 for _ in 0..k {
                     let f = self.string()?;
                     if fields.contains(&f) {
@@ -672,28 +689,27 @@ impl<'a> Decoder<'a> {
                     };
 
                     // Only dense rows spend at least a byte per field, so only they bound the preallocation.
-                    let mut r = Record::with_capacity(if dense { k } else { 0 });
+                    let mut r = Vec::with_capacity(if dense { k } else { 0 });
                     for (f, p) in fields.iter().zip(present) {
                         if p {
-                            let v = self.value()?;
                             // Field names were checked for duplicates above.
-                            r.push(f.clone(), v);
+                            r.push((*f, self.value()?));
                         }
                     }
 
-                    rows.push(Value::Record(r));
+                    rows.push(ValueRef::Record(r));
                 }
 
                 self.depth -= 2;
-                Value::List(rows)
+                ValueRef::List(rows)
             }
-            tag::UNIT_VARIANT => Value::Variant(self.string()?, None),
+            tag::UNIT_VARIANT => ValueRef::Variant(self.string()?, None),
             tag::VARIANT => {
                 let name = self.string()?;
                 self.depth += 1;
                 let p = self.value()?;
                 self.depth -= 1;
-                Value::Variant(name, Some(Box::new(p)))
+                ValueRef::Variant(name, Some(Box::new(p)))
             }
             other => {
                 return Err(DecodeError {
@@ -712,6 +728,16 @@ impl<'a> Decoder<'a> {
 /// Returns a [`DecodeError`] if the input is truncated or malformed, a value
 /// is out of range or not normalized, or a [`Limits`] bound is exceeded.
 pub fn decode_prefix(buf: &[u8], limits: Limits) -> Result<(Value, usize), DecodeError> {
+    decode_ref_prefix(buf, limits).map(|(v, n)| (v.to_value(), n))
+}
+
+/// Decode one value from the start of `buf` without copying its strings and
+/// byte strings; returns the value and bytes consumed.
+///
+/// # Errors
+///
+/// As [`decode_prefix`].
+pub fn decode_ref_prefix(buf: &[u8], limits: Limits) -> Result<(ValueRef<'_>, usize), DecodeError> {
     let mut d = Decoder {
         buf,
         pos: 0,
@@ -731,7 +757,17 @@ pub fn decode_prefix(buf: &[u8], limits: Limits) -> Result<(Value, usize), Decod
 /// As [`decode_prefix`] with default limits; also fails if bytes remain after
 /// the value.
 pub fn decode(buf: &[u8]) -> Result<Value, DecodeError> {
-    let (v, n) = decode_prefix(buf, Limits::default())?;
+    decode_ref(buf).map(|v| v.to_value())
+}
+
+/// Decode exactly one value occupying all of `buf`, borrowing its strings and
+/// byte strings from `buf`.
+///
+/// # Errors
+///
+/// As [`decode`].
+pub fn decode_ref(buf: &[u8]) -> Result<ValueRef<'_>, DecodeError> {
+    let (v, n) = decode_ref_prefix(buf, Limits::default())?;
     if n != buf.len() {
         return Err(DecodeError {
             offset: n,
@@ -786,6 +822,7 @@ pub fn revision(v: &Value) -> Revision {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Record;
 
     fn rec(entries: Vec<(&str, Value)>) -> Value {
         Value::Record(Record::from_entries(entries.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()).unwrap())
@@ -870,6 +907,32 @@ mod tests {
     }
 
     #[test]
+    fn decode_ref_borrows_from_the_input() {
+        let v = rec(vec![("name", "auth".into()), ("blob", Value::Bytes(vec![1, 2])), ("again", "auth".into())]);
+        let bytes = encode(
+            &v,
+            EncodeOptions {
+                canonical: false,
+                dedupe_strings: true,
+                tables: false,
+            },
+        );
+        let r = decode_ref(&bytes).unwrap();
+        assert_eq!(r.to_value(), v);
+        let ValueRef::Record(entries) = &r else { panic!("{r:?}") };
+        let inside = |p: *const u8| bytes.as_ptr_range().contains(&p);
+        for (k, v) in entries {
+            assert!(inside(k.as_ptr()), "{k}");
+            match v {
+                // The back-referenced "auth" resolves to the literal's bytes.
+                ValueRef::String(s) => assert!(inside(s.as_ptr())),
+                ValueRef::Bytes(b) => assert!(inside(b.as_ptr())),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn rejects_bad_input() {
         // Fuzzer find: a varint running past 19 bytes overflowed the shift.
         let mut long = vec![0x11, 0x0A];
@@ -896,6 +959,7 @@ mod tests {
 #[cfg(test)]
 mod table_tests {
     use super::*;
+    use crate::Record;
 
     fn rec(entries: Vec<(&str, Value)>) -> Value {
         Value::Record(Record::from_entries(entries.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()).unwrap())

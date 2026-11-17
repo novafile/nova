@@ -5,7 +5,7 @@ use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use novafile_text::{Profile, parse, to_text};
-use novafile_value::{EncodeOptions, Record, Value, canonical_bytes, decode, encode};
+use novafile_value::{EncodeOptions, Record, Value, canonical_bytes, decode, decode_ref, encode};
 
 /// A record holding `n` service records, the shape tables and string dedupe target.
 fn document(n: usize) -> Value {
@@ -77,6 +77,7 @@ fn binary(c: &mut Criterion) {
         g.throughput(Throughput::Bytes(bytes.len() as u64));
         g.bench_function(format!("encode/{name}"), |b| b.iter(|| encode(black_box(&v), opts)));
         g.bench_function(format!("decode/{name}"), |b| b.iter(|| decode(black_box(&bytes)).unwrap()));
+        g.bench_function(format!("decode_ref/{name}"), |b| b.iter(|| decode_ref(black_box(&bytes)).unwrap()));
     }
 
     g.bench_function("canonical_bytes", |b| b.iter(|| canonical_bytes(black_box(&v))));
