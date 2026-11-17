@@ -546,10 +546,12 @@ record Infrastructure:
 
 **Attributes**
 
+**Numeric comparison** (used by `@range` and by query filters, §7.1) is exact across `int`, `float`, `decimal` and `rational`. Each value is compared as the exact number it denotes — a float as its exact binary fraction — never via binary64 conversion. For example, the float `0.1` (exactly 0.1000000000000000055511151231257827…) is *above* the decimal bound `0.1`, and `9007199254740993` is greater than the float `9007199254740992.0`. NaN satisfies no range. Implementations SHOULD compare orders of magnitude first, so that decimals with extreme exponents do not require huge intermediate integers.
+
 | Attribute | Applies to | Meaning |
 | --- | --- | --- |
-| `@range(lo..hi)` | numeric types | Inclusive bounds; either side may be omitted. |
-| `@len(lo..hi)` | string (counted in Unicode scalar values), bytes, list, set, map, record | Inclusive length bounds. |
+| `@range(lo..hi)` | numeric types | Inclusive bounds; either side may be omitted. Bounds are exact literals: an integer, a decimal (`0.1`, `1e3`) or a rational (`1/3`). |
+| `@len(lo..hi[, unit])` | string, bytes, list, set, map, record | Inclusive length bounds. For strings, `unit` selects what is counted: `scalars` (Unicode scalar values, the default), `utf8` (bytes of the UTF-8 encoding), `utf16` (UTF-16 code units) or `graphemes` (extended grapheme clusters, Unicode UAX #29). Other kinds count bytes or elements and take no unit. |
 | `@key` | field | Part of the record's identity: values of this record in the same list MUST differ in their key fields. Key fields MUST be required and non-nullable. |
 | `@id(n)` | field | Stable numeric identity for evolution checks and positional encodings. Unique per record. |
 | `@deprecated` | field | Informational. |
@@ -603,7 +605,7 @@ A new schema version is **backward compatible** with an old one if every value v
 | Add a required field without a default | breaking |
 | Remove a field | breaking (old data contains it), unless the record is `@open` |
 | Close an `@open` record | breaking |
-| Widen a type: integer to wider integer, integer to `decimal`/`rational`, `decimal` to `rational`, small integer to `float`, `T` to `T?`, `T` to `any`, wider `@range`/`@len` | compatible |
+| Widen a type: integer to wider integer, integer to `decimal`/`rational`, `decimal` to `rational`, small integer to `float`, `T` to `T?`, `T` to `any`, wider `@range`/`@len` (with the same `@len` unit) | compatible |
 | Narrow or change a type | breaking |
 | Make an optional field required (without a default) | breaking |
 | Add a variant | compatible (old readers reject the new variant: this is a forward-compatibility concern) |
@@ -688,7 +690,7 @@ The root path is written `.` or as the empty string. A path without `[*]`, filte
 
 **Filter comparisons.**
 
-- Numbers (`int`, `float`, `decimal`, `rational`) compare by numeric value across kinds, so `[?replicas=3.0]` matches `3`.
+- Numbers (`int`, `float`, `decimal`, `rational`) compare exactly by numeric value across kinds (§6.1), so `[?replicas=3.0]` matches `3`.
 - Strings compare by code point.
 - Timestamps and durations compare chronologically. A string operand is parsed as the other side's kind: `[?at>"2026-01-01T00:00:00Z"]`.
 - Booleans order `false < true`.
@@ -1104,7 +1106,6 @@ The Rust workspace in this repository implements the specification.
 - **Fidelity.** The text parser is value-preserving only: comments are discarded, so `nova fmt` drops them. A lossless concrete syntax tree, needed for document-preserving editors, is future work.
 - **Envelopes.** `@envelope` (§8.2) is accepted as a directive, but its body structure is not yet checked.
 - **Formats.** There are no YAML, TOML, CBOR or Protobuf adapters yet. The positional profile (Appendix C) is not implemented.
-- **Schema checks.** `@len` on strings counts Unicode scalar values. `@range` comparisons between mixed numeric kinds use binary64.
 
 ---
 

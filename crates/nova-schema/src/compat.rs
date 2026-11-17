@@ -17,12 +17,19 @@ impl std::fmt::Display for Change {
 }
 
 fn range_of(t: &TypeRef) -> (Option<Num>, Option<Num>) {
-    let (mut lo, mut hi) = t.constraints.range.unwrap_or((None, None));
+    let (mut lo, mut hi) = t.constraints.range.clone().unwrap_or((None, None));
     if let TypeKind::Int(k) = t.kind {
         let (a, b) = k.bounds();
         if k != IntKind::Int {
-            lo = Some(lo.map_or(Num::Int(a), |l| if Num::Int(a).le(l) { l } else { Num::Int(a) }));
-            hi = Some(hi.map_or(Num::Int(b), |h| if h.le(Num::Int(b)) { h } else { Num::Int(b) }));
+            let (a, b) = (Num::int(a), Num::int(b));
+            lo = Some(match lo {
+                Some(l) if a.le(&l) => l,
+                _ => a,
+            });
+            hi = Some(match hi {
+                Some(h) if h.le(&b) => h,
+                _ => b,
+            });
         }
     }
     (lo, hi)
@@ -57,16 +64,18 @@ pub fn widens(old: &TypeRef, new: &TypeRef) -> bool {
     let lo_ok = match (olo, nlo) {
         (_, None) => true,
         (None, Some(_)) => false,
-        (Some(o), Some(n)) => n.le(o),
+        (Some(o), Some(n)) => n.le(&o),
     };
     let hi_ok = match (ohi, nhi) {
         (_, None) => true,
         (None, Some(_)) => false,
-        (Some(o), Some(n)) => o.le(n),
+        (Some(o), Some(n)) => o.le(&n),
     };
     let (olen, nlen) = (old.constraints.len.unwrap_or((None, None)), new.constraints.len.unwrap_or((None, None)));
     let len_ok = (nlen.0.is_none() || olen.0.is_some_and(|o| nlen.0.unwrap() <= o)) && (nlen.1.is_none() || olen.1.is_some_and(|o| o <= nlen.1.unwrap()));
-    lo_ok && hi_ok && len_ok
+    // Changing what @len counts is only safe if the new type has no @len.
+    let unit_ok = new.constraints.len.is_none() || old.constraints.len.is_none() || old.constraints.len_unit == new.constraints.len_unit;
+    lo_ok && hi_ok && len_ok && unit_ok
 }
 
 pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {

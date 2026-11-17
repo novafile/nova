@@ -152,10 +152,7 @@ impl<'a> TyParser<'a> {
         if s.is_empty() {
             return Ok(None);
         }
-        if let Ok(i) = s.parse::<i128>() {
-            return Ok(Some(Num::Int(i)));
-        }
-        s.parse::<f64>().map(|f| Some(Num::Float(f))).map_err(|_| format!("invalid bound {s:?}"))
+        Num::parse(s).map(Some)
     }
 
     /// Parse attributes; type-level ones go into `ty`, field-level ones are returned.
@@ -178,7 +175,20 @@ impl<'a> TyParser<'a> {
             };
             match name.as_str() {
                 "range" | "len" => {
-                    let (lo, hi) = arg.split_once("..").ok_or_else(|| format!("@{name} expects `lo..hi`"))?;
+                    let (bounds, unit) = match arg.split_once(',') {
+                        Some((b, u)) if name == "len" => {
+                            let u = u.trim();
+                            (
+                                b,
+                                Some(LenUnit::from_name(u).ok_or_else(|| format!("unknown @len unit {u:?} (scalars, utf8, utf16, graphemes)"))?),
+                            )
+                        }
+                        _ => (arg.as_str(), None),
+                    };
+                    let (lo, hi) = bounds.split_once("..").ok_or_else(|| format!("@{name} expects `lo..hi`"))?;
+                    if let Some(u) = unit {
+                        ty.constraints.len_unit = u;
+                    }
                     if name == "range" {
                         ty.constraints.range = Some((Self::bound_num(lo)?, Self::bound_num(hi)?));
                     } else {

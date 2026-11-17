@@ -304,15 +304,16 @@ impl<'s> Ctx<'s> {
     fn constraints(&mut self, v: &Value, c: &Constraints) {
         if let Some((lo, hi)) = &c.range {
             if let Some(n) = Num::of(v) {
-                if lo.is_some_and(|lo| !lo.le(n)) || hi.is_some_and(|hi| !n.le(hi)) {
-                    let b = |o: &Option<Num>| o.map(|n| n.to_string()).unwrap_or_default();
+                // Exact across kinds; NaN never satisfies a range.
+                if lo.as_ref().is_some_and(|lo| !lo.le(&n)) || hi.as_ref().is_some_and(|hi| !n.le(hi)) {
+                    let b = |o: &Option<Num>| o.as_ref().map(|n| n.to_string()).unwrap_or_default();
                     self.issue(format!("{n} is outside @range({}..{})", b(lo), b(hi)));
                 }
             }
         }
         if let Some((lo, hi)) = c.len {
             let len = match v {
-                Value::String(s) => Some(s.chars().count()),
+                Value::String(s) => Some(c.len_unit.measure(s)),
                 Value::Bytes(b) => Some(b.len()),
                 Value::List(l) | Value::Set(l) => Some(l.len()),
                 Value::Map(m) => Some(m.len()),
@@ -322,8 +323,12 @@ impl<'s> Ctx<'s> {
             if let Some(len) = len {
                 let len = len as u64;
                 if lo.is_some_and(|lo| len < lo) || hi.is_some_and(|hi| len > hi) {
+                    let unit = match (v, c.len_unit) {
+                        (Value::String(_), u) if u != crate::LenUnit::Scalars => format!(", {}", u.name()),
+                        _ => String::new(),
+                    };
                     self.issue(format!(
-                        "length {len} is outside @len({}..{})",
+                        "length {len} is outside @len({}..{}{unit})",
                         lo.map(|n| n.to_string()).unwrap_or_default(),
                         hi.map(|n| n.to_string()).unwrap_or_default()
                     ));

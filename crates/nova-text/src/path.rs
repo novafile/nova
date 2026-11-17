@@ -78,16 +78,6 @@ impl CmpOp {
     }
 }
 
-fn numeric(v: &Value) -> Option<f64> {
-    match v {
-        Value::Int(i) => Some(*i as f64),
-        Value::Float(f) => Some(*f),
-        Value::Decimal(d) => Some(d.to_f64()),
-        Value::Rational(r) => Some(r.to_f64()),
-        _ => None,
-    }
-}
-
 fn compare(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     use nova_value::{Duration, Timestamp};
     match (a, b) {
@@ -100,7 +90,7 @@ fn compare(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         (Value::Duration(x), Value::Duration(y)) => Some(x.cmp(y)),
         (Value::Duration(x), Value::String(s)) => Duration::parse(s).ok().map(|y| x.cmp(&y)),
         (Value::String(s), Value::Duration(y)) => Duration::parse(s).ok().map(|x| x.cmp(y)),
-        _ => numeric(a)?.partial_cmp(&numeric(b)?),
+        _ => nova_value::numeric_cmp(a, b),
     }
 }
 

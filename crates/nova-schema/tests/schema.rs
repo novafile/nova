@@ -149,3 +149,44 @@ fn type_lookup_by_path() {
     assert_eq!(t("services[0]"), Some(("Service".into(), None)));
     assert_eq!(t("nope"), None);
 }
+
+#[test]
+fn exact_ranges_and_len_units() {
+    let s = parse_schema(
+        "@root R\nrecord R:\n  p: float @range(0..0.1)\n  q: decimal @range(1/3..)\n  n: string @len(..4, utf8)\n  g: string @len(1..1, graphemes)\n  u: string @len(..2, utf16)\n  c: string @len(..4)\n",
+    )
+    .unwrap();
+    let issues = |src: &str| match s.resolve(&nova_text::parse(src).unwrap()) {
+        Ok(_) => vec![],
+        Err(i) => i.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
+    };
+    // The binary64 nearest 0.1 is slightly above 1/10, so it is outside 0..0.1 exactly.
+    let ok = "q: 0.34\nn: abcd\ng: \"e\u{301}\"\nu: \"ab\"\nc: \"äöüß\"\n";
+    assert_eq!(issues(&format!("p: 0.1\n{ok}")), ["p: 0.1 is outside @range(0..0.1)"]);
+    assert!(issues(&format!("p: 0.09999999999999999\n{ok}")).is_empty());
+    // 0.3333 as a decimal is below 1/3.
+    assert_eq!(issues(&format!("p: 0.0\nq: 0.3333\n{}", &ok[8..])), ["q: 0.3333 is outside @range(1/3..)"]);
+    // UTF-8 bytes vs scalars vs graphemes vs UTF-16.
+    assert_eq!(
+        issues("p: 0.0\nq: 1\nn: äöü\ng: \"e\u{301}\"\nu: \"😀\"\nc: äöüß\n"),
+        ["n: length 6 is outside @len(..4, utf8)"]
+    );
+    assert_eq!(
+        issues("p: 0.0\nq: 1\nn: ab\ng: ab\nu: \"😀a\"\nc: äöüßx\n"),
+        [
+            "g: length 2 is outside @len(1..1, graphemes)",
+            "u: length 3 is outside @len(..2, utf16)",
+            "c: length 5 is outside @len(..4)"
+        ]
+    );
+    // Canonical text keeps exact bounds and units.
+    let t = s.to_canonical_text();
+    assert!(
+        t.contains("@range(0..0.1)") && t.contains("@range(1/3..)") && t.contains("@len(..4, utf8)") && t.contains("@len(1..1, graphemes)"),
+        "{t}"
+    );
+    assert!(parse_schema("@root R\nrecord R:\n  n: string @len(..4, bits)\n")
+        .unwrap_err()
+        .to_string()
+        .contains("unknown @len unit"));
+}

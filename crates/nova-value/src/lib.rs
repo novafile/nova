@@ -8,6 +8,7 @@
 
 mod codec;
 mod decimal;
+mod numeric;
 mod rational;
 mod record;
 #[cfg(feature = "serde")]
@@ -16,6 +17,7 @@ mod time;
 
 pub use codec::{canonical_bytes, decode, decode_prefix, encode, revision, DecodeError, EncodeOptions, Limits, Revision};
 pub use decimal::Decimal;
+pub use numeric::numeric_cmp;
 pub use rational::Rational;
 pub use record::{DuplicateKey, Record};
 pub use time::{Duration, Timestamp};

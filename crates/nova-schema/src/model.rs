@@ -79,45 +79,98 @@ pub enum TypeKind {
     Named(String),
 }
 
-/// A numeric bound in `@range`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Num {
-    Int(i128),
-    Float(f64),
-}
+/// A numeric bound in `@range`, kept exactly as written: an `int`, a
+/// `decimal` (e.g. `0.5`, `1e3`) or a `rational` (e.g. `1/3`). Comparisons
+/// are exact across numeric kinds (spec §6.1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Num(pub Value);
 
 impl Num {
-    pub fn as_f64(self) -> f64 {
-        match self {
-            Num::Int(i) => i as f64,
-            Num::Float(f) => f,
+    /// Parse a bound literal.
+    pub fn parse(s: &str) -> Result<Num, String> {
+        let s = s.trim();
+        if let Ok(i) = s.parse::<i128>() {
+            return Ok(Num(Value::Int(i)));
         }
+        if s.contains('/') {
+            return nova_value::Rational::parse(s).map(|r| Num(Value::Rational(r)));
+        }
+        nova_value::Decimal::parse(s)
+            .map(|d| Num(Value::Decimal(d)))
+            .map_err(|_| format!("invalid bound {s:?}"))
     }
 
+    /// The value as a bound, if it is numeric (int, float, decimal, rational).
     pub fn of(v: &Value) -> Option<Num> {
-        match v {
-            Value::Int(i) => Some(Num::Int(*i)),
-            Value::Float(f) => Some(Num::Float(*f)),
-            Value::Decimal(d) => Some(d.to_i128().map(Num::Int).unwrap_or(Num::Float(d.to_f64()))),
-            Value::Rational(r) if r.denominator() == 1 => Some(Num::Int(r.numerator())),
-            Value::Rational(r) => Some(Num::Float(r.to_f64())),
-            _ => None,
-        }
+        matches!(v, Value::Int(_) | Value::Float(_) | Value::Decimal(_) | Value::Rational(_)).then(|| Num(v.clone()))
     }
 
-    pub fn le(self, other: Num) -> bool {
-        match (self, other) {
-            (Num::Int(a), Num::Int(b)) => a <= b,
-            (a, b) => a.as_f64() <= b.as_f64(),
-        }
+    pub fn int(i: i128) -> Num {
+        Num(Value::Int(i))
+    }
+
+    /// Exact `self <= other`; false if either is NaN.
+    pub fn le(&self, other: &Num) -> bool {
+        matches!(
+            nova_value::numeric_cmp(&self.0, &other.0),
+            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+        )
     }
 }
 
 impl fmt::Display for Num {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            Value::Int(i) => write!(f, "{i}"),
+            Value::Float(x) => write!(f, "{x:?}"),
+            Value::Decimal(d) => write!(f, "{d}"),
+            Value::Rational(r) => write!(f, "{r}"),
+            other => write!(f, "{}", other.kind()),
+        }
+    }
+}
+
+/// What `@len` counts for strings (spec §6.1). Bytes and collections always
+/// count elements.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LenUnit {
+    /// Unicode scalar values (code points), the default.
+    #[default]
+    Scalars,
+    /// Bytes of the UTF-8 encoding.
+    Utf8,
+    /// UTF-16 code units (JavaScript, Java, .NET string length).
+    Utf16,
+    /// Extended grapheme clusters (user-perceived characters, UAX #29).
+    Graphemes,
+}
+
+impl LenUnit {
+    pub fn name(self) -> &'static str {
         match self {
-            Num::Int(i) => write!(f, "{i}"),
-            Num::Float(x) => write!(f, "{x:?}"),
+            LenUnit::Scalars => "scalars",
+            LenUnit::Utf8 => "utf8",
+            LenUnit::Utf16 => "utf16",
+            LenUnit::Graphemes => "graphemes",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<LenUnit> {
+        Some(match s {
+            "scalars" => LenUnit::Scalars,
+            "utf8" => LenUnit::Utf8,
+            "utf16" => LenUnit::Utf16,
+            "graphemes" => LenUnit::Graphemes,
+            _ => return None,
+        })
+    }
+
+    pub fn measure(self, s: &str) -> usize {
+        match self {
+            LenUnit::Scalars => s.chars().count(),
+            LenUnit::Utf8 => s.len(),
+            LenUnit::Utf16 => s.encode_utf16().count(),
+            LenUnit::Graphemes => unicode_segmentation::UnicodeSegmentation::graphemes(s, true).count(),
         }
     }
 }
@@ -126,6 +179,7 @@ impl fmt::Display for Num {
 pub struct Constraints {
     pub range: Option<(Option<Num>, Option<Num>)>,
     pub len: Option<(Option<u64>, Option<u64>)>,
+    pub len_unit: LenUnit,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -246,10 +300,19 @@ impl fmt::Display for TypeRef {
         }
         let b = |o: Option<String>| o.unwrap_or_default();
         if let Some((lo, hi)) = &self.constraints.range {
-            write!(f, " @range({}..{})", b(lo.map(|n| n.to_string())), b(hi.map(|n| n.to_string())))?;
+            write!(
+                f,
+                " @range({}..{})",
+                b(lo.as_ref().map(|n| n.to_string())),
+                b(hi.as_ref().map(|n| n.to_string()))
+            )?;
         }
         if let Some((lo, hi)) = &self.constraints.len {
-            write!(f, " @len({}..{})", b(lo.map(|n| n.to_string())), b(hi.map(|n| n.to_string())))?;
+            write!(f, " @len({}..{}", b(lo.map(|n| n.to_string())), b(hi.map(|n| n.to_string())))?;
+            if self.constraints.len_unit != LenUnit::Scalars {
+                write!(f, ", {}", self.constraints.len_unit.name())?;
+            }
+            f.write_str(")")?;
         }
         Ok(())
     }
