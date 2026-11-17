@@ -1,0 +1,31 @@
+[package]
+name = "novafile-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+novafile-binary = { path = "../crates/novafile-binary" }
+novafile-text = { path = "../crates/novafile-text" }
+novafile-value = { path = "../crates/novafile-value" }
+
+# Not part of the main workspace: cargo-fuzz builds it with nightly and sanitizers.
+[workspace]
+
+[[bin]]
+name = "text"
+path = "fuzz_targets/text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "binary"
+path = "fuzz_targets/binary.rs"
+test = false
+doc = false
+bench = false
