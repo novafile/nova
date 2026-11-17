@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(name = "nvf", version, about = "NOVA: one semantic model, several representations")]
+#[command(name = "nvf", version, about = "NOVA, the Notation for Objects, Values & Agents: one semantic model, several representations")]
 struct Cli {
     /// Agent mode: plain, narratable errors and agent hints. `auto` detects coding
     /// agents (Claude Code, Codex, Copilot, Cursor, …); also settable via NOVA_AGENT.

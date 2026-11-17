@@ -1,6 +1,6 @@
 [package]
 name = "novafile"
-description = "NOVA: one semantic model, several representations (umbrella crate)"
+description = "NOVA, the Notation for Objects, Values & Agents: one semantic model, several representations (umbrella crate)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

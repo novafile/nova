@@ -1,6 +1,6 @@
 # NOVA
 
-**Normalized Object and Value Architecture** — one precise semantic model with several interchangeable representations, each optimized for a different consumer:
+**Notation for Objects, Values & Agents** — one precise semantic model with several interchangeable representations, each optimized for a different consumer:
 
 - **Human text** for people editing configuration.
 - **Compact text** with tables for LLM context.
