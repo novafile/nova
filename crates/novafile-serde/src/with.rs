@@ -70,6 +70,7 @@ pub mod duration {
         if n < 0 {
             return Err(D::Error::custom("negative duration cannot be a std::time::Duration"));
         }
+
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -103,6 +104,7 @@ pub mod system_time {
                 }
             }
         };
+
         ts.map_err(S::Error::custom)?.serialize(s)
     }
 
@@ -121,6 +123,7 @@ pub mod system_time {
                 .checked_sub(Duration::new(secs.unsigned_abs(), 0))
                 .and_then(|x| x.checked_add(Duration::new(0, nanos)))
         };
+
         r.ok_or_else(|| D::Error::custom("timestamp out of SystemTime range"))
     }
 }

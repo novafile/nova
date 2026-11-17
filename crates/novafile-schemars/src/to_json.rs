@@ -27,9 +27,11 @@ pub fn to_json_schema(schema: &Schema) -> Json {
         root.insert("$id".into(), format!("urn:nova:{r}").into());
         root.insert("title".into(), r.to_string().into());
     }
+
     if let Some(r) = &schema.root {
         root.insert("$ref".into(), def_ref(r).into());
     }
+
     let mut defs = Map::new();
     for (name, def) in &schema.defs {
         let s = match def {
@@ -37,11 +39,14 @@ pub fn to_json_schema(schema: &Schema) -> Json {
             Def::Record(r) => record(schema, r),
             Def::Enum(vs) => variants(schema, vs),
         };
+
         defs.insert(name.clone(), s);
     }
+
     if !defs.is_empty() {
         root.insert("$defs".into(), Json::Object(defs));
     }
+
     Json::Object(root)
 }
 
@@ -54,6 +59,7 @@ fn record(schema: &Schema, r: &RecordDef) -> Json {
     for f in &r.fields {
         props.insert(f.name.clone(), field(schema, f));
     }
+
     // A field with a default may be absent from unresolved documents.
     let required: Vec<&str> = r
         .fields
@@ -67,12 +73,14 @@ fn record(schema: &Schema, r: &RecordDef) -> Json {
     if !required.is_empty() {
         o.insert("required".into(), json!(required));
     }
+
     o.insert("additionalProperties".into(), Json::Bool(r.open));
     let names: Vec<&str> = r.fields.iter().map(|f| f.name.as_str()).collect();
     if names.windows(2).any(|w| w[0] > w[1]) {
         // JSON objects are unordered; keep the declared order for the round trip.
         o.insert("x-nova-order".into(), json!(names));
     }
+
     Json::Object(o)
 }
 
@@ -81,19 +89,24 @@ fn field(schema: &Schema, f: &FieldDef) -> Json {
     if f.default.is_none() && !f.deprecated && f.id.is_none() && !f.key {
         return s;
     }
+
     let mut o = match s {
         Json::Object(o) => o,
         _ => Map::new(),
     };
+
     if let Some(d) = &f.default {
         o.insert("default".into(), json_of(d));
     }
+
     if f.deprecated {
         o.insert("deprecated".into(), true.into());
     }
+
     if let Some(id) = f.id {
         o.insert("x-nova-id".into(), id.into());
     }
+
     if f.key {
         o.insert("x-nova-key".into(), true.into());
         o.insert(
@@ -101,6 +114,7 @@ fn field(schema: &Schema, f: &FieldDef) -> Json {
             "Key field (@key): values must be unique among the elements of a list (not checked by JSON Schema).".into(),
         );
     }
+
     Json::Object(o)
 }
 
@@ -115,6 +129,7 @@ fn variants(schema: &Schema, vs: &[VariantDef]) -> Json {
             units.clear();
         }
     };
+
     for v in vs {
         match &v.payload {
             None => units.push(&v.name),
@@ -131,6 +146,7 @@ fn variants(schema: &Schema, vs: &[VariantDef]) -> Json {
             }
         }
     }
+
     flush(&mut units, &mut alts);
     match <[Json; 1]>::try_from(alts) {
         Ok([one]) => one,
@@ -145,6 +161,7 @@ fn ty(schema: &Schema, t: &TypeRef) -> Json {
     if t.nullable {
         s = nullable(s);
     }
+
     s
 }
 
@@ -161,6 +178,7 @@ fn nullable(s: Json) -> Json {
                 if !ts.iter().any(|t| t == "null") {
                     ts.push("null".into());
                 }
+
                 Json::Object(o)
             }
             Some(_) => Json::Object(o),
@@ -209,6 +227,7 @@ fn kind(schema: &Schema, k: &TypeKind) -> Json {
                 o["minimum"] = int_json(lo);
                 o["maximum"] = int_json(hi);
             }
+
             o
         }
         TypeKind::Float => json!({"type": ["number", "string"], "pattern": NON_FINITE, "x-nova-kind": "float"}),
@@ -235,6 +254,7 @@ fn kind(schema: &Schema, k: &TypeKind) -> Json {
                 if k.constraints != Constraints::default() || matches!(k.kind, TypeKind::Named(_)) {
                     object["propertyNames"] = ty(schema, k);
                 }
+
                 json!({"anyOf": [object, pairs], "x-nova-kind": "map"})
             } else {
                 let mut pairs = pairs;
@@ -279,6 +299,7 @@ fn constrain(schema: &Schema, t: &TypeRef, s: &mut Json) {
     if *c == Constraints::default() {
         return;
     }
+
     let Json::Object(obj) = s else { return };
     let target = target(schema, t);
     if let Some((lo, hi)) = &c.range {
@@ -288,6 +309,7 @@ fn constrain(schema: &Schema, t: &TypeRef, s: &mut Json) {
                     let lo = bounds.map_or(lo, |(klo, _)| lo.max(klo));
                     obj.insert("minimum".into(), int_json(lo));
                 }
+
                 if let Some(hi) = hi.as_ref().and_then(|n| int_bound(n, false)) {
                     let hi = bounds.map_or(hi, |(_, khi)| hi.min(khi));
                     obj.insert("maximum".into(), int_json(hi));
@@ -297,6 +319,7 @@ fn constrain(schema: &Schema, t: &TypeRef, s: &mut Json) {
                 if let Some(lo) = lo {
                     obj.insert("minimum".into(), num_json(lo));
                 }
+
                 if let Some(hi) = hi {
                     obj.insert("maximum".into(), num_json(hi));
                 }
@@ -307,6 +330,7 @@ fn constrain(schema: &Schema, t: &TypeRef, s: &mut Json) {
             }
         }
     }
+
     if let Some((lo, hi)) = c.len {
         // Each keyword only constrains instances of its own JSON type.
         let keys: &[(&str, &str)] = match target {
@@ -316,11 +340,13 @@ fn constrain(schema: &Schema, t: &TypeRef, s: &mut Json) {
             Target::ItemsOrProperties => &[("minProperties", "maxProperties"), ("minItems", "maxItems")],
             _ => &[],
         };
+
         if let [_, ..] = keys {
             for (min, max) in keys {
                 if let Some(lo) = lo {
                     obj.insert((*min).into(), lo.into());
                 }
+
                 if let Some(hi) = hi {
                     obj.insert((*max).into(), hi.into());
                 }
@@ -332,6 +358,7 @@ fn constrain(schema: &Schema, t: &TypeRef, s: &mut Json) {
             } else {
                 format!(", {}", c.len_unit.name())
             };
+
             obj.insert("x-nova-len".into(), format!("{}..{}{unit}", bound(lo), bound(hi)).into());
         }
     }

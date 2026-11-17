@@ -57,6 +57,7 @@ pub fn parse(src: &str) -> Result<Value, ParseError> {
             message: "this is a @template document; render it first".into(),
         });
     }
+
     doc.body.to_value().map_err(|m| ParseError {
         line: 1,
         col: 1,
@@ -91,6 +92,7 @@ pub fn parse_flow(src: &str) -> Result<Value, ParseError> {
     if !p.at_eof() {
         return Err(p.error_at(p.pos, "unexpected content after value"));
     }
+
     Ok(v)
 }
 
@@ -105,8 +107,10 @@ pub fn split_stream(src: &str) -> Vec<&str> {
             docs.push(&src[start..pos]);
             start = pos + line.len();
         }
+
         pos += line.len();
     }
+
     docs.push(&src[start..]);
     docs.into_iter().filter(|d| !d.trim().is_empty()).collect()
 }

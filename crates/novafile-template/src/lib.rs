@@ -63,6 +63,7 @@ impl Loader for FsLoader {
         if rel.is_absolute() || path.contains("://") {
             return Err(format!("import {path:?} must be a relative file path"));
         }
+
         let base = from
             .map(|f| std::path::Path::new(f).parent().unwrap_or(std::path::Path::new("")).to_path_buf())
             .unwrap_or_default();
@@ -79,6 +80,7 @@ impl Loader for FsLoader {
                 _ => return Err(format!("import {path:?} is not a plain relative path")),
             }
         }
+
         let full = self.root.join(&joined);
         let src = std::fs::read_to_string(&full).map_err(|e| format!("cannot import {path:?}: {e}"))?;
         Ok((joined.to_string_lossy().into_owned(), src))
@@ -137,8 +139,10 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stac
         if !args.is_empty() {
             return err("arguments were given but the document is not a @template");
         }
+
         return doc.body.to_value().map_err(TemplateError);
     };
+
     let mut ev = Eval {
         scopes: vec![Vec::new()],
         budget,
@@ -153,6 +157,7 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stac
             return err(format!("unknown parameter {k:?}{}", where_()));
         }
     }
+
     for p in &h.params {
         let ty = parse_type(&p.ty).map_err(|m| TemplateError(format!("@param {}: {m}", p.name)))?;
         let v = match (args.get(&p.name), &p.default) {
@@ -161,6 +166,7 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stac
             (None, None) if p.optional => Value::Null,
             (None, None) => return err(format!("missing required parameter {:?}{}", p.name, where_())),
         };
+
         let v = if matches!(v, Value::Null) && p.optional {
             v
         } else {
@@ -173,6 +179,7 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stac
                 ))
             })?
         };
+
         ev.bind(&p.name, v)?;
     }
 
@@ -181,10 +188,12 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stac
         if stack.len() >= opts.limits.max_import_depth {
             return err("import depth limit exceeded");
         }
+
         let (iid, isrc) = opts.loader.load(&imp.path, id).map_err(TemplateError)?;
         if stack.contains(&iid) || id == Some(iid.as_str()) {
             return err(format!("import cycle through {iid}"));
         }
+
         stack.push(id.unwrap_or("<root>").to_owned());
         let v = render_inner(&isrc, Some(&iid), &Record::new(), opts, stack, ev.budget)?;
         stack.pop();
@@ -196,6 +205,7 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stac
         let v = ev.node(&l.value)?;
         ev.bind(&l.name, v)?;
     }
+
     ev.node(&doc.body)
 }
 
@@ -221,6 +231,7 @@ impl Eval<'_> {
         if *self.budget > self.max {
             return err(format!("template output exceeds the limit of {} nodes", self.max));
         }
+
         Ok(())
     }
 
@@ -229,6 +240,7 @@ impl Eval<'_> {
         if scope.iter().any(|(n, _)| n == name) {
             return err(format!("{name:?} is already defined"));
         }
+
         scope.push((name.to_owned(), v));
         Ok(())
     }
@@ -237,6 +249,7 @@ impl Eval<'_> {
         let Some((Segment::Field(name), rest)) = p.0.split_first() else {
             return err(format!("invalid reference ${p}"));
         };
+
         let base = self
             .scopes
             .iter()
@@ -274,6 +287,7 @@ impl Eval<'_> {
                 }
             }
         }
+
         Ok(s)
     }
 
@@ -304,17 +318,20 @@ impl Eval<'_> {
             Value::Map(m) => m,
             other => return err(format!("@for needs a list, set, tuple, record or map, found {}", other.kind())),
         };
+
         let mut out = Vec::with_capacity(pairs.len());
         for (k, v) in pairs {
             self.scopes.push(Vec::new());
             if let Some(i) = &head.index {
                 self.bind(i, k)?;
             }
+
             self.bind(&head.var, v)?;
             let r = body(self);
             self.scopes.pop();
             out.push(r?);
         }
+
         Ok(out)
     }
 
@@ -341,6 +358,7 @@ impl Eval<'_> {
                 }
             }
         }
+
         Ok(())
     }
 
@@ -353,9 +371,11 @@ impl Eval<'_> {
                         Key::Lit(s) => s.clone(),
                         Key::Interp(parts) => self.text(parts)?,
                     };
+
                     if explicit.contains(&key) {
                         return err(format!("duplicate key {key:?}"));
                     }
+
                     let v = self.node(n)?;
                     out.set(key.clone(), v);
                     explicit.push(key);
@@ -386,6 +406,7 @@ impl Eval<'_> {
                             if explicit.contains(&k) {
                                 return err(format!("duplicate key {k:?} produced by @for"));
                             }
+
                             out.set(k.clone(), v);
                             explicit.push(k);
                         }
@@ -393,6 +414,7 @@ impl Eval<'_> {
                 }
             }
         }
+
         Ok(())
     }
 

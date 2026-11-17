@@ -70,8 +70,10 @@ pub fn split_words(s: &str) -> Vec<String> {
             if !cur.is_empty() {
                 words.push(std::mem::take(&mut cur));
             }
+
             continue;
         }
+
         let prev = i.checked_sub(1).map(|j| chars[j]);
         let next = chars.get(i + 1).copied();
         let boundary = c.is_uppercase()
@@ -80,11 +82,14 @@ pub fn split_words(s: &str) -> Vec<String> {
         if boundary {
             words.push(std::mem::take(&mut cur));
         }
+
         cur.extend(c.to_lowercase());
     }
+
     if !cur.is_empty() {
         words.push(cur);
     }
+
     words
 }
 
@@ -107,6 +112,7 @@ mod tests {
             assert_eq!(Case::Camel.convert(src), camel, "{src}");
             assert_eq!(Case::Kebab.convert(src), kebab, "{src}");
         }
+
         assert!(Case::Snake.matches("deployed_at") && !Case::Snake.matches("deployedAt"));
     }
 }

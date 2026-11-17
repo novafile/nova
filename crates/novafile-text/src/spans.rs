@@ -55,18 +55,22 @@ impl Span {
                 while matches!(b.get(i), Some(b' ' | b'\t')) {
                     i += 1;
                 }
+
                 if b.get(i) == Some(&b':') {
                     i += 1;
                 }
+
                 i
             }
             (SpanKind::BlockItem, _) => self.start + 1,
             _ => return self.start,
         };
+
         loop {
             while matches!(b.get(i), Some(b' ' | b'\t' | b'\r')) {
                 i += 1;
             }
+
             match b.get(i) {
                 Some(b'#') => {
                     while !matches!(b.get(i), None | Some(b'\n')) {
@@ -157,14 +161,17 @@ pub fn offset_of_utf16(src: &str, line: u32, col: u32) -> usize {
             None => return src.len(),
         }
     }
+
     let mut units = 0u32;
     for (i, c) in src[start..].char_indices() {
         if c == '\n' || units >= col {
             return start + i;
         }
+
         #[expect(clippy::cast_possible_truncation, reason = "a char is 1 or 2 UTF-16 units")]
         let n = c.len_utf16() as u32;
         units += n;
     }
+
     src.len()
 }

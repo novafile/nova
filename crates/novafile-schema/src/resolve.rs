@@ -51,10 +51,12 @@ impl<'s> Ctx<'s> {
         if matches!(v, Value::Null) && (t.nullable || matches!(t.kind, TypeKind::Null | TypeKind::Any)) {
             return v;
         }
+
         let (rt, def) = self.deref(t);
         if matches!(v, Value::Null) && rt.nullable {
             return v;
         }
+
         let v = match (&rt.kind, def) {
             (TypeKind::Named(_), Some(Def::Record(r))) => self.record(v, r),
             (TypeKind::Named(_), Some(Def::Enum(vs))) => self.variant(v, vs),
@@ -64,11 +66,13 @@ impl<'s> Ctx<'s> {
             }
             (kind, _) => self.structural(v, kind),
         };
+
         // Constraints on the alias chain and the use site.
         self.constraints(&v, &rt.constraints);
         if !std::ptr::eq(rt, t) {
             self.constraints(&v, &t.constraints);
         }
+
         v
     }
 
@@ -88,6 +92,7 @@ impl<'s> Ctx<'s> {
                 if i < lo || i > hi {
                     self.issue(format!("{i} is out of range for {}", k.name()));
                 }
+
                 v
             }
             (TypeKind::Float, v @ Value::Float(_)) => v,
@@ -133,6 +138,7 @@ impl<'s> Ctx<'s> {
                     self.issue(format!("expected a {}-tuple, found {} elements", ts.len(), items.len()));
                     return Value::Tuple(items);
                 }
+
                 let out = items
                     .into_iter()
                     .zip(ts)
@@ -219,6 +225,7 @@ impl<'s> Ctx<'s> {
                 }
             }
         }
+
         out
     }
 
@@ -227,6 +234,7 @@ impl<'s> Ctx<'s> {
             self.mismatch("record", &v);
             return v;
         };
+
         let mut out = Record::new();
         let mut entries = r.into_entries();
         for f in &def.fields {
@@ -248,16 +256,20 @@ impl<'s> Ctx<'s> {
                     None => self.issue("missing required field"),
                 },
             }
+
             self.path.pop();
         }
+
         for (k, v) in entries {
             if !def.open {
                 self.path.push(Segment::Field(k.clone()));
                 self.issue("unknown field");
                 self.path.pop();
             }
+
             out.set(k, v);
         }
+
         Value::Record(out)
     }
 
@@ -270,6 +282,7 @@ impl<'s> Ctx<'s> {
             }
             other => other,
         };
+
         match v {
             Value::String(s) => match vs.iter().find(|d| d.name == s) {
                 Some(d) if d.payload.is_none() => Value::Variant(s, None),
@@ -322,6 +335,7 @@ impl<'s> Ctx<'s> {
                 self.issue(format!("{n} is outside @range({}..{})", b(lo), b(hi)));
             }
         }
+
         if let Some((lo, hi)) = c.len {
             let len = match v {
                 Value::String(s) => Some(c.len_unit.measure(s)),
@@ -331,6 +345,7 @@ impl<'s> Ctx<'s> {
                 Value::Record(r) => Some(r.len()),
                 _ => None,
             };
+
             if let Some(len) = len {
                 let len = len as u64;
                 if lo.is_some_and(|lo| len < lo) || hi.is_some_and(|hi| len > hi) {
@@ -338,6 +353,7 @@ impl<'s> Ctx<'s> {
                         (Value::String(_), u) if u != crate::LenUnit::Scalars => format!(", {}", u.name()),
                         _ => String::new(),
                     };
+
                     self.issue(format!(
                         "length {len} is outside @len({}..{}{unit})",
                         lo.map(|n| n.to_string()).unwrap_or_default(),
@@ -381,6 +397,7 @@ impl Schema {
             issues: Vec::new(),
             apply_defaults: true,
         };
+
         let out = c.check(v.clone(), t);
         if c.issues.is_empty() { Ok(out) } else { Err(c.issues) }
     }
@@ -420,6 +437,7 @@ impl Schema {
             issues: Vec::new(),
             apply_defaults: false,
         };
+
         c.check(v.clone(), &t);
         if c.issues.is_empty() { Ok(()) } else { Err(c.issues) }
     }

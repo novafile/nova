@@ -56,6 +56,7 @@ fn table(t: Table) -> Result<Value, String> {
         let v = import(v)?;
         r.insert(k, v).map_err(|e| format!("TOML: {e}"))?;
     }
+
     Ok(Value::Record(r))
 }
 
@@ -76,6 +77,7 @@ fn datetime(d: &Datetime) -> Result<Value, String> {
         // Local date-times, dates and times have no instant: keep their text.
         return Ok(Value::String(d.to_string()));
     };
+
     let off = match offset {
         Offset::Z => "Z".to_owned(),
         Offset::Custom { minutes } => {
@@ -84,6 +86,7 @@ fn datetime(d: &Datetime) -> Result<Value, String> {
             format!("{sign}{:02}:{:02}", m / 60, m % 60)
         }
     };
+
     let text = format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}{off}",
         date.year, date.month, date.day, time.hour, time.minute, time.second, time.nanosecond
@@ -100,6 +103,7 @@ pub fn to_string(v: &Value) -> Result<(String, Vec<Warning>), String> {
     let Value::Record(r) = v else {
         return Err(format!("TOML: the root must be a record, not a {}", v.kind()));
     };
+
     let mut rep = Reporter::default();
     let t = export_record(r, &mut rep)?;
     let text = ::toml::to_string(&t).map_err(|e| format!("TOML: {e}"))?;
@@ -112,6 +116,7 @@ fn export_record(r: &Record, rep: &mut Reporter) -> Result<Table, String> {
         let v = rep.field(k, |rep| export(e, rep))?;
         t.insert(k.clone(), v);
     }
+
     Ok(t)
 }
 

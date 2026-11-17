@@ -49,6 +49,7 @@ fn table_shape(items: &[Value]) -> Option<Vec<&str>> {
     if items.len() < 2 {
         return None;
     }
+
     let mut fields: Vec<&str> = Vec::new();
     let mut present = 0usize;
     for v in items {
@@ -56,6 +57,7 @@ fn table_shape(items: &[Value]) -> Option<Vec<&str>> {
         if r.is_empty() {
             return None;
         }
+
         let mut last: Option<usize> = None;
         for k in r.keys() {
             let idx = if let Some(i) = fields.iter().position(|f| f == k) {
@@ -64,14 +66,17 @@ fn table_shape(items: &[Value]) -> Option<Vec<&str>> {
                 fields.push(k);
                 fields.len() - 1
             };
+
             // A record whose key order disagrees with the shared order would be reordered.
             if last.is_some_and(|l| idx < l) {
                 return None;
             }
+
             last = Some(idx);
             present += 1;
         }
     }
+
     (fields.len() <= 256 && present * 2 >= fields.len() * items.len()).then_some(fields)
 }
 
@@ -83,6 +88,7 @@ fn put_varint(out: &mut Vec<u8>, mut v: u128) {
             out.push(byte);
             return;
         }
+
         out.push(byte | 0x80);
     }
 }
@@ -93,6 +99,7 @@ fn varint_len(mut v: u128) -> usize {
         v >>= 7;
         n += 1;
     }
+
     n
 }
 
@@ -124,6 +131,7 @@ impl Encoder {
                 return;
             }
         }
+
         put_varint(out, (s.len() as u128) << 1);
         out.extend_from_slice(s.as_bytes());
         // Every literal string enters the table; decoders mirror this. The
@@ -131,6 +139,7 @@ impl Encoder {
         if self.opts.dedupe_strings && !self.opts.canonical {
             self.table.insert(s.to_owned(), self.next_index);
         }
+
         self.next_index += 1;
     }
 
@@ -191,6 +200,7 @@ impl Encoder {
                 for f in &fields {
                     self.string(out, f);
                 }
+
                 let dense = items.iter().all(|r| matches!(r, Value::Record(r) if r.len() == fields.len()));
                 out.push(u8::from(!dense));
                 for row in items {
@@ -202,8 +212,10 @@ impl Encoder {
                                 bits[i / 8] |= 1 << (i % 8);
                             }
                         }
+
                         out.extend_from_slice(&bits);
                     }
+
                     for f in &fields {
                         if let Some(v) = r.get(f) {
                             self.value(out, v);
@@ -286,6 +298,7 @@ pub fn encode(v: &Value, opts: EncodeOptions) -> Vec<u8> {
         table: HashMap::new(),
         next_index: 0,
     };
+
     let mut out = Vec::new();
     enc.value(&mut out, v);
     out
@@ -362,6 +375,7 @@ impl<'a> Decoder<'a> {
         if self.buf.len() - self.pos < n {
             return self.err("length exceeds input");
         }
+
         let s = &self.buf[self.pos..self.pos + n];
         self.pos += n;
         Ok(s)
@@ -375,13 +389,16 @@ impl<'a> Decoder<'a> {
             if shift >= 126 && (b & 0x7F) > 0x03 {
                 return self.err("varint overflow");
             }
+
             v |= u128::from(b & 0x7F) << shift;
             if b & 0x80 == 0 {
                 if b == 0 && shift > 0 {
                     return self.err("non-minimal varint");
                 }
+
                 return Ok(v);
             }
+
             shift += 7;
         }
     }
@@ -391,6 +408,7 @@ impl<'a> Decoder<'a> {
         if n > (self.buf.len() - self.pos) as u128 {
             return self.err("element count exceeds remaining input");
         }
+
         Ok(n as usize)
     }
 
@@ -403,10 +421,12 @@ impl<'a> Decoder<'a> {
                 None => self.err(format!("string back-reference {idx} out of range")),
             };
         }
+
         let len = h >> 1;
         if len > (self.buf.len() - self.pos) as u128 {
             return self.err("string length exceeds input");
         }
+
         let start = self.pos;
         let bytes = self.take(len as usize)?;
         let s = std::str::from_utf8(bytes)
@@ -418,6 +438,7 @@ impl<'a> Decoder<'a> {
         if self.strings.len() >= self.limits.max_strings {
             return self.err("string table limit exceeded");
         }
+
         self.strings.push(s.clone());
         Ok(s)
     }
@@ -429,6 +450,7 @@ impl<'a> Decoder<'a> {
         if self.depth >= self.limits.max_depth && matches!(kind, tag::LIST..=tag::MAP | tag::VARIANT) {
             return self.err("nesting depth limit exceeded");
         }
+
         Ok(match kind {
             tag::NULL => Value::Null,
             tag::FALSE => Value::Bool(false),
@@ -443,10 +465,12 @@ impl<'a> Decoder<'a> {
                 let Ok(exp) = i32::try_from(unzigzag(self.varint()?)) else {
                     return self.err("decimal exponent out of range");
                 };
+
                 let d = Decimal::new(coeff, exp);
                 if d.coefficient() != coeff || d.exponent() != exp {
                     return self.err("decimal is not normalized");
                 }
+
                 Value::Decimal(d)
             }
             tag::RATIONAL => {
@@ -455,6 +479,7 @@ impl<'a> Decoder<'a> {
                     Ok(den) if den != 0 => den,
                     _ => return self.err("invalid rational denominator"),
                 };
+
                 match Rational::new(num, den) {
                     Ok(r) if r.numerator() == num && r.denominator() == den => Value::Rational(r),
                     Ok(_) => return self.err("rational is not normalized"),
@@ -472,6 +497,7 @@ impl<'a> Decoder<'a> {
                 let (Ok(secs), Ok(nanos)) = (secs, nanos) else {
                     return self.err("timestamp out of range");
                 };
+
                 match Timestamp::new(secs, nanos) {
                     Ok(t) => Value::Timestamp(t),
                     Err(e) => return self.err(e),
@@ -494,8 +520,10 @@ impl<'a> Decoder<'a> {
                             message: "duplicate set element".into(),
                         });
                     }
+
                     items.push(v);
                 }
+
                 self.depth -= 1;
                 match kind {
                     tag::LIST => Value::List(items),
@@ -517,6 +545,7 @@ impl<'a> Decoder<'a> {
                         });
                     }
                 }
+
                 self.depth -= 1;
                 Value::Record(r)
             }
@@ -533,9 +562,11 @@ impl<'a> Decoder<'a> {
                             message: "duplicate map key".into(),
                         });
                     }
+
                     let v = self.value()?;
                     entries.push((k, v));
                 }
+
                 self.depth -= 1;
                 Value::Map(entries)
             }
@@ -551,13 +582,16 @@ impl<'a> Decoder<'a> {
                             message: format!("duplicate record-list field {f:?}"),
                         });
                     }
+
                     fields.push(f);
                 }
+
                 let dense = match self.byte()? {
                     0 => true,
                     1 => false,
                     m => return self.err(format!("invalid record-list mode {m}")),
                 };
+
                 self.depth += 2;
                 let mut rows = Vec::with_capacity(n.min(4096));
                 for _ in 0..n {
@@ -568,8 +602,10 @@ impl<'a> Decoder<'a> {
                         if k % 8 != 0 && bits[k / 8] >> (k % 8) != 0 {
                             return self.err("unused record-list presence bits must be zero");
                         }
+
                         (0..k).map(|i| bits[i / 8] & (1 << (i % 8)) != 0).collect()
                     };
+
                     let mut r = Record::new();
                     for (f, p) in fields.iter().zip(present) {
                         if p {
@@ -577,8 +613,10 @@ impl<'a> Decoder<'a> {
                             r.insert(f.clone(), v).expect("field names are unique");
                         }
                     }
+
                     rows.push(Value::Record(r));
                 }
+
                 self.depth -= 2;
                 Value::List(rows)
             }
@@ -614,6 +652,7 @@ pub fn decode_prefix(buf: &[u8], limits: Limits) -> Result<(Value, usize), Decod
         limits,
         strings: Vec::new(),
     };
+
     let v = d.value()?;
     Ok((v, d.pos))
 }
@@ -632,6 +671,7 @@ pub fn decode(buf: &[u8]) -> Result<Value, DecodeError> {
             message: "trailing bytes after value".into(),
         });
     }
+
     Ok(v)
 }
 
@@ -734,6 +774,7 @@ mod tests {
             let bytes = encode(&v, opts);
             assert_eq!(decode(&bytes).unwrap(), v);
         }
+
         let plain = encode(&v, EncodeOptions::default()).len();
         let dedup = encode(
             &v,
@@ -798,6 +839,7 @@ mod table_tests {
                     if !sparse || i % 3 == 0 {
                         e.push(("enabled", Value::Bool(true)));
                     }
+
                     rec(e)
                 })
                 .collect(),
@@ -822,6 +864,7 @@ mod table_tests {
                 assert_eq!(decode(&encode(&v, opts)).unwrap(), v);
             }
         }
+
         let v = services(100, false);
         let plain = encode(&v, EncodeOptions::default()).len();
         let dedupe = encode(

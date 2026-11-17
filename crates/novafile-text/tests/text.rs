@@ -235,6 +235,7 @@ fn paths() {
         let parsed = Path::parse(p).unwrap();
         assert_eq!(Path::parse(&parsed.to_string()).unwrap(), parsed, "{p}");
     }
+
     assert!(Path::parse("a.{b}.c").is_err());
 }
 
@@ -252,6 +253,7 @@ fn spans_locate_values() {
         let s = spans.get(&Path::parse(p).unwrap()).unwrap_or_else(|| panic!("no span for {p}"));
         &src[s.start..s.end]
     };
+
     assert_eq!(text("region"), "region: eu-central-1");
     assert_eq!(text("services[1].port"), "port: 3000");
     assert!(text("services[1]").starts_with("- id: api") && text("services[1]").ends_with("enabled: true"));
@@ -279,6 +281,7 @@ fn preserving_format_keeps_comments_and_is_idempotent() {
             assert!(once.contains(c), "lost comment {c:?} in {profile:?}:\n{once}");
         }
     }
+
     let human = novafile_text::format_preserving(COMMENTED, Profile::Human).unwrap();
     assert!(human.contains("price: @decimal(\"12.50\")") && human.contains("ratio: 2/4"), "{human}");
     assert!(human.contains("    replicas: 3\n\n  - id: api  # public API\n"), "{human}");
@@ -299,6 +302,7 @@ fn render_preserving_follows_paths() {
         r.set("region", "eu-west-1".into());
         r.remove("price");
     }
+
     let out = novafile_text::render_preserving(COMMENTED, &v, Profile::Human).unwrap();
     assert!(
         out.contains("region: eu-west-1") && !out.contains("price") && out.contains("port: 8080  # legacy port"),
@@ -340,6 +344,7 @@ fn large_inputs_parse_in_linear_time() {
         let _ = novafile_value::revision(&v);
         novafile_text::format_preserving(src, Profile::Human).unwrap();
     }
+
     assert!(start.elapsed() < std::time::Duration::from_secs(20), "took {:?}", start.elapsed());
 }
 

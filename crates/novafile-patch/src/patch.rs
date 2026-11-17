@@ -100,16 +100,20 @@ impl fmt::Display for Patch {
         if let Some(s) = &self.schema {
             write!(f, " {s}")?;
         }
+
         writeln!(f)?;
         if let Some(b) = &self.base {
             writeln!(f, "@base {b}")?;
         }
+
         if !self.scope.is_root() {
             writeln!(f, "@scope {}", self.scope)?;
         }
+
         for op in &self.ops {
             writeln!(f, "{op}")?;
         }
+
         Ok(())
     }
 }
@@ -131,11 +135,13 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
             message: e.message,
         }
     };
+
     let from = |e: novafile_text::ParseError| PatchError::Syntax {
         line: e.line,
         col: e.col,
         message: e.message,
     };
+
     let mut patch = Patch::default();
     let mut seen_header = false;
     loop {
@@ -143,6 +149,7 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
         if p.at_eof() {
             break;
         }
+
         let start = p.pos;
         let line = p.error_at(start, "").line;
         let rest_line = src[start..].lines().next().unwrap_or("");
@@ -150,6 +157,7 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
             if !patch.ops.is_empty() {
                 return Err(syn(&p, start, "directives must precede operations".into()));
             }
+
             let d = d.split_once(" #").map_or(d, |(a, _)| a).trim();
             let (name, arg) = d.split_once(' ').map_or((d, ""), |(a, b)| (a, b.trim()));
             match name {
@@ -169,6 +177,7 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
                     if seen_header || patch.base.is_some() || patch.schema.is_some() {
                         return Err(syn(&p, start, "@nova must be the first directive".into()));
                     }
+
                     novafile_text::version::NOVA_VERSION.check(arg, "NOVA").map_err(|m| syn(&p, start, m))?;
                 }
                 "base" => patch.base = Some(arg.to_owned()),
@@ -177,13 +186,16 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
                 other if other.starts_with("x-") => {}
                 other => return Err(syn(&p, start, format!("unknown patch directive @{other}"))),
             }
+
             p.pos = start + rest_line.len();
             p.end_line().map_err(from)?;
             continue;
         }
+
         if !seen_header {
             return Err(syn(&p, start, "a patch must start with `@patch`".into()));
         }
+
         let sigil = match p_peek(&p) {
             Some(c @ (b'=' | b'+' | b'-' | b'?')) if src.as_bytes().get(p.pos + 1) == Some(&b' ') => {
                 p.pos += 2;
@@ -191,11 +203,13 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
             }
             _ => None,
         };
+
         p.skip_inline_ws();
         let (op_path, n) = Path::parse_prefix(&src[p.pos..]).map_err(|m| syn(&p, p.pos, m))?;
         if !op_path.is_singular() {
             return Err(syn(&p, p.pos, "patch paths may not use `[*]` or projections".into()));
         }
+
         p.pos += n;
         p.skip_inline_ws();
         let has_value = p_peek(&p) == Some(b':');
@@ -206,12 +220,14 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
         } else {
             None
         };
+
         let kind = match (sigil, value) {
             (None, Some(old)) => {
                 p.skip_inline_ws();
                 if !src[p.pos..].starts_with("->") {
                     return Err(syn(&p, p.pos, "expected `-> <new value>`; use `= path: value` for an unconditional set".into()));
                 }
+
                 p.pos += 2;
                 p.skip_inline_ws();
                 OpKind::Replace {
@@ -227,9 +243,11 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
             (Some(c), None) => return Err(syn(&p, start, format!("`{}` requires `: <value>`", c as char))),
             _ => unreachable!(),
         };
+
         p.end_line().map_err(from)?;
         patch.ops.push(Op { path: op_path, kind, line });
     }
+
     if !seen_header {
         return Err(PatchError::Syntax {
             line: 1,
@@ -237,6 +255,7 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
             message: "a patch must start with `@patch`".into(),
         });
     }
+
     Ok(patch)
 }
 
@@ -270,9 +289,11 @@ pub fn apply(doc: &Value, patch: &Patch, validate: &dyn Fn(&Value) -> Result<(),
             actual: base,
         });
     }
+
     if !patch.scope.is_root() {
         patch.scope.get(doc).map_err(PatchError::Scope)?;
     }
+
     let mut work = doc.clone();
     for (index, op) in patch.ops.iter().enumerate() {
         let full = patch.scope.join(&op.path);
@@ -283,6 +304,7 @@ pub fn apply(doc: &Value, patch: &Patch, validate: &dyn Fn(&Value) -> Result<(),
             message,
         })?;
     }
+
     validate(&work).map_err(PatchError::Invalid)?;
     Ok(Applied {
         revision: revision(&work),
@@ -324,6 +346,7 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
                 *root = v.clone();
                 return Ok(());
             };
+
             let target = get_mut(root, &parent).map_err(to_msg)?;
             match (target, last) {
                 (Value::Record(r), Segment::Field(k) | Segment::Key(Value::String(k))) => {
@@ -338,6 +361,7 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
                 }
                 (t, _) => *get_mut(t, &Path(vec![last.clone()])).map_err(to_msg)? = v.clone(),
             }
+
             Ok(())
         }
         OpKind::Add(v) => {
@@ -351,9 +375,11 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
                 } else {
                     resolve_index(*i, len).ok_or(format!("index {i} is out of bounds for insert (len {len})"))?
                 };
+
                 l.insert(idx, v.clone());
                 return Ok(());
             }
+
             // Existing list/set at the path: append / insert.
             if let Ok(t) = get_mut(root, path) {
                 match t {
@@ -365,12 +391,14 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
                         if s.contains(v) {
                             return Err(format!("set already contains {}", show(v)));
                         }
+
                         s.push(v.clone());
                         return Ok(());
                     }
                     _ => return Err(format!("{path} already exists; use `=` to replace it")),
                 }
             }
+
             let (parent, last) = path.parent().ok_or("cannot add at the document root")?;
             let target = get_mut(root, &parent).map_err(to_msg)?;
             match (target, last) {
@@ -382,6 +410,7 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
                     } else {
                         resolve_index(*i, len).ok_or(format!("index {i} is out of bounds for insert (len {len})"))?
                     };
+
                     l.insert(idx, v.clone());
                     Ok(())
                 }
@@ -399,6 +428,7 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
                     return Err(format!("conflict: expected {}, found {}", show(w), show(cur)));
                 }
             }
+
             let (parent, last) = path.parent().ok_or("cannot remove the document root")?;
             let target = get_mut(root, &parent).map_err(to_msg)?;
             let nf = || PathError::NotFound(path.clone()).to_string();

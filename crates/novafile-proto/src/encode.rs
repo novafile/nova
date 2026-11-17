@@ -31,11 +31,13 @@ impl<'s> Encoder<'s> {
         if depth > MAX_DEPTH {
             return Err(Fail::new(format!("nesting is deeper than {MAX_DEPTH} messages")));
         }
+
         match (m, v) {
             (Message::Record(name, def), Value::Record(r)) => {
                 if let Some(extra) = r.keys().find(|k| def.field(k).is_none()) {
                     return Err(Fail::new("field is not in the schema (extra fields of @open records have no field number)").at(Segment::Field(extra.clone())));
                 }
+
                 let mut fields = def.fields.iter().map(|f| Ok((field_number(name, f)?, f))).collect::<Result<Vec<_>, String>>()?;
                 fields.sort_by_key(|(n, _)| *n);
                 for (number, f) in fields {
@@ -44,6 +46,7 @@ impl<'s> Encoder<'s> {
                         self.field(buf, number, fv, c, depth).map_err(|e| e.at(Segment::Field(f.name.clone())))?;
                     }
                 }
+
                 Ok(())
             }
             (Message::Union(name, vs), Value::Variant(tag, payload)) => {
@@ -92,21 +95,25 @@ impl<'s> Encoder<'s> {
             // proto3: an unset field reads back as null.
             return if c.nullable { Ok(()) } else { Err(Fail::new("null is not allowed here")) };
         }
+
         match c.shape {
             Shape::Single(s) => self.single(buf, number, v, s, depth),
             Shape::Repeated { elem, .. } => {
                 let (Value::List(items) | Value::Set(items)) = v else {
                     return Err(mismatch("a list or set", v));
                 };
+
                 match elem {
                     Single::Scalar(s) if s.packable() => {
                         if items.is_empty() {
                             return Ok(());
                         }
+
                         let mut packed = Vec::new();
                         for (i, item) in items.iter().enumerate() {
                             scalar(&mut packed, item, s).map_err(|e| e.at(index(i)))?;
                         }
+
                         put_tag(buf, number, WireType::Len);
                         put_len(buf, &packed);
                     }
@@ -116,12 +123,14 @@ impl<'s> Encoder<'s> {
                         }
                     }
                 }
+
                 Ok(())
             }
             Shape::Map { key, value } => {
                 let Value::Map(entries) = v else {
                     return Err(mismatch("a map", v));
                 };
+
                 let mut entry = Vec::new();
                 for (k, val) in entries {
                     entry.clear();
@@ -131,6 +140,7 @@ impl<'s> Encoder<'s> {
                     put_tag(buf, number, WireType::Len);
                     put_len(buf, &entry);
                 }
+
                 Ok(())
             }
         }
@@ -181,9 +191,11 @@ fn scalar(buf: &mut Vec<u8>, v: &Value, s: Scalar<'_>) -> Result<(), Fail> {
                 Scalar::Enum(name, _) => format!("a unit variant of {name}"),
                 s => Single::Scalar(s).proto_name(),
             };
+
             return Err(mismatch(&expected, v));
         }
     }
+
     Ok(())
 }
 

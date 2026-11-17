@@ -19,6 +19,7 @@ pub(crate) fn oneof_name(vs: &[VariantDef]) -> String {
     while vs.iter().any(|v| ident(&v.name) == name) {
         name.push('_');
     }
+
     name
 }
 
@@ -39,12 +40,14 @@ pub(crate) fn render(schema: &Schema, plan: &Plan<'_>) -> Result<String, String>
     if let Some(p) = package(schema) {
         let _ = writeln!(w, "\npackage {p};");
     }
+
     if !plan.imports.is_empty() {
         w.push('\n');
         for i in &plan.imports {
             let _ = writeln!(w, "import \"{i}\";");
         }
     }
+
     for (name, def) in &plan.defs {
         w.push('\n');
         match def {
@@ -54,6 +57,7 @@ pub(crate) fn render(schema: &Schema, plan: &Plan<'_>) -> Result<String, String>
             Def::Alias(_) => unreachable!("aliases are never listed in a plan"),
         }
     }
+
     Ok(out)
 }
 
@@ -70,16 +74,20 @@ fn record(w: &mut String, schema: &Schema, name: &str, r: &RecordDef) -> Result<
             Shape::Repeated { elem, .. } => format!("repeated {}", elem.proto_name()),
             Shape::Map { key, value } => format!("map<{}, {}>", Single::Scalar(key).proto_name(), value.proto_name()),
         };
+
         let deprecated = if f.deprecated { " [deprecated = true]" } else { "" };
         let mut notes = vec![f.ty.to_string()];
         if f.optional {
             notes.push("optional field".into());
         }
+
         if let Some(d) = &f.default {
             notes.push(format!("default {}", novafile_text::flow_string(d)));
         }
+
         let _ = writeln!(w, "  {ty} {} = {number}{deprecated}; // {}", ident(&f.name), notes.join("; "));
     }
+
     w.push_str("}\n");
     Ok(())
 }
@@ -90,6 +98,7 @@ fn unit_enum(w: &mut String, name: &str, vs: &[VariantDef]) {
     for (i, v) in vs.iter().enumerate() {
         let _ = writeln!(w, "  {} = {}; // {}", enum_value_name(name, &v.name), i + 1, v.name);
     }
+
     w.push_str("}\n");
 }
 
@@ -102,8 +111,10 @@ fn union(w: &mut String, schema: &Schema, name: &str, vs: &[VariantDef]) -> Resu
             Some(t) => format!("{}({t})", v.name),
             None => format!("{} (unit variant)", v.name),
         };
+
         let _ = writeln!(w, "    {} {} = {}; // {note}", single.proto_name(), ident(&v.name), i + 1);
     }
+
     w.push_str("  }\n}\n");
     Ok(())
 }

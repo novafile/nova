@@ -47,11 +47,13 @@ fn walk(a: &Value, b: &Value, path: &mut Vec<Segment>, ops: &mut Vec<Op>) {
     if a == b {
         return;
     }
+
     let op = |path: &Vec<Segment>, kind| Op {
         path: Path(path.clone()),
         kind,
         line: 0,
     };
+
     match (a, b) {
         (Value::Record(ra), Value::Record(rb)) => {
             for (k, va) in ra.iter() {
@@ -60,8 +62,10 @@ fn walk(a: &Value, b: &Value, path: &mut Vec<Segment>, ops: &mut Vec<Op>) {
                     Some(vb) => walk(va, vb, path, ops),
                     None => ops.push(op(path, OpKind::Remove(Some(va.clone())))),
                 }
+
                 path.pop();
             }
+
             for (k, vb) in rb.iter() {
                 if !ra.contains_key(k) {
                     path.push(Segment::Field(k.clone()));
@@ -80,8 +84,10 @@ fn walk(a: &Value, b: &Value, path: &mut Vec<Segment>, ops: &mut Vec<Op>) {
                         Some(vb) => walk(va, vb, path, ops),
                         None => ops.push(op(path, OpKind::Remove(None))),
                     }
+
                     path.pop();
                 }
+
                 for vb in lb {
                     if !la.iter().any(|va| key(va) == key(vb)) {
                         ops.push(op(path, OpKind::Add(vb.clone())));

@@ -51,9 +51,11 @@ impl<'a> TyParser<'a> {
         while self.peek().is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_') {
             self.i += 1;
         }
+
         if st == self.i {
             return Err(format!("expected a type name at {:?}", self.rest()));
         }
+
         Ok(&self.s[st..self.i])
     }
 
@@ -83,6 +85,7 @@ impl<'a> TyParser<'a> {
         if let Some((a, _)) = field_attrs.first() {
             return Err(format!("@{a} is only valid on record fields"));
         }
+
         Ok(t)
     }
 
@@ -100,6 +103,7 @@ impl<'a> TyParser<'a> {
                 break;
             }
         }
+
         Ok(t)
     }
 
@@ -112,14 +116,17 @@ impl<'a> TyParser<'a> {
                 if self.eat(b')') {
                     break;
                 }
+
                 items.push(self.inner()?);
                 if !self.eat(b',') {
                     self.need(b')')?;
                     break;
                 }
             }
+
             return Ok(TypeRef::new(TypeKind::Tuple(items)));
         }
+
         let name = self.ident()?;
         let kind = match name {
             "any" => TypeKind::Any,
@@ -151,6 +158,7 @@ impl<'a> TyParser<'a> {
                 None => TypeKind::Named(other.to_owned()),
             },
         };
+
         Ok(TypeRef::new(kind))
     }
 
@@ -159,6 +167,7 @@ impl<'a> TyParser<'a> {
         if s.is_empty() {
             return Ok(None);
         }
+
         Num::parse(s).map(Some)
     }
 
@@ -170,6 +179,7 @@ impl<'a> TyParser<'a> {
             if self.peek() != Some(b'@') {
                 return Ok(field_attrs);
             }
+
             self.i += 1;
             let name = self.ident()?.to_owned();
             let arg = if self.peek() == Some(b'(') {
@@ -180,6 +190,7 @@ impl<'a> TyParser<'a> {
             } else {
                 String::new()
             };
+
             match name.as_str() {
                 "range" | "len" => {
                     let (bounds, unit) = match arg.split_once(',') {
@@ -192,10 +203,12 @@ impl<'a> TyParser<'a> {
                         }
                         _ => (arg.as_str(), None),
                     };
+
                     let (lo, hi) = bounds.split_once("..").ok_or_else(|| format!("@{name} expects `lo..hi`"))?;
                     if let Some(u) = unit {
                         ty.constraints.len_unit = u;
                     }
+
                     if name == "range" {
                         ty.constraints.range = Some((Self::bound_num(lo)?, Self::bound_num(hi)?));
                     } else {
@@ -207,6 +220,7 @@ impl<'a> TyParser<'a> {
                                 s.parse().map(Some).map_err(|_| format!("invalid length {s:?}"))
                             }
                         };
+
                         ty.constraints.len = Some((p(lo)?, p(hi)?));
                     }
                 }
@@ -230,9 +244,11 @@ pub fn parse_type(s: &str) -> Result<TypeRef, String> {
     if let Some((n, _)) = fa.first() {
         return Err(format!("@{n} is only valid on record fields"));
     }
+
     if !p.rest().trim().is_empty() {
         return Err(format!("unexpected {:?} after type", p.rest().trim()));
     }
+
     Ok(t)
 }
 
@@ -248,8 +264,10 @@ fn strip_comment(line: &str) -> &str {
             b'#' if !in_str && (i == 0 || b[i - 1] == b' ') => return &line[..i],
             _ => {}
         }
+
         i += 1;
     }
+
     line
 }
 
@@ -272,13 +290,16 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
             i += 1;
             continue;
         }
+
         if raw.starts_with(' ') {
             return Err(err(i, "unexpected indentation".into()));
         }
+
         if let Some(rest) = raw.strip_prefix("@nova ") {
             if schema.name.is_some() || schema.root.is_some() || !schema.defs.is_empty() {
                 return Err(err(i, "@nova must be the first directive".into()));
             }
+
             novafile_text::version::NOVA_VERSION.check(rest, "NOVA").map_err(|m| err(i, m))?;
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("@schema ") {
@@ -286,6 +307,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
             if r.fingerprint.is_some() {
                 return Err(err(i, "a schema declares its version, not a fingerprint".into()));
             }
+
             schema.name = Some(r.name);
             schema.version = Some(r.version);
             i += 1;
@@ -303,6 +325,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
                 for alt in alts.split('|') {
                     vs.push(parse_variant(alt.trim()).map_err(|m| err(i, m))?);
                 }
+
                 push_def(&mut schema, name.trim(), Def::Enum(vs)).map_err(|m| err(i, m))?;
                 i += 1;
             } else {
@@ -318,13 +341,16 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
                         i += 1;
                         continue;
                     }
+
                     let Some(body) = l.strip_prefix("  ") else { break };
                     vs.push(parse_variant(body.trim()).map_err(|m| err(i, m))?);
                     i += 1;
                 }
+
                 if vs.is_empty() {
                     return Err(err(i - 1, format!("enum {name} has no variants")));
                 }
+
                 push_def(&mut schema, name, Def::Enum(vs)).map_err(|m| err(i, m))?;
             }
         } else if let Some(rest) = raw.strip_prefix("record ") {
@@ -333,6 +359,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
                 Some(n) => (n.trim(), true),
                 None => (head, false),
             };
+
             let start = i;
             i += 1;
             let mut fields: Vec<FieldDef> = Vec::new();
@@ -342,27 +369,33 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
                     i += 1;
                     continue;
                 }
+
                 let Some(body) = l.strip_prefix("  ") else { break };
                 if body.starts_with(' ') {
                     return Err(err(i, "fields are indented exactly 2 spaces".into()));
                 }
+
                 let f = parse_field(body).map_err(|m| err(i, m))?;
                 if fields.iter().any(|g| g.name == f.name) {
                     return Err(err(i, format!("duplicate field {:?}", f.name)));
                 }
+
                 if let Some(id) = f.id
                     && fields.iter().any(|g| g.id == Some(id))
                 {
                     return Err(err(i, format!("duplicate field id {id}")));
                 }
+
                 fields.push(f);
                 i += 1;
             }
+
             push_def(&mut schema, name, Def::Record(RecordDef { fields, open })).map_err(|m| err(start, m))?;
         } else {
             return Err(err(i, format!("expected `record`, `enum`, `type`, `@schema` or `@root`, found {raw:?}")));
         }
     }
+
     check_refs(&schema).map_err(|m| SchemaError { line: 0, message: m })?;
     Ok(schema)
 }
@@ -371,9 +404,11 @@ fn push_def(s: &mut Schema, name: &str, d: Def) -> Result<(), String> {
     if !name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(format!("type names start with an uppercase letter: {name:?}"));
     }
+
     if s.def(name).is_some() {
         return Err(format!("duplicate definition {name}"));
     }
+
     s.defs.push((name.to_owned(), d));
     Ok(())
 }
@@ -405,6 +440,7 @@ fn parse_field(body: &str) -> Result<FieldDef, String> {
         Some(n) => (n, true),
         None => (lhs, false),
     };
+
     let name = check_name(name.trim())?;
     let mut p = TyParser::new(rhs);
     let mut ty = p.ty()?;
@@ -418,6 +454,7 @@ fn parse_field(body: &str) -> Result<FieldDef, String> {
         id: None,
         deprecated: false,
     };
+
     for (a, arg) in attrs {
         match a.as_str() {
             "key" => f.key = true,
@@ -426,6 +463,7 @@ fn parse_field(body: &str) -> Result<FieldDef, String> {
             other => return Err(format!("@{other} is not valid on a field")),
         }
     }
+
     let rest = p.rest().trim_start();
     if let Some(def) = rest.strip_prefix('=') {
         let src = def.trim_start();
@@ -436,9 +474,11 @@ fn parse_field(body: &str) -> Result<FieldDef, String> {
     } else if !rest.is_empty() {
         return Err(format!("unexpected {rest:?} in field definition"));
     }
+
     if f.key && (f.optional || f.ty.nullable) {
         return Err("@key fields must be required and non-null".into());
     }
+
     Ok(f)
 }
 
@@ -452,6 +492,7 @@ fn check_refs(s: &Schema) -> Result<(), String> {
             _ => Ok(()),
         }
     }
+
     for (name, d) in &s.defs {
         match d {
             Def::Alias(t) => {
@@ -463,6 +504,7 @@ fn check_refs(s: &Schema) -> Result<(), String> {
                     if seen.contains(&n.as_str()) {
                         return Err(format!("type alias cycle through {n}"));
                     }
+
                     seen.push(n);
                     match s.def(n) {
                         Some(Def::Alias(t2)) => cur = t2,
@@ -474,8 +516,10 @@ fn check_refs(s: &Schema) -> Result<(), String> {
             Def::Record(r) => r.fields.iter().try_for_each(|f| walk(s, &f.ty))?,
         }
     }
+
     if let Some(r) = &s.root {
         s.def(r).ok_or_else(|| format!("unknown root type {r}"))?;
     }
+
     Ok(())
 }

@@ -118,6 +118,7 @@ fn core_tags() {
     ] {
         assert!(from_str(bad).is_err(), "{bad}");
     }
+
     assert!(from_str("!!python/object:os.system x").unwrap_err().contains("unsupported tag"));
 }
 
@@ -146,6 +147,7 @@ fn alias_bomb_is_rejected_quickly() {
         let p = i - 1;
         writeln!(doc, "a{i}: &a{i} [*a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}]").unwrap();
     }
+
     let start = std::time::Instant::now();
     let e = from_str(&doc).unwrap_err();
     assert!(e.contains("budget"), "{e}");
@@ -257,6 +259,7 @@ fn ambiguous_strings_are_quoted() {
         let (y, _) = to_string(&s(t));
         assert_eq!(from_str(&y).unwrap(), s(t), "{t:?}\n{y}");
     }
+
     // Ambiguous strings are actually quoted, ordinary ones are not.
     assert_eq!(to_string(&s("yes")).0, "\"yes\"\n");
     assert_eq!(to_string(&s("0777")).0, "\"0777\"\n");

@@ -66,15 +66,18 @@ impl Schema {
         if r.name != mine.name {
             return Err(format!("document is for schema {:?}, not {:?}", r.name, mine.name));
         }
+
         if !mine.version.can_read(&r.version) {
             return Err(format!("schema {mine} cannot read data written for {}@{} (spec §6.7)", r.name, r.version));
         }
+
         if let Some(fp) = &r.fingerprint
             && r.version == mine.version
             && *fp != self.fingerprint_hex()
         {
             return Err(format!("fingerprint mismatch: document expects #{fp}, schema is #{}", self.fingerprint_hex()));
         }
+
         Ok(())
     }
 
@@ -114,6 +117,7 @@ pub fn check_versions(old: &Schema, new: &Schema) -> Result<VersionCheck, String
     if o.name != n.name {
         return Err(format!("schema names differ: {} vs {}", o.name, n.name));
     }
+
     let changes = check_compatibility(old, new);
     let kind = if changes.iter().any(|c| c.breaking) {
         ChangeKind::Breaking
@@ -122,6 +126,7 @@ pub fn check_versions(old: &Schema, new: &Schema) -> Result<VersionCheck, String
     } else {
         ChangeKind::None
     };
+
     let minimum = o.version.required_bump(kind);
     let mut problems = Vec::new();
     if n.version.precedence(&o.version) != std::cmp::Ordering::Greater {
@@ -139,6 +144,7 @@ pub fn check_versions(old: &Schema, new: &Schema) -> Result<VersionCheck, String
             }
             ChangeKind::None => true,
         };
+
         if !ok {
             problems.push(match kind {
                 ChangeKind::Breaking => format!("breaking changes require at least {minimum}, got {}", n.version),
@@ -146,6 +152,7 @@ pub fn check_versions(old: &Schema, new: &Schema) -> Result<VersionCheck, String
             });
         }
     }
+
     Ok(VersionCheck {
         changes,
         kind,
@@ -171,6 +178,7 @@ impl Schema {
                 _ => return (cur, None),
             }
         }
+
         (cur, None)
     }
 
@@ -202,6 +210,7 @@ impl Schema {
                 _ => return None,
             };
         }
+
         Some((cur, field))
     }
 }

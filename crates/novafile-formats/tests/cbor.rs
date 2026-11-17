@@ -171,6 +171,7 @@ fn f16_decoding() {
     ] {
         assert_eq!(from_slice(&hex(h)).unwrap(), f(want), "{h}");
     }
+
     let Value::Float(z) = from_slice(&hex("f98000")).unwrap() else { panic!() };
     assert!(z == 0.0 && z.is_sign_negative());
     assert_eq!(from_slice(&hex("f97c01")).unwrap(), f(f64::NAN));
@@ -366,6 +367,7 @@ fn truncated_and_malformed_input() {
     for n in 0..good.len() {
         assert!(from_slice(&good[..n]).is_err(), "prefix {n}");
     }
+
     assert!(from_slice(&good).is_ok());
     for h in [
         "",

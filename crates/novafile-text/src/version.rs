@@ -28,8 +28,10 @@ impl LangVersion {
             if t.is_empty() || !t.bytes().all(|c| c.is_ascii_digit()) || (t.len() > 1 && t.starts_with('0')) {
                 return Err(err());
             }
+
             t.parse().map_err(|_| err())
         };
+
         Ok(LangVersion {
             major: num(a)?,
             minor: num(b)?,
@@ -60,6 +62,7 @@ impl LangVersion {
         if !self.supports(v) {
             return Err(format!("this document requires {what} {v}, but this implementation supports {what} {self}"));
         }
+
         Ok(v)
     }
 }

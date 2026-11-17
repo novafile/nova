@@ -99,9 +99,11 @@ impl Num {
         if let Ok(i) = s.parse::<i128>() {
             return Ok(Num(Value::Int(i)));
         }
+
         if s.contains('/') {
             return novafile_value::Rational::parse(s).map(|r| Num(Value::Rational(r)));
         }
+
         novafile_value::Decimal::parse(s)
             .map(|d| Num(Value::Decimal(d)))
             .map_err(|_| format!("invalid bound {s:?}"))
@@ -305,18 +307,23 @@ impl fmt::Display for TypeRef {
                     if i > 0 {
                         f.write_str(", ")?;
                     }
+
                     write!(f, "{t}")?;
                 }
+
                 if ts.len() == 1 {
                     f.write_str(",")?;
                 }
+
                 f.write_str(")")?;
             }
             TypeKind::Named(n) => f.write_str(n)?,
         }
+
         if self.nullable {
             f.write_str("?")?;
         }
+
         let b = |o: Option<String>| o.unwrap_or_default();
         if let Some((lo, hi)) = &self.constraints.range {
             write!(
@@ -326,13 +333,16 @@ impl fmt::Display for TypeRef {
                 b(hi.as_ref().map(std::string::ToString::to_string))
             )?;
         }
+
         if let Some((lo, hi)) = &self.constraints.len {
             write!(f, " @len({}..{}", b(lo.map(|n| n.to_string())), b(hi.map(|n| n.to_string())))?;
             if self.constraints.len_unit != LenUnit::Scalars {
                 write!(f, ", {}", self.constraints.len_unit.name())?;
             }
+
             f.write_str(")")?;
         }
+
         Ok(())
     }
 }
@@ -342,9 +352,11 @@ impl fmt::Display for Schema {
         if let (Some(n), Some(v)) = (&self.name, &self.version) {
             writeln!(f, "@schema {n}@{v}")?;
         }
+
         if let Some(r) = &self.root {
             writeln!(f, "@root {r}")?;
         }
+
         let mut defs: Vec<_> = self.defs.iter().collect();
         defs.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, def) in defs {
@@ -367,20 +379,25 @@ impl fmt::Display for Schema {
                         if fd.key {
                             f.write_str(" @key")?;
                         }
+
                         if let Some(id) = fd.id {
                             write!(f, " @id({id})")?;
                         }
+
                         if fd.deprecated {
                             f.write_str(" @deprecated")?;
                         }
+
                         if let Some(d) = &fd.default {
                             write!(f, " = {}", novafile_text::flow_string(d))?;
                         }
+
                         writeln!(f)?;
                     }
                 }
             }
         }
+
         Ok(())
     }
 }

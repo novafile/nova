@@ -88,6 +88,7 @@ pub fn from_str(s: &str) -> Result<Value, String> {
     if l.document()?.is_some() {
         return Err("YAML: input contains more than one document (use from_str_multi)".into());
     }
+
     Ok(first.unwrap_or(Value::Null))
 }
 
@@ -104,6 +105,7 @@ pub fn from_str_multi(s: &str) -> Result<Vec<Value>, String> {
     while let Some(v) = l.document()? {
         out.push(v);
     }
+
     Ok(out)
 }
 
@@ -155,6 +157,7 @@ impl<'a> Loader<'a> {
                     if end != Event::DocumentEnd {
                         return Err(err_at(&m, "expected the end of the document"));
                     }
+
                     return Ok(Some(v));
                 }
                 other => return Err(err_at(&m, format!("unexpected event {other:?}"))),
@@ -170,6 +173,7 @@ impl<'a> Loader<'a> {
                 format!("document expands to more than {NODE_BUDGET} nodes (alias expansion budget, spec §9.5); refusing to continue"),
             ));
         }
+
         Ok(())
     }
 
@@ -178,14 +182,17 @@ impl<'a> Loader<'a> {
         if t.handle.is_empty() && t.suffix == "!" {
             return Ok(TagKind::NonSpecific);
         }
+
         if t.handle == CORE && matches!(t.suffix.as_str(), "str" | "int" | "float" | "bool" | "null" | "seq" | "map" | "binary") {
             return Ok(TagKind::Core(t.suffix));
         }
+
         let shown = if t.handle == CORE {
             format!("!!{}", t.suffix)
         } else {
             format!("{}{}", t.handle, t.suffix)
         };
+
         Err(err_at(
             m,
             format!("unsupported tag {shown}: only the YAML 1.2 core tags (!!str, !!int, !!float, !!bool, !!null, !!seq, !!map) and !!binary are accepted"),
@@ -197,6 +204,7 @@ impl<'a> Loader<'a> {
         if self.depth > MAX_DEPTH {
             return Err(err_at(m, format!("nesting deeper than {MAX_DEPTH} levels")));
         }
+
         Ok(())
     }
 
@@ -213,6 +221,7 @@ impl<'a> Loader<'a> {
                 let Some(&(_, n)) = self.anchors.get(&id) else {
                     return Err(err_at(&m, "alias refers to a node that is not complete (recursive alias)"));
                 };
+
                 // Charge the budget before copying, so a bomb fails before
                 // it grows.
                 self.charge(n, &m)?;
@@ -230,6 +239,7 @@ impl<'a> Loader<'a> {
                     TagKind::Core(s) if s == "seq" => {}
                     TagKind::Core(s) => return Err(err_at(&m, format!("tag !!{s} cannot be applied to a sequence"))),
                 }
+
                 self.enter(&m)?;
                 self.charge(1, &m)?;
                 let (mut items, mut size) = (Vec::new(), 1);
@@ -238,10 +248,12 @@ impl<'a> Loader<'a> {
                     if ev == Event::SequenceEnd {
                         break;
                     }
+
                     let (v, n) = self.node(ev, m)?;
                     size += n;
                     items.push(v);
                 }
+
                 self.depth -= 1;
                 let v = Value::List(items);
                 self.remember(anchor, &v, size);
@@ -253,6 +265,7 @@ impl<'a> Loader<'a> {
                     TagKind::Core(s) if s == "map" => {}
                     TagKind::Core(s) => return Err(err_at(&m, format!("tag !!{s} cannot be applied to a mapping"))),
                 }
+
                 self.enter(&m)?;
                 self.charge(1, &m)?;
                 let (mut entries, mut size) = (Vec::new(), 1);
@@ -261,18 +274,21 @@ impl<'a> Loader<'a> {
                     if ev == Event::MappingEnd {
                         break;
                     }
+
                     if matches!(&ev, Event::Scalar(t, TScalarStyle::Plain, _, None) if t == "<<") {
                         return Err(err_at(
                             &km,
                             "merge keys (`<<`) are not supported: NOVA has no implicit merging; use template spreads (spec §9) or patches (spec §7.4) instead",
                         ));
                     }
+
                     let (k, kn) = self.node(ev, km)?;
                     let (ev, vm) = self.next()?;
                     let (v, vn) = self.node(ev, vm)?;
                     size += kn + vn;
                     entries.push((k, v, km));
                 }
+
                 self.depth -= 1;
                 let v = if entries.iter().all(|(k, _, _)| matches!(k, Value::String(_))) {
                     let mut r = Record::new();
@@ -282,10 +298,12 @@ impl<'a> Loader<'a> {
                             return Err(err_at(&km, format!("duplicate key {k:?}")));
                         }
                     }
+
                     Value::Record(r)
                 } else {
                     Value::map(entries.into_iter().map(|(k, v, _)| (k, v)).collect()).map_err(|e| err_at(&m, e))?
                 };
+
                 self.remember(anchor, &v, size);
                 Ok((v, size))
             }
@@ -300,6 +318,7 @@ fn scalar(text: String, style: TScalarStyle, tag: TagKind) -> Result<Value, Stri
         TagKind::NonSpecific | TagKind::None => return Ok(Value::String(text)),
         TagKind::Core(c) => c,
     };
+
     let bad = || format!("{text:?} is not a valid !!{core}");
     match core.as_str() {
         "str" => Ok(Value::String(text)),
@@ -339,18 +358,23 @@ fn parse_int(s: &str) -> Result<Option<i128>, String> {
         if digits.is_empty() || !digits.chars().all(|c| c.is_digit(r)) {
             return Ok(None);
         }
+
         i128::from_str_radix(digits, r).map(Some).map_err(|_| range())
     };
+
     if let Some(d) = s.strip_prefix("0o") {
         return radix(d, 8);
     }
+
     if let Some(d) = s.strip_prefix("0x") {
         return radix(d, 16);
     }
+
     let digits = s.strip_prefix(['-', '+']).unwrap_or(s);
     if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) || (digits.len() > 1 && digits.starts_with('0')) {
         return Ok(None);
     }
+
     s.parse::<i128>().map(Some).map_err(|_| range())
 }
 
@@ -362,9 +386,11 @@ fn parse_float(s: &str, allow_int: bool) -> Result<Option<f64>, String> {
     if matches!(unsigned, ".inf" | ".Inf" | ".INF") {
         return Ok(Some(if s.starts_with('-') { f64::NEG_INFINITY } else { f64::INFINITY }));
     }
+
     if matches!(s, ".nan" | ".NaN" | ".NAN") {
         return Ok(Some(f64::NAN));
     }
+
     let b = unsigned.as_bytes();
     let digits = |j: &mut usize| {
         let st = *j;
@@ -373,11 +399,13 @@ fn parse_float(s: &str, allow_int: bool) -> Result<Option<f64>, String> {
         }
         *j - st
     };
+
     let mut j = 0;
     let int_digits = digits(&mut j);
     if int_digits > 1 && b[0] == b'0' {
         return Ok(None); // leading zero: ambiguous between YAML 1.1 and 1.2
     }
+
     let mut fractional = false;
     if b.get(j) == Some(&b'.') {
         j += 1;
@@ -388,23 +416,28 @@ fn parse_float(s: &str, allow_int: bool) -> Result<Option<f64>, String> {
     } else if int_digits == 0 {
         return Ok(None);
     }
+
     if matches!(b.get(j), Some(b'e' | b'E')) {
         j += 1;
         fractional = true;
         if matches!(b.get(j), Some(b'+' | b'-')) {
             j += 1;
         }
+
         if digits(&mut j) == 0 {
             return Ok(None);
         }
     }
+
     if j != b.len() || !(fractional || allow_int) {
         return Ok(None);
     }
+
     let f: f64 = s.parse().map_err(|_| format!("invalid float {s}"))?;
     if f.is_infinite() {
         return Err(format!("float {s} overflows binary64"));
     }
+
     Ok(Some(f))
 }
 
@@ -413,15 +446,19 @@ fn resolve_plain(s: &str) -> Result<Value, String> {
     if is_null(s) {
         return Ok(Value::Null);
     }
+
     if let Some(b) = parse_bool(s) {
         return Ok(Value::Bool(b));
     }
+
     if let Some(i) = parse_int(s)? {
         return Ok(Value::Int(i));
     }
+
     if let Some(f) = parse_float(s, false)? {
         return Ok(Value::Float(f));
     }
+
     Ok(Value::String(s.to_owned()))
 }
 
@@ -463,6 +500,7 @@ fn double_quoted(s: &str) -> String {
             c => out.push(c),
         }
     }
+
     out.push('"');
     out
 }
@@ -482,6 +520,7 @@ pub fn to_string(v: &Value) -> (String, Vec<Warning>) {
         out: String::new(),
         rep: Reporter::default(),
     };
+
     w.node(v, 0, Pos::Top);
     (w.out, w.rep.warnings)
 }
@@ -518,6 +557,7 @@ impl Writer {
         if pos == Pos::AfterKey {
             self.out.push(' ');
         }
+
         self.out.push_str(text);
         self.out.push('\n');
     }
@@ -533,6 +573,7 @@ impl Writer {
         } else {
             self.out.push_str(&text);
         }
+
         self.out.push(':');
     }
 
@@ -544,14 +585,17 @@ impl Writer {
                     Value::Set(_) => self.rep.warn("set written as a sequence"),
                     _ => {}
                 }
+
                 if l.is_empty() {
                     return self.inline("[]", pos);
                 }
+
                 self.open_block(indent, pos);
                 for (i, e) in l.iter().enumerate() {
                     if i > 0 {
                         self.pad(indent);
                     }
+
                     self.out.push_str("- ");
                     self.indexed(i, |w| w.node(e, indent + 2, Pos::Inline));
                 }
@@ -560,11 +604,13 @@ impl Writer {
                 if r.is_empty() {
                     return self.inline("{}", pos);
                 }
+
                 self.open_block(indent, pos);
                 for (i, (k, e)) in r.iter().enumerate() {
                     if i > 0 {
                         self.pad(indent);
                     }
+
                     self.key(k, indent);
                     self.field_node(k, e, indent);
                 }
@@ -573,14 +619,17 @@ impl Writer {
                 if m.iter().all(|(k, _)| matches!(k, Value::String(_))) {
                     self.rep.warn("map with only string keys written as a mapping (reads back as a record)");
                 }
+
                 if m.is_empty() {
                     return self.inline("{}", pos);
                 }
+
                 self.open_block(indent, pos);
                 for (i, (k, e)) in m.iter().enumerate() {
                     if i > 0 {
                         self.pad(indent);
                     }
+
                     self.indexed(i, |w| w.entry(k, e, indent));
                 }
             }
@@ -623,6 +672,7 @@ impl Writer {
             Value::Variant(_, Some(_)) => true,
             _ => false,
         };
+
         if block_key {
             self.out.push_str("? ");
             self.node(k, indent + 2, Pos::Inline);
@@ -633,10 +683,12 @@ impl Writer {
                 self.out.push(':');
                 return self.node(e, indent + 2, Pos::AfterKey);
             }
+
             self.out.push_str("? ");
             self.out.push_str(&text);
             self.out.push('\n');
         }
+
         self.pad(indent);
         self.out.push_str(": ");
         self.node(e, indent + 2, Pos::Inline);
@@ -676,12 +728,14 @@ impl Writer {
                 self.rep.warn("unit variant written as a string");
                 string_scalar(t)
             }
+
             // Empty collections (non-empty ones are handled as blocks).
             Value::List(_) | Value::Tuple(_) | Value::Set(_) | Value::Record(_) | Value::Map(_) | Value::Variant(_, Some(_)) => {
                 let mut w = Writer {
                     out: String::new(),
                     rep: std::mem::take(&mut self.rep),
                 };
+
                 w.node(v, 0, Pos::Top);
                 self.rep = w.rep;
                 w.out.trim_end().to_owned()

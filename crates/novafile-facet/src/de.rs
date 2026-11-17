@@ -72,12 +72,15 @@ fn fill_as(wip: P, v: Value, key: bool) -> R {
     if let Plan::FieldProxy = plan {
         return fill_as(wip.begin_custom_deserialization()?, v, key)?.end().map_err(Into::into);
     }
+
     if is_nova_kind(shape) {
         return nova_kind(wip, v);
     }
+
     if shape.builder_shape.is_some() {
         return fill_as(wip.begin_inner()?, v, key)?.end().map_err(Into::into);
     }
+
     match plan {
         Plan::FieldProxy => unreachable!(),
         Plan::ContainerProxy => {
@@ -213,6 +216,7 @@ fn scalar(wip: P, st: Option<ScalarType>, v: Value, key: bool) -> R {
         (true, Some(S::Bool), Value::String(s)) => s.parse().map(Value::Bool).unwrap_or(Value::String(s)),
         (_, _, v) => v,
     };
+
     Ok(match (st, v) {
         (Some(S::Unit), Value::Null) => wip.set(())?,
         (Some(S::Bool), Value::Bool(b)) => wip.set(b)?,
@@ -252,6 +256,7 @@ fn pointer(wip: P, v: Value) -> R {
     let Def::Pointer(pd) = shape.def else {
         return Err(Error::new(format!("{shape} is not a pointer")));
     };
+
     match pd.known {
         Some(KnownPointer::Cow) => {
             if pd.pointee().is_some_and(|p| p.id == str::SHAPE.id) {
@@ -260,6 +265,7 @@ fn pointer(wip: P, v: Value) -> R {
                     v => Err(invalid(&v, "a string")),
                 };
             }
+
             Ok(fill(wip.begin_inner()?, v)?.end()?)
         }
         Some(KnownPointer::SharedReference | KnownPointer::ExclusiveReference) => {
@@ -272,6 +278,7 @@ fn pointer(wip: P, v: Value) -> R {
             } else {
                 fill(wip, v)?
             };
+
             Ok(wip.end()?)
         }
     }
@@ -292,6 +299,7 @@ fn items(mut wip: P, v: Value, begin: fn(P) -> Result<P, facet_reflect::ReflectE
     for (i, item) in seq(v, wip.shape())?.into_iter().enumerate() {
         wip = fill(begin(wip)?, item).map_err(|e| e.at_index(i))?.end()?;
     }
+
     Ok(wip)
 }
 
@@ -300,12 +308,15 @@ fn list(wip: P, v: Value) -> R {
         if wip.shape().id == <Vec<u8>>::SHAPE.id {
             return Ok(wip.set(b)?);
         }
+
         return items(wip.init_list()?, Value::Bytes(b), P::begin_list_item);
     }
+
     let n = match &v {
         Value::List(l) | Value::Tuple(l) | Value::Set(l) => l.len(),
         _ => 0,
     };
+
     items(wip.init_list_with_capacity(n)?, v, P::begin_list_item)
 }
 
@@ -318,10 +329,12 @@ fn array(wip: P, n: usize, v: Value) -> R {
     if l.len() != n {
         return Err(Error::new(format!("invalid length {}, expected an array of length {n}", l.len())));
     }
+
     let mut wip = wip.init_array()?;
     for (i, item) in l.into_iter().enumerate() {
         wip = fill(wip.begin_nth_field(i)?, item).map_err(|e| e.at_index(i))?.end()?;
     }
+
     Ok(wip)
 }
 
@@ -331,15 +344,18 @@ fn map(wip: P, v: Value) -> R {
         Value::Map(m) => m,
         v => return Err(invalid(&v, wip.shape())),
     };
+
     let mut wip = wip.init_map()?;
     for (k, v) in entries {
         let seg = match &k {
             Value::String(s) => novafile_text::key_text(s),
             other => format!("[{}]", novafile_text::flow_string(other)),
         };
+
         wip = fill_as(wip.begin_key()?, k, true)?.end()?;
         wip = fill(wip.begin_value()?, v).map_err(|e| e.at(seg))?.end()?;
     }
+
     Ok(wip)
 }
 
@@ -350,6 +366,7 @@ fn result(wip: P, v: Value) -> R {
         "Err" => wip.begin_err()?,
         _ => return Err(Error::new(format!("unknown variant `{tag}`, expected `Ok` or `Err`"))),
     };
+
     Ok(fill(wip, payload.unwrap_or(Value::Null)).map_err(|e| e.at(tag))?.end()?)
 }
 
@@ -360,6 +377,7 @@ fn structure(wip: P, v: Value) -> R {
     let Type::User(UserType::Struct(st)) = shape.ty else {
         return Err(Error::new(format!("cannot deserialize {shape}: not a struct")));
     };
+
     match st.kind {
         StructKind::Unit => match v {
             Value::Null => Ok(wip),
@@ -377,6 +395,7 @@ fn structure(wip: P, v: Value) -> R {
                 Value::Tuple(l) | Value::List(l) => l,
                 v => return Err(invalid(&v, shape)),
             };
+
             positional(wip, st.fields.len(), l)
         }
     }
@@ -386,9 +405,11 @@ fn positional(mut wip: P, n: usize, l: Vec<Value>) -> R {
     if l.len() != n {
         return Err(Error::new(format!("invalid length {}, expected a tuple of size {n}", l.len())));
     }
+
     for (i, item) in l.into_iter().enumerate() {
         wip = fill(wip.begin_nth_field(i)?, item).map_err(|e| e.at_index(i))?.end()?;
     }
+
     Ok(wip)
 }
 
@@ -427,6 +448,7 @@ fn fields(mut wip: P, fields: &'static [Field], r: Record, deny: bool) -> R {
             None => rest.push((k, v)),
         }
     }
+
     // Flattened structs take the keys they know; a flattened map takes the rest.
     let flat: Vec<usize> = (0..fields.len()).filter(|&i| fields[i].is_flattened()).collect();
     let mut map_field = None;
@@ -436,18 +458,22 @@ fn fields(mut wip: P, fields: &'static [Field], r: Record, deny: bool) -> R {
             map_field = Some(i);
             continue;
         }
+
         let (mine, others): (Vec<_>, Vec<_>) = rest.into_iter().partition(|(k, _)| knows(shape, k));
         rest = others;
         if mine.is_empty() && matches!(shape.def, Def::Option(_)) {
             continue;
         }
+
         let rec = Record::from_entries(mine).map_err(|e| Error::new(e.to_string()))?;
         wip = fill(wip.begin_nth_field(i)?, Value::Record(rec))?.end()?;
     }
+
     if let Some(i) = map_field {
         let rec = Record::from_entries(std::mem::take(&mut rest)).map_err(|e| Error::new(e.to_string()))?;
         wip = fill(wip.begin_nth_field(i)?, Value::Record(rec))?.end()?;
     }
+
     if deny && let Some((k, _)) = rest.first() {
         let expected: Vec<String> = fields
             .iter()
@@ -456,6 +482,7 @@ fn fields(mut wip: P, fields: &'static [Field], r: Record, deny: bool) -> R {
             .collect();
         return Err(Error::new(format!("unknown field `{k}`, expected one of {}", expected.join(", "))));
     }
+
     // Missing fields without a default are an error here rather than at build time.
     #[expect(
         clippy::redundant_closure_for_method_calls,
@@ -465,11 +492,13 @@ fn fields(mut wip: P, fields: &'static [Field], r: Record, deny: bool) -> R {
         Some(plans) => plans.iter().map(|p| p.is_required()).collect(),
         None => vec![false; fields.len()],
     };
+
     for (i, f) in fields.iter().enumerate() {
         if required.get(i).copied().unwrap_or(false) && !wip.is_field_set(i)? {
             return Err(Error::new(format!("missing field `{}`", f.effective_name())));
         }
     }
+
     Ok(wip)
 }
 
@@ -506,6 +535,7 @@ fn enumeration(wip: P, v: Value) -> R {
     let Type::User(UserType::Enum(et)) = shape.ty else {
         return Err(Error::new(format!("cannot deserialize {shape}: not an enum")));
     };
+
     if shape.is_numeric() {
         return match v {
             Value::Int(i) => {
@@ -515,25 +545,30 @@ fn enumeration(wip: P, v: Value) -> R {
             v => Err(invalid(&v, format_args!("enum {shape}"))),
         };
     }
+
     if shape.is_untagged() {
         return untagged(wip, et.variants, &v);
     }
+
     if let Some(t) = shape.get_tag_attr() {
         let content = shape.get_content_attr();
         let Value::Record(mut r) = v else {
             return Err(invalid(&v, format_args!("enum {shape}")));
         };
+
         let tag = match r.remove(t) {
             Some(Value::String(s) | Value::Variant(s, None)) => s,
             Some(other) => return Err(invalid(&other, "a variant tag").at_field(t)),
             None => return Err(Error::new(format!("missing field `{t}`"))),
         };
+
         let (wip, variant) = select(wip, et.variants, &tag)?;
         let payload = match content {
             Some(c) => r.remove(c),
             None if variant.data.kind == StructKind::Unit => None,
             None => Some(Value::Record(r)),
         };
+
         payload_into(wip, variant, payload)
     } else {
         let (tag, payload) = external_tag(v, shape)?;
@@ -575,6 +610,7 @@ fn untagged(wip: P, variants: &'static [Variant], v: &Value) -> R {
             (StructKind::Unit, _) => continue,
             _ => Some(v.clone()),
         };
+
         // SAFETY: `shape` is the shape of the enum this `Partial` is building,
         // i.e. the `SHAPE` of a real Rust type implementing `Facet`.
         let scratch = unsafe { Partial::alloc_shape_owned(shape) };
@@ -588,5 +624,6 @@ fn untagged(wip: P, variants: &'static [Variant], v: &Value) -> R {
             return payload_into(wip.select_nth_variant(i)?, variant, payload);
         }
     }
+
     Err(Error::new(format!("data did not match any variant of untagged enum {shape}")))
 }

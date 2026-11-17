@@ -128,6 +128,7 @@ fn round_trips_text_binary_and_value() {
         let t = to_string_with(&s, p).unwrap();
         assert_eq!(from_str::<Infra>(&t).unwrap_or_else(|e| panic!("{e}\n{t}")), s, "{t}");
     }
+
     assert_eq!(from_slice::<Infra>(&to_vec(&s).unwrap()).unwrap(), s);
     assert_eq!(from_value::<Infra>(to_value(&s).unwrap()).unwrap(), s);
 }
@@ -181,6 +182,7 @@ fn agrees_with_nova_serde() {
         cow: Cow<'static, str>,
         array: [i32; 3],
     }
+
     #[derive(Facet, Serialize, Debug)]
     struct Unit;
     #[derive(Facet, Serialize, Debug)]
@@ -208,6 +210,7 @@ fn agrees_with_nova_serde() {
         cow: Cow::Borrowed("c"),
         array: [1, 2, 3],
     };
+
     let mut via_serde = novafile_serde::to_value(&v).unwrap();
     // serde writes arrays as tuples; facet (and this binding) treat them as lists.
     via_serde.as_record_mut().unwrap().set("array", flow("[1, 2, 3]"));
@@ -226,6 +229,7 @@ fn the_rust_type_acts_as_a_schema() {
         span: Duration,
         timeout: std::time::Duration,
     }
+
     let t: T = from_str("at: 2026-11-17T16:00:00Z\nprice: 12.50\nstatus: Active\nratio: 3\nspan: 90m\ntimeout: 2s\n").unwrap();
     assert_eq!(t.at.to_string(), "2026-11-17T16:00:00Z");
     assert_eq!(t.price.to_string(), "12.5");
@@ -309,6 +313,7 @@ fn collections_and_wrappers() {
         #[allow(dead_code)]
         s: &'a str,
     }
+
     #[derive(Facet, Debug, PartialEq)]
     struct C {
         bytes: Vec<u8>,
@@ -319,6 +324,7 @@ fn collections_and_wrappers() {
         maybe: Option<Box<C>>,
         cow: Cow<'static, str>,
     }
+
     let c = C {
         bytes: vec![0, 255],
         fixed: [1, 2],
@@ -328,6 +334,7 @@ fn collections_and_wrappers() {
         maybe: None,
         cow: "c".into(),
     };
+
     let v = to_value(&c).unwrap();
     assert_eq!(v.as_record().unwrap().get("bytes"), Some(&Value::Bytes(vec![0, 255])));
     assert_eq!(v.as_record().unwrap().get("fixed"), Some(&Value::Bytes(vec![1, 2])));
@@ -362,6 +369,7 @@ fn attributes() {
         mode: Mode,
         port: Port,
     }
+
     #[derive(Facet, Debug, PartialEq)]
     #[repr(C)]
     #[facet(rename_all = "snake_case")]
@@ -370,6 +378,7 @@ fn attributes() {
         #[facet(rename = "rw")]
         ReadWrite,
     }
+
     #[derive(Facet, Debug, PartialEq)]
     #[facet(transparent)]
     struct Port(u16);
@@ -383,6 +392,7 @@ fn attributes() {
         mode: Mode::ReadWrite,
         port: Port(80),
     };
+
     let v = to_value(&c).unwrap();
     assert_eq!(v, flow("{ID: 1, max-connections: 10, timeout-secs: 5, name: null, mode: !rw, port: 80}"));
     let back: Config = from_str("ID: 1\nmax-connections: 10\nnick: bob\nmode: read_only\nport: 80\n").unwrap();
@@ -416,6 +426,7 @@ fn catch_all_and_numeric_enums() {
         Ok = 0,
         NotFound = 4,
     }
+
     #[derive(Facet, Debug, PartialEq)]
     #[repr(u8)]
     enum Level {
@@ -424,6 +435,7 @@ fn catch_all_and_numeric_enums() {
         #[facet(other)]
         Unknown,
     }
+
     assert_eq!(
         from_value::<Vec<Level>>(flow("[Low, !High, Medium]")).unwrap(),
         [Level::Low, Level::High, Level::Unknown]
@@ -439,6 +451,7 @@ fn flatten() {
         owner: String,
         team: Option<String>,
     }
+
     #[derive(Facet, Debug, PartialEq)]
     struct Doc {
         id: u8,
@@ -447,6 +460,7 @@ fn flatten() {
         #[facet(flatten)]
         rest: BTreeMap<String, i64>,
     }
+
     let d = Doc {
         id: 1,
         meta: Meta {
@@ -455,6 +469,7 @@ fn flatten() {
         },
         rest: [("x".to_string(), 1)].into(),
     };
+
     let v = to_value(&d).unwrap();
     assert_eq!(v, flow("{id: 1, owner: ops, team: core, x: 1}"));
     assert_eq!(from_value::<Doc>(v).unwrap(), d);
@@ -470,6 +485,7 @@ fn internally_adjacently_tagged_and_untagged_enums() {
         Circle { r: f64 },
         Square { side: f64 },
     }
+
     #[derive(Facet, Serialize, Deserialize, Debug, PartialEq)]
     #[serde(untagged)]
     #[facet(untagged)]
@@ -479,6 +495,7 @@ fn internally_adjacently_tagged_and_untagged_enums() {
         S(String),
         P { x: i8, y: i8 },
     }
+
     #[derive(Facet, Serialize, Deserialize, Debug, PartialEq)]
     #[serde(tag = "t", content = "c")]
     #[facet(tag = "t", content = "c")]
@@ -487,6 +504,7 @@ fn internally_adjacently_tagged_and_untagged_enums() {
         Ping,
         Say(String),
     }
+
     let shapes = vec![Shape::Circle { r: 1.5 }, Shape::Square { side: 2.0 }];
     let t = to_string_with(&shapes, Profile::Compact).unwrap();
     assert_eq!(t, "[2]{kind,r,side}:\n  Circle,1.5,\n  Square,,2.0\n");
@@ -516,6 +534,7 @@ fn proxies() {
         #[facet(proxy = HexText)]
         n: u32,
     }
+
     #[derive(Facet)]
     #[facet(transparent)]
     struct HexText(String);
@@ -525,11 +544,13 @@ fn proxies() {
             u32::from_str_radix(&h.0, 16)
         }
     }
+
     impl From<&u32> for HexText {
         fn from(n: &u32) -> Self {
             HexText(format!("{n:x}"))
         }
     }
+
     let h = Hex { n: 255 };
     assert_eq!(to_value(&h).unwrap(), flow("{n: ff}"));
     assert_eq!(from_value::<Hex>(flow("{n: ff}")).unwrap(), h);

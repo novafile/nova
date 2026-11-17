@@ -80,6 +80,7 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
         Json::Bool(false) => return Err(Error::InvalidJsonSchema("the root schema is `false`, which matches nothing".into())),
         other => return Err(Error::InvalidJsonSchema(format!("expected an object or boolean, found {other}"))),
     };
+
     let mut c = Conv {
         doc: json,
         names: HashMap::new(),
@@ -89,6 +90,7 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
         root_name: String::new(),
         depth: 0,
     };
+
     let mut schema = Schema::default();
     let (n, v) = schema_ref(json, name, version, &mut c.warnings)?;
     schema.name = n;
@@ -129,10 +131,12 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
         let d = c.def_of(&Json::Object(root_obj.clone()), "#", &n);
         c.defs.push((n, d));
     }
+
     for (pointer, nova, s) in def_list {
         let d = c.def_of(s, &pointer, &nova);
         c.defs.push((nova, d));
     }
+
     schema.defs = std::mem::take(&mut c.defs);
     // Canonical order (spec §6.6), so the result does not depend on traversal order.
     schema.defs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -152,11 +156,14 @@ fn schema_ref(json: &Json, name: Option<&str>, version: Option<&str>, warnings: 
             Version::parse(v).map_err(Error::InvalidVersion)?;
             warnings.push("#: a version without a schema name is ignored; the schema is anonymous".into());
         }
+
         return Ok((None, None));
     };
+
     if !novafile_schema::valid_schema_name(&name) {
         return Err(Error::InvalidName(name));
     }
+
     let version = match (version, from_doc) {
         (Some(v), _) => Version::parse(v).map_err(Error::InvalidVersion)?,
         (None, Some((_, v))) => v,
@@ -165,6 +172,7 @@ fn schema_ref(json: &Json, name: Option<&str>, version: Option<&str>, warnings: 
             Version::new(0, 1, 0)
         }
     };
+
     Ok((Some(name), Some(version)))
 }
 
@@ -204,6 +212,7 @@ impl Conv<'_> {
             n = format!("{base}{i}");
             i += 1;
         }
+
         self.used.insert(n.clone());
         n
     }
@@ -220,6 +229,7 @@ impl Conv<'_> {
                 }
             }
         }
+
         Def::Alias(self.ty(s, at, &format!("{name}Inner")))
     }
 
@@ -231,6 +241,7 @@ impl Conv<'_> {
             Shape::Enum => Def::Enum(self.enum_variants(o, at, &name)),
             Shape::Other => unreachable!("new_def is only called for record and enum shapes"),
         };
+
         self.defs.push((name.clone(), d));
         TypeRef::new(TypeKind::Named(name))
     }
@@ -252,6 +263,7 @@ impl Conv<'_> {
                 }
             }
         }
+
         out
     }
 
@@ -259,6 +271,7 @@ impl Conv<'_> {
         if let Some((tag, alts)) = tagged_alternatives(o) {
             return self.tagged_record(o, &tag, &alts, at, name);
         }
+
         let empty = Obj::new();
         let props = o.get("properties").and_then(Json::as_object).unwrap_or(&empty);
         let required: Vec<&str> = o
@@ -277,15 +290,18 @@ impl Conv<'_> {
                 }
             }
         }
+
         if o.contains_key("patternProperties") {
             open = true;
             self.warn(at, "patternProperties are not enforced; the record is @open");
         }
+
         for k in ["minProperties", "maxProperties", "propertyNames"] {
             if o.contains_key(k) {
                 self.warn(at, format!("{k} on a record is not enforced"));
             }
         }
+
         self.unsupported(
             o,
             at,
@@ -307,6 +323,7 @@ impl Conv<'_> {
         if let Some(Json::Array(a)) = o.get("x-nova-order") {
             order.extend(a.iter().filter_map(Json::as_str).map(str::to_owned));
         }
+
         order.extend(required.iter().map(|s| (*s).to_owned()));
         order.extend(props.keys().cloned());
         let mut seen = HashSet::new();
@@ -324,6 +341,7 @@ impl Conv<'_> {
                 open = true;
                 continue;
             }
+
             let fs = props.get(&fname).unwrap_or(&Json::Bool(true));
             let ty = self.ty(fs, &fat, &format!("{name}{}", pascal(&fname)));
             let meta = |k: &str| fs.as_object().and_then(|o| o.get(k));
@@ -336,18 +354,21 @@ impl Conv<'_> {
                 id: None,
                 deprecated: meta("deprecated") == Some(&Json::Bool(true)),
             };
+
             if let Some(d) = meta("default") {
                 match novafile_json::from_json_str(&d.to_string()) {
                     Ok(v) => f.default = Some(v),
                     Err(e) => self.warn(&fat, format!("default dropped: {e}")),
                 }
             }
+
             if let Some(id) = meta("x-nova-id") {
                 match id.as_u64().and_then(|n| u32::try_from(n).ok()) {
                     Some(n) if ids.insert(n) => f.id = Some(n),
                     _ => self.warn(&fat, format!("x-nova-id {id} dropped (not a unique u32)")),
                 }
             }
+
             if meta("x-nova-key") == Some(&Json::Bool(true)) {
                 if f.optional || f.ty.nullable {
                     self.warn(&fat, "x-nova-key dropped: key fields must be required and non-null");
@@ -355,8 +376,10 @@ impl Conv<'_> {
                     f.key = true;
                 }
             }
+
             fields.push(f);
         }
+
         RecordDef { fields, open }
     }
 
@@ -381,19 +404,23 @@ impl Conv<'_> {
             id: None,
             deprecated: false,
         };
+
         let mut fields = vec![field(tag, TypeRef::new(TypeKind::String), false)];
         let mut open = false;
         for (i, a) in alts {
             if !matches!(a.get("additionalProperties"), None | Some(Json::Bool(false))) {
                 open = true;
             }
+
             let Some(props) = a.get("properties").and_then(Json::as_object) else {
                 continue;
             };
+
             for (k, s) in props {
                 if k == tag {
                     continue;
                 }
+
                 let fat = format!("{at}/{key}/{i}/properties/{}", escape_pointer(k));
                 if !valid_name(k) {
                     self.warn(
@@ -403,12 +430,14 @@ impl Conv<'_> {
                     open = true;
                     continue;
                 }
+
                 let ty = self.ty(s, &fat, &format!("{name}{}", pascal(k)));
                 match fields.iter_mut().find(|f| f.name == *k) {
                     Some(f) if f.ty != ty => {
                         if !matches!(f.ty.kind, TypeKind::Any) {
                             self.warn(&fat, format!("field {k:?} has different types in different variants; using any"));
                         }
+
                         f.ty = TypeRef::new(TypeKind::Any);
                     }
                     Some(_) => {}
@@ -416,6 +445,7 @@ impl Conv<'_> {
                 }
             }
         }
+
         RecordDef { fields, open }
     }
 
@@ -427,11 +457,13 @@ impl Conv<'_> {
             if handled.contains(&k) || ANNOTATIONS.contains(&k) || (k.starts_with("x-") && !k.starts_with("x-nova-")) {
                 continue;
             }
+
             let what = match k {
                 "const" | "pattern" | "multipleOf" | "format" | "propertyNames" | "uniqueItems" => "is not enforced",
                 _ if HANDLED.contains(&k) => "does not apply here and was dropped",
                 _ => "is not supported and was dropped",
             };
+
             self.warn(at, format!("{k} {what}"));
         }
     }
@@ -444,6 +476,7 @@ impl Conv<'_> {
         if t.constraints == Constraints::default() {
             return t;
         }
+
         let name = self.fresh(hint);
         let nullable = t.nullable;
         let mut alias = t;
@@ -482,6 +515,7 @@ impl Conv<'_> {
                 }
             }
         };
+
         self.depth -= 1;
         t
     }
@@ -496,37 +530,45 @@ impl Conv<'_> {
             self.constraints(&mut t, o, at);
             return t;
         }
+
         match shape(o) {
             Shape::Record | Shape::Enum => return self.new_def(o, at, hint),
             Shape::Other => {}
         }
+
         // NOVA kind markers (before combinators: a string-keyed map is an `anyOf`).
         if let Some(k) = o.get("x-nova-kind").and_then(Json::as_str) {
             if let Some(t) = self.nova_kind(k, o, at, hint) {
                 return t;
             }
+
             self.warn(at, format!("unknown or malformed x-nova-kind {k:?} ignored"));
         }
+
         // Combinators.
         if let Some(Json::Array(all)) = o.get("allOf") {
             if all.len() == 1 && only(&["allOf"]) {
                 return self.ty(&all[0], &format!("{at}/allOf/0"), hint);
             }
+
             self.warn(at, "allOf with several schemas (or with sibling keywords) is not supported; using any");
             return any();
         }
+
         for key in ["oneOf", "anyOf"] {
             let Some(Json::Array(alts)) = o.get(key) else { continue };
             let alts: Vec<(usize, &Json)> = alts.iter().enumerate().filter(|(_, a)| !is_null_schema(a)).collect();
             if alts.len() == 1 && only(&[key]) {
                 return self.ty(alts[0].1, &format!("{at}/{key}/{}", alts[0].0), hint);
             }
+
             self.warn(
                 at,
                 format!("{key} that is not a serde externally tagged enum (e.g. an untagged enum) mapped to any"),
             );
             return any();
         }
+
         // Non-variant enums and constants keep their base type.
         if let Some(Json::Array(vals)) = o.get("enum") {
             self.warn(
@@ -536,6 +578,7 @@ impl Conv<'_> {
             let ty = o.get("type").cloned().or_else(|| type_of_values(vals));
             return self.typed(o, ty.as_ref(), at, hint, &["enum"]);
         }
+
         let ty = o
             .get("type")
             .cloned()
@@ -568,6 +611,7 @@ impl Conv<'_> {
                 return any();
             }
         };
+
         let mut handled: Vec<&str> = handled.to_vec();
         handled.push("type");
         let mut t = match name.as_str() {
@@ -584,6 +628,7 @@ impl Conv<'_> {
                 if matches!(o.get("format").and_then(Json::as_str), Some("float" | "double")) {
                     handled.push("format");
                 }
+
                 TypeRef::new(TypeKind::Float)
             }
             "string" => {
@@ -603,6 +648,7 @@ impl Conv<'_> {
                 return any();
             }
         };
+
         self.unsupported(o, at, &handled);
         self.constraints(&mut t, o, at);
         t
@@ -613,13 +659,16 @@ impl Conv<'_> {
         if r == "#" && !self.root_name.is_empty() {
             return TypeRef::new(TypeKind::Named(self.root_name.clone()));
         }
+
         if let Some(n) = self.names.get(&r) {
             return TypeRef::new(TypeKind::Named(n.clone()));
         }
+
         if let Some(target) = r.strip_prefix('#').and_then(|p| self.doc.pointer(p)) {
             let target = target.clone();
             return self.ty(&target, &r, hint);
         }
+
         self.warn(at, format!("$ref {r:?} cannot be resolved (only local references are supported); using any"));
         any()
     }
@@ -645,26 +694,31 @@ impl Conv<'_> {
                         Some(v) => self.nested(v, &format!("{at}/additionalProperties"), &format!("{hint}Value")),
                         None => any(),
                     };
+
                     let kt = match obj.get("propertyNames") {
                         Some(k) => self.nested(k, &format!("{at}/propertyNames"), &format!("{hint}Key")),
                         None => TypeRef::new(TypeKind::String),
                     };
+
                     TypeRef::new(TypeKind::Map(Box::new(kt), Box::new(vt)))
                 } else {
                     let pair = o.get("items").and_then(Json::as_object)?;
                     let [k, v] = pair.get("prefixItems").and_then(Json::as_array)?.as_slice() else {
                         return None;
                     };
+
                     let kt = self.nested(k, &format!("{at}/items/prefixItems/0"), &format!("{hint}Key"));
                     let vt = self.nested(v, &format!("{at}/items/prefixItems/1"), &format!("{hint}Value"));
                     TypeRef::new(TypeKind::Map(Box::new(kt), Box::new(vt)))
                 };
+
                 len(&mut t, o, "minItems", "maxItems");
                 len(&mut t, o, "minProperties", "maxProperties");
                 return Some(t);
             }
             _ => return None,
         };
+
         let mut t = TypeRef::new(kind);
         // `minimum`/`maximum` only constrain the numeric form of a float.
         self.constraints(&mut t, o, at);
@@ -688,6 +742,7 @@ impl Conv<'_> {
         if let (Some(f), None) = (format, from_format) {
             self.warn(at, format!("integer format {f:?} is not enforced"));
         }
+
         let lo = int_bound(o, "minimum", "exclusiveMinimum", true);
         let hi = int_bound(o, "maximum", "exclusiveMaximum", false);
         let kind = from_format.unwrap_or_else(|| {
@@ -711,9 +766,11 @@ impl Conv<'_> {
         if !(redundant(lo, klo) && redundant(hi, khi)) {
             t.constraints.range = Some((lo.map(Num::int), hi.map(Num::int)));
         }
+
         if let Some(r) = o.get("x-nova-range").and_then(Json::as_str) {
             self.nova_range(&mut t, r, at);
         }
+
         t
     }
 
@@ -726,18 +783,23 @@ impl Conv<'_> {
             (Some("duration"), _) => TypeKind::Duration,
             _ => TypeKind::String,
         };
+
         if let Some(e) = encoding.filter(|e| *e != "base64") {
             self.warn(at, format!("contentEncoding {e:?} is not supported; using string"));
         }
+
         if let Some(f) = format.filter(|f| !matches!(*f, "date-time" | "duration")) {
             self.warn(at, format!("format {f:?} is not enforced"));
         }
+
         if o.contains_key("pattern") {
             self.warn(at, "pattern is not enforced");
         }
+
         if let Some(v) = o.get("const") {
             self.warn(at, format!("const {v} is not enforced"));
         }
+
         TypeRef::new(kind)
     }
 
@@ -750,6 +812,7 @@ impl Conv<'_> {
             (_, Some(Json::Array(p))) => (Some(p), "items", o.get("additionalItems")),
             _ => (None, "", None),
         };
+
         if let Some(p) = prefix {
             let n = p.len() as u64;
             let fixed = rest == Some(&Json::Bool(false)) || max == Some(n);
@@ -757,6 +820,7 @@ impl Conv<'_> {
                 if min.unwrap_or(0) < n {
                     self.warn(at, format!("{key} allows arrays shorter than {n}; the NOVA tuple requires all {n} elements"));
                 }
+
                 let ts = p
                     .iter()
                     .enumerate()
@@ -764,18 +828,22 @@ impl Conv<'_> {
                     .collect();
                 return TypeRef::new(TypeKind::Tuple(ts));
             }
+
             self.warn(at, format!("{key} without a fixed length mapped to list<any>"));
             return TypeRef::new(TypeKind::List(Box::new(any())));
         }
+
         let item = match o.get("items") {
             Some(s) => self.nested(s, &format!("{at}/items"), &format!("{hint}Item")),
             None => any(),
         };
+
         let mut t = if o.get("uniqueItems") == Some(&Json::Bool(true)) {
             TypeRef::new(TypeKind::Set(Box::new(item)))
         } else {
             TypeRef::new(TypeKind::List(Box::new(item)))
         };
+
         len(&mut t, o, "minItems", "maxItems");
         t
     }
@@ -791,6 +859,7 @@ impl Conv<'_> {
                 } else {
                     self.warn(at, format!("patternProperties pattern {pat:?} is not enforced on keys"));
                 }
+
                 value = self.nested(s, &format!("{at}/patternProperties/{}", escape_pointer(pat)), &format!("{hint}Value"));
             }
             (_, Some(_)) => self.warn(at, "patternProperties are not supported; using map<string, any>"),
@@ -798,16 +867,19 @@ impl Conv<'_> {
             (Some(Json::Bool(false)), None) => self.warn(at, "an object that allows no properties mapped to map<string, any>"),
             _ => {}
         }
+
         if let Some(pn) = o.get("propertyNames") {
             let mut pn = pn.clone();
             if let Some(p) = pn.as_object_mut() {
                 p.entry("type").or_insert_with(|| "string".into());
             }
+
             let k = self.nested(&pn, &format!("{at}/propertyNames"), &format!("{hint}Key"));
             if matches!(key.kind, TypeKind::String) {
                 key = k;
             }
         }
+
         let mut t = TypeRef::new(TypeKind::Map(Box::new(key), Box::new(value)));
         len(&mut t, o, "minProperties", "maxProperties");
         t
@@ -818,10 +890,12 @@ impl Conv<'_> {
         if o.contains_key("minLength") || o.contains_key("maxLength") {
             len(t, o, "minLength", "maxLength");
         }
+
         if matches!(t.kind, TypeKind::Named(_)) {
             len(t, o, "minItems", "maxItems");
             len(t, o, "minProperties", "maxProperties");
         }
+
         let lo = o.get("minimum").and_then(Json::as_number).map(num);
         let hi = o.get("maximum").and_then(Json::as_number).map(num);
         let xlo = o.get("exclusiveMinimum").and_then(Json::as_number).map(num);
@@ -829,13 +903,16 @@ impl Conv<'_> {
         if xlo.is_some() || xhi.is_some() || o.get("exclusiveMinimum") == Some(&Json::Bool(true)) || o.get("exclusiveMaximum") == Some(&Json::Bool(true)) {
             self.warn(at, "exclusive bound on a float is kept inclusive");
         }
+
         let (lo, hi) = (lo.or(xlo), hi.or(xhi));
         if lo.is_some() || hi.is_some() {
             t.constraints.range = Some((lo, hi));
         }
+
         if let Some(r) = o.get("x-nova-range").and_then(Json::as_str) {
             self.nova_range(t, r, at);
         }
+
         if let Some(l) = o.get("x-nova-len").and_then(Json::as_str) {
             match novafile_schema::parse_type(&format!("string @len({l})")) {
                 Ok(p) => {
@@ -913,16 +990,20 @@ fn shape(o: &Obj) -> Shape {
     if o.contains_key("$ref") || o.contains_key("x-nova-kind") {
         return Shape::Other;
     }
+
     if enum_plan(o).is_some() {
         return Shape::Enum;
     }
+
     let ty = o.get("type").and_then(Json::as_str);
     if (ty == Some("object") || (ty.is_none() && !o.contains_key("type"))) && (o.contains_key("properties") || o.contains_key("required")) {
         return Shape::Record;
     }
+
     if tagged_alternatives(o).is_some() {
         return Shape::Record;
     }
+
     Shape::Other
 }
 
@@ -940,6 +1021,7 @@ fn enum_plan(o: &Obj) -> Option<(&'static str, Vec<Alt<'_>>)> {
         if o.get("type").and_then(Json::as_str).is_some_and(|t| t != "string") {
             return None;
         }
+
         let tags: Vec<String> = vals.iter().map(|v| v.as_str().map(str::to_owned)).collect::<Option<_>>()?;
         ("enum", vec![Alt::Units(tags)])
     } else {
@@ -951,6 +1033,7 @@ fn enum_plan(o: &Obj) -> Option<(&'static str, Vec<Alt<'_>>)> {
                 if a.get("type").and_then(Json::as_str).is_some_and(|t| t != "string") {
                     return None;
                 }
+
                 plan.push(Alt::Units(vec![t.as_str()?.to_owned()]));
             } else if let Some(Json::Array(vals)) = a.get("enum") {
                 plan.push(Alt::Units(vals.iter().map(|v| v.as_str().map(str::to_owned)).collect::<Option<_>>()?));
@@ -961,15 +1044,19 @@ fn enum_plan(o: &Obj) -> Option<(&'static str, Vec<Alt<'_>>)> {
                 if props.len() != 1 || req.len() != 1 || !closed {
                     return None;
                 }
+
                 let (tag, payload) = props.iter().next()?;
                 if req[0].as_str() != Some(tag) {
                     return None;
                 }
+
                 plan.push(Alt::Payload(tag.clone(), payload, i));
             }
         }
+
         (key, plan)
     };
+
     let names: Vec<&str> = plan
         .iter()
         .flat_map(|a| match a {
@@ -1009,6 +1096,7 @@ fn const_str(s: &Json) -> Option<String> {
     if let Some(c) = s.get("const").and_then(Json::as_str) {
         return Some(c.to_owned());
     }
+
     match s.get("enum")?.as_array()?.as_slice() {
         [one] => one.as_str().map(str::to_owned),
         _ => None,
@@ -1037,9 +1125,11 @@ fn sanitize_def_name(s: &str) -> String {
             upper = true;
         }
     }
+
     if !out.starts_with(|c: char| c.is_ascii_uppercase()) {
         out.insert(0, 'T');
     }
+
     out
 }
 
@@ -1055,6 +1145,7 @@ fn pascal(s: &str) -> String {
             upper = true;
         }
     }
+
     out
 }
 
@@ -1077,6 +1168,7 @@ fn strip_null(o: &Obj) -> (Obj, bool) {
             o.insert("type".into(), t);
         }
     }
+
     if let Some(Json::Array(vals)) = o.get_mut("enum")
         && vals.len() > 1
         && vals.iter().any(Json::is_null)
@@ -1084,6 +1176,7 @@ fn strip_null(o: &Obj) -> (Obj, bool) {
         vals.retain(|v| !v.is_null());
         nullable = true;
     }
+
     for k in ["anyOf", "oneOf"] {
         if let Some(Json::Array(alts)) = o.get_mut(k)
             && alts.len() > 1
@@ -1093,6 +1186,7 @@ fn strip_null(o: &Obj) -> (Obj, bool) {
             nullable = true;
         }
     }
+
     (o, nullable)
 }
 
@@ -1117,6 +1211,7 @@ fn infer_type(o: &Obj) -> Option<Json> {
     } else {
         return None;
     };
+
     Some(Json::String(t.into()))
 }
 
@@ -1147,9 +1242,11 @@ fn num(n: &serde_json::Number) -> Num {
     if let Some(i) = n.as_i64() {
         return Num::int(i.into());
     }
+
     if let Some(u) = n.as_u64() {
         return Num::int(u.into());
     }
+
     let f = n.as_f64().unwrap_or(0.0);
     match Decimal::parse(&format!("{f:?}")) {
         Ok(d) => match d.to_i128() {
@@ -1181,6 +1278,7 @@ fn int_bound(o: &Obj, incl: &str, excl: &str, lower: bool) -> Option<i128> {
             }
         }
     };
+
     let a = o.get(incl).and_then(|v| bound(v, o.get(excl) == Some(&Json::Bool(true))));
     let b = o.get(excl).filter(|v| v.is_number()).and_then(|v| bound(v, true));
     match (a, b) {
@@ -1203,9 +1301,11 @@ fn normalize_ref(r: &str) -> String {
             i += 3;
             continue;
         }
+
         out.push(b[i]);
         i += 1;
     }
+
     match String::from_utf8(out) {
         Ok(s) if s.is_empty() => "#".into(),
         Ok(s) => s,

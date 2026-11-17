@@ -45,6 +45,7 @@ pub(crate) fn number_kind(s: &str) -> Option<NumKind> {
     if b.first() == Some(&b'-') {
         i = 1;
     }
+
     match b.get(i) {
         Some(b'0') => i += 1,
         Some(b'1'..=b'9') => {
@@ -54,6 +55,7 @@ pub(crate) fn number_kind(s: &str) -> Option<NumKind> {
         }
         _ => return None,
     }
+
     if b.get(i) == Some(&b'/') {
         // Rational: INT '/' positive integer without leading zeros.
         i += 1;
@@ -65,8 +67,10 @@ pub(crate) fn number_kind(s: &str) -> Option<NumKind> {
             }
             _ => return None,
         }
+
         return (i == b.len()).then_some(NumKind::Rational);
     }
+
     let mut float = false;
     if b.get(i) == Some(&b'.') {
         i += 1;
@@ -74,25 +78,32 @@ pub(crate) fn number_kind(s: &str) -> Option<NumKind> {
         while b.get(i).is_some_and(u8::is_ascii_digit) {
             i += 1;
         }
+
         if i == s {
             return None;
         }
+
         float = true;
     }
+
     if matches!(b.get(i), Some(b'e' | b'E')) {
         i += 1;
         if matches!(b.get(i), Some(b'+' | b'-')) {
             i += 1;
         }
+
         let s = i;
         while b.get(i).is_some_and(u8::is_ascii_digit) {
             i += 1;
         }
+
         if i == s {
             return None;
         }
+
         float = true;
     }
+
     (i == b.len()).then_some(if float { NumKind::Float } else { NumKind::Int })
 }
 
@@ -104,6 +115,7 @@ pub(crate) fn classify(tok: &str) -> Result<Value, String> {
         "null" => return Ok(Value::Null),
         _ => {}
     }
+
     match number_kind(tok) {
         Some(NumKind::Int) => tok.parse::<i128>().map(Value::Int).map_err(|_| format!("integer {tok} is out of range")),
         Some(NumKind::Rational) => Rational::parse(tok).map(Value::Rational),
@@ -112,6 +124,7 @@ pub(crate) fn classify(tok: &str) -> Result<Value, String> {
             if f.is_infinite() {
                 return Err(format!("float {tok} is out of range; use @float(\"inf\")"));
             }
+
             Ok(Value::Float(f))
         }
         None => Ok(Value::String(tok.to_owned())),
@@ -204,6 +217,7 @@ impl<'a> Parser<'a> {
         while !matches!(self.peek(), None | Some(b'\n')) {
             self.pos += 1;
         }
+
         if self.spans.is_some() {
             let end = start + self.src[start..self.pos].trim_end_matches('\r').len();
             self.comments.push((start, end));
@@ -226,6 +240,7 @@ impl<'a> Parser<'a> {
                 kind,
             });
         }
+
         self.cur.pop();
         r
     }
@@ -305,9 +320,11 @@ impl<'a> Parser<'a> {
         if self.peek() == Some(b'#') {
             self.skip_comment();
         }
+
         if self.peek() == Some(b'\r') && self.peek_at(1) == Some(b'\n') {
             self.pos += 1;
         }
+
         match self.peek() {
             None => Ok(()),
             Some(b'\n') => {
@@ -326,9 +343,11 @@ impl<'a> Parser<'a> {
             if self.peek() == Some(b'#') {
                 self.skip_comment();
             }
+
             if self.peek() == Some(b'\r') {
                 self.pos += 1;
             }
+
             match self.peek() {
                 Some(b'\n') => self.pos += 1,
                 None => return,
@@ -345,10 +364,12 @@ impl<'a> Parser<'a> {
         if self.at_eof() {
             return Ok(None);
         }
+
         let n = self.b[self.pos..].iter().take_while(|&&c| c == b' ').count();
         if self.b.get(self.pos + n) == Some(&b'\t') {
             return Err(self.error_at(self.pos + n, "tabs are not allowed in indentation"));
         }
+
         Ok(Some(n))
     }
 
@@ -356,10 +377,12 @@ impl<'a> Parser<'a> {
         if !self.peek().is_some_and(is_ident_start) {
             return self.err("expected an identifier");
         }
+
         let start = self.pos;
         while self.peek().is_some_and(is_ident_char) {
             self.pos += 1;
         }
+
         Ok(self.src[start..self.pos].to_owned())
     }
 
@@ -387,6 +410,7 @@ impl<'a> Parser<'a> {
             let Some(c) = rest.chars().next() else {
                 return Err(self.error_at(start, "unterminated string"));
             };
+
             match c {
                 '"' => {
                     self.pos += 1;
@@ -422,6 +446,7 @@ impl<'a> Parser<'a> {
                     if !buf.is_empty() {
                         parts.push(Part::Text(std::mem::take(&mut buf)));
                     }
+
                     parts.push(Part::Ref(self.interp_ref()?));
                 }
                 c => {
@@ -430,9 +455,11 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+
         if !buf.is_empty() || parts.is_empty() {
             parts.push(Part::Text(buf));
         }
+
         Ok(parts)
     }
 
@@ -442,6 +469,7 @@ impl<'a> Parser<'a> {
         if p.is_root() {
             return self.err("expected a reference inside ${...}");
         }
+
         self.pos += n;
         self.skip_inline_ws();
         self.expect(b'}', "`}` to close interpolation")?;
@@ -455,6 +483,7 @@ impl<'a> Parser<'a> {
             while self.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
                 self.pos += 1;
             }
+
             let hex = &self.src[s..self.pos];
             self.expect(b'}', "`}` in \\u{...}")?;
             return u32::from_str_radix(hex, 16)
@@ -463,6 +492,7 @@ impl<'a> Parser<'a> {
                 .and_then(char::from_u32)
                 .ok_or_else(|| self.error_at(s, "invalid \\u{...} escape"));
         }
+
         let read4 = |p: &mut Self| -> R<u32> {
             let h = p.src.get(p.pos..p.pos + 4).filter(|h| h.bytes().all(|c| c.is_ascii_hexdigit()));
             match h {
@@ -473,6 +503,7 @@ impl<'a> Parser<'a> {
                 None => p.err("invalid \\u escape"),
             }
         };
+
         let hi = read4(self)?;
         if (0xD800..0xDC00).contains(&hi) {
             if self.starts_with("\\u") {
@@ -482,8 +513,10 @@ impl<'a> Parser<'a> {
                     return Ok(char::from_u32(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)).unwrap());
                 }
             }
+
             return self.err("unpaired surrogate in \\u escape");
         }
+
         char::from_u32(hi).ok_or_else(|| self.error_at(self.pos, "invalid \\u escape"))
     }
 
@@ -536,11 +569,13 @@ impl<'a> Parser<'a> {
         if self.depth > MAX_DEPTH {
             return self.err("nesting depth limit exceeded");
         }
+
         let r = self.parse_flow_inner();
         self.depth -= 1;
         if r.is_ok() {
             self.last_end = self.pos;
         }
+
         r
     }
 
@@ -593,9 +628,11 @@ impl<'a> Parser<'a> {
                         "continuation lines of a multi-line value must be indented deeper than the line it starts on",
                     ));
                 }
+
                 off = (end < self.src.len()).then_some(end + 1);
             }
         }
+
         Ok(node)
     }
 
@@ -603,11 +640,13 @@ impl<'a> Parser<'a> {
         if !self.template {
             return self.err("`$` is reserved for template references; quote the string or add @template");
         }
+
         self.pos += 1;
         let (p, n) = Path::parse_prefix(&self.src[self.pos..]).map_err(|m| self.error_at(self.pos, m))?;
         if p.is_root() {
             return self.err("expected a name after `$`");
         }
+
         self.pos += n;
         Ok(Node::Ref(p))
     }
@@ -620,10 +659,12 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 return Ok(items);
             }
+
             if self.starts_with("...") {
                 if !self.template {
                     return self.err("`...` spreads require @template");
                 }
+
                 self.pos += 3;
                 items.push(Item::Spread(self.parse_flow()?));
             } else {
@@ -632,6 +673,7 @@ impl<'a> Parser<'a> {
                 let n = self.spanned(SpanKind::FlowItem, Segment::Index(i), start, None, Parser::parse_flow)?;
                 items.push(Item::Node(n));
             }
+
             self.skip_ws_multi();
             match self.peek() {
                 Some(b',') => self.pos += 1,
@@ -670,10 +712,12 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 return Ok(Node::Record(entries));
             }
+
             if self.starts_with("...") {
                 if !self.template {
                     return self.err("`...` spreads require @template");
                 }
+
                 self.pos += 3;
                 entries.push(Entry::Spread(self.parse_flow()?));
             } else {
@@ -686,6 +730,7 @@ impl<'a> Parser<'a> {
                 let v = self.spanned(SpanKind::FlowEntry, seg_of(&k), kpos, Some((kpos, kend)), Parser::parse_flow)?;
                 self.push_entry(&mut entries, &mut seen, k, v, kpos)?;
             }
+
             self.skip_ws_multi();
             match self.peek() {
                 Some(b',') => self.pos += 1,
@@ -704,6 +749,7 @@ impl<'a> Parser<'a> {
         {
             return Err(self.error_at(kpos, format!("duplicate key {name:?}")));
         }
+
         entries.push(Entry::Field(k, v));
         Ok(())
     }
@@ -718,6 +764,7 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 break;
             }
+
             #[expect(clippy::cast_possible_wrap, reason = "in-memory indices/lengths are at most isize::MAX, which fits in i64")]
             let (i, start) = (items.len() as i64, self.pos);
             items.push(self.spanned(SpanKind::FlowItem, Segment::Index(i), start, None, Parser::parse_flow)?);
@@ -734,9 +781,11 @@ impl<'a> Parser<'a> {
                 _ => return self.err("expected `,` or `)`"),
             }
         }
+
         if items.len() == 1 && commas == 0 {
             return Err(self.error_at(open, "`(x)` is not a tuple; write `(x,)` for a 1-tuple"));
         }
+
         Ok(Node::Tuple(items))
     }
 
@@ -766,11 +815,13 @@ impl<'a> Parser<'a> {
                         self.pos += 1;
                         break;
                     }
+
                     let k = self.parse_flow()?;
                     self.skip_ws_multi();
                     if !self.starts_with("=>") {
                         return self.err("expected `=>` in @map entry");
                     }
+
                     self.pos += 2;
                     self.skip_ws_multi();
                     let v = self.parse_flow()?;
@@ -785,6 +836,7 @@ impl<'a> Parser<'a> {
                         _ => return self.err("expected `,` or `}`"),
                     }
                 }
+
                 Ok(Node::Map(entries))
             }
             _ => {
@@ -809,6 +861,7 @@ impl<'a> Parser<'a> {
             self.expect(b')', "`)` after variant payload")?;
             return Ok(Node::Variant(tag, Some(Box::new(p))));
         }
+
         Ok(Node::Variant(tag, None))
     }
 
@@ -818,6 +871,7 @@ impl<'a> Parser<'a> {
             if c.is_ascii_whitespace() || FLOW_DELIMS.contains(&c) {
                 break;
             }
+
             if c == b':' {
                 match self.peek_at(1) {
                     None => break,
@@ -825,15 +879,19 @@ impl<'a> Parser<'a> {
                     _ => {}
                 }
             }
+
             self.pos += 1;
         }
+
         let tok = &self.src[start..self.pos];
         if tok.is_empty() {
             return self.err("expected a value");
         }
+
         if RESERVED_START.contains(&tok.as_bytes()[0]) || tok.starts_with("...") {
             return Err(self.error_at(start, format!("unexpected `{}`; quote the string", tok.chars().next().unwrap())));
         }
+
         classify(tok).map(Node::Lit).map_err(|m| self.error_at(start, m))
     }
 
@@ -867,14 +925,17 @@ impl<'a> Parser<'a> {
             }
             _ => return false,
         }
+
         if b.get(p) == Some(&b'[') && b.get(p + 1).is_some_and(u8::is_ascii_digit) {
             while !matches!(b.get(p), None | Some(b'\n' | b'}')) {
                 p += 1;
             }
+
             if b.get(p) == Some(&b'}') {
                 p += 1;
             }
         }
+
         b.get(p) == Some(&b':') && matches!(b.get(p + 1), None | Some(b' ' | b'\t' | b'\r' | b'\n' | b'#'))
     }
 
@@ -886,6 +947,7 @@ impl<'a> Parser<'a> {
         if !self.template {
             return None;
         }
+
         ["@if ", "@for ", "@else"].into_iter().find(|k| self.starts_with(k))
     }
 
@@ -897,14 +959,18 @@ impl<'a> Parser<'a> {
             if t.is_empty() || t.starts_with('#') || (self.template && (t.starts_with("@if ") || t.starts_with("@for ") || t.starts_with("@else"))) {
                 continue;
             }
+
             if t.starts_with("...") {
                 continue;
             }
+
             if t == "-" || t.starts_with("- ") || (t.starts_with('[') && t.as_bytes().get(1).is_some_and(u8::is_ascii_digit)) {
                 return BlockKind::List;
             }
+
             return BlockKind::Record;
         }
+
         BlockKind::Record
     }
 
@@ -916,14 +982,17 @@ impl<'a> Parser<'a> {
             Some(i) if i > indent => return Err(self.error_at(self.pos + i, format!("indentation must be exactly {indent} spaces (2 deeper than the parent)"))),
             _ => return self.err(format!("expected an indented block for {what}; write `null`, `{{}}` or `[]` explicitly")),
         }
+
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             return self.err("nesting depth limit exceeded");
         }
+
         let r = match self.peek_block_kind() {
             BlockKind::List => self.block_list(indent).map(Node::List),
             BlockKind::Record => self.block_record(indent, false).map(Node::Record),
         };
+
         self.depth -= 1;
         r
     }
@@ -951,42 +1020,51 @@ impl<'a> Parser<'a> {
             if !inline_first && !self.next_block_line(indent)? {
                 break;
             }
+
             inline_first = false;
             if self.is_list_marker() {
                 // A list item at this indentation ends the record (record inside list item).
                 self.pos = line_start;
                 break;
             }
+
             if let Some(kw) = self.control_keyword() {
                 if kw == "@else" {
                     // Belongs to an enclosing @if; let the caller see it.
                     self.pos = line_start;
                     break;
                 }
+
                 let e = if kw == "@if " {
                     self.if_block(indent, BlockKind::Record)?
                 } else {
                     self.for_block(indent, BlockKind::Record)?
                 };
+
                 match e {
                     Ctl::Entry(e) => entries.push(e),
                     Ctl::Item(_) => unreachable!(),
                 }
+
                 continue;
             }
+
             if self.starts_with("...") {
                 if !self.template {
                     return self.err("`...` spreads require @template");
                 }
+
                 self.pos += 3;
                 let n = self.parse_flow()?;
                 self.end_line()?;
                 entries.push(Entry::Spread(n));
                 continue;
             }
+
             if !self.looks_like_key() {
                 return self.err("expected `key: value`");
             }
+
             let kpos = self.pos;
             let key = self.key()?;
             let kend = self.pos;
@@ -1003,6 +1081,7 @@ impl<'a> Parser<'a> {
             })?;
             self.push_entry(&mut entries, &mut seen, key, value, kpos)?;
         }
+
         Ok(entries)
     }
 
@@ -1014,41 +1093,50 @@ impl<'a> Parser<'a> {
             if !self.next_block_line(indent)? {
                 break;
             }
+
             if let Some(kw) = self.control_keyword() {
                 if kw == "@else" {
                     self.pos = line_start;
                     break;
                 }
+
                 let c = if kw == "@if " {
                     self.if_block(indent, BlockKind::List)?
                 } else {
                     self.for_block(indent, BlockKind::List)?
                 };
+
                 match c {
                     Ctl::Item(i) => items.push(i),
                     Ctl::Entry(_) => unreachable!(),
                 }
+
                 continue;
             }
+
             if self.starts_with("...") {
                 if !self.template {
                     return self.err("`...` spreads require @template");
                 }
+
                 self.pos += 3;
                 let n = self.parse_flow()?;
                 self.end_line()?;
                 items.push(Item::Spread(n));
                 continue;
             }
+
             if !self.is_list_marker() {
                 return self.err("expected a list item `- ...`");
             }
+
             let start = self.pos;
             self.pos += 1;
             self.skip_inline_ws();
             if self.is_list_marker() {
                 return self.err("nested list items must start on their own line (`-` then an indented block) or use [flow]");
             }
+
             let idx = node_count;
             node_count += 1;
             let node = self.spanned(SpanKind::BlockItem, Segment::Index(idx), start, None, |p| {
@@ -1060,6 +1148,7 @@ impl<'a> Parser<'a> {
             })?;
             items.push(Item::Node(node));
         }
+
         Ok(items)
     }
 
@@ -1070,6 +1159,7 @@ impl<'a> Parser<'a> {
             self.end_line()?;
             return self.nested_block(parent + 2, "this key");
         }
+
         match self.peek() {
             Some(b'|') => self.block_string(parent),
             Some(b'!') => {
@@ -1085,10 +1175,12 @@ impl<'a> Parser<'a> {
                             let p = self.nested_block(parent + 2, "the variant payload")?;
                             return Ok(Node::Variant(tag.clone(), Some(Box::new(p))));
                         }
+
                         self.pos = save;
                         return Ok(n);
                     }
                 }
+
                 self.end_line()?;
                 Ok(n)
             }
@@ -1114,35 +1206,44 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+
         let text = line[..cut].trim_end_matches([' ', '\t', '\r']);
         if cut < line.len() && self.spans.is_some() {
             self.comments.push((start + cut, start + line.trim_end_matches('\r').len()));
         }
+
         let first = text.as_bytes()[0];
         if RESERVED_START.contains(&first) {
             return self.err(format!("a plain value cannot start with `{}`; quote the string", first as char));
         }
+
         if text.starts_with("...") {
             return self.err("a plain value cannot start with `...`; quote the string");
         }
+
         if text == "-" || text.starts_with("- ") {
             return self.err("`- ` starts a list item, which must be on its own line; quote the string");
         }
+
         if let Some(i) = text.find(": ") {
             return Err(self.error_at(start + i, "`: ` inside a plain value is ambiguous; quote the string"));
         }
+
         if text.ends_with(':') {
             return self.err("a plain value cannot end with `:`; quote the string");
         }
+
         if text.chars().any(|c| c.is_control() && c != '\t') {
             return self.err("control character in plain value");
         }
+
         let v = classify(text).map_err(|m| self.error_at(start, m))?;
         self.last_end = start + text.len();
         self.pos = line_end;
         if self.peek() == Some(b'\n') {
             self.pos += 1;
         }
+
         Ok(Node::Lit(v))
     }
 
@@ -1152,6 +1253,7 @@ impl<'a> Parser<'a> {
         if strip {
             self.pos += 1;
         }
+
         self.end_line()?;
         let indent = parent + 2;
         let mut lines: Vec<&str> = Vec::new();
@@ -1165,24 +1267,30 @@ impl<'a> Parser<'a> {
                 if raw.as_bytes()[spaces] == b'\t' && spaces < indent {
                     return self.err("tabs are not allowed in indentation");
                 }
+
                 break;
             } else {
                 lines.push(&raw[indent..]);
                 self.last_end = self.pos + raw.len();
             }
+
             self.pos = (end + 1).min(self.src.len());
         }
+
         while lines.last() == Some(&"") {
             lines.pop();
         }
+
         let mut s = lines.join("\n");
         if !strip && !lines.is_empty() {
             s.push('\n');
         }
+
         if self.template {
             // Re-parse for ${...} interpolation.
             return self.interpolate_block(&s);
         }
+
         Ok(Node::Lit(Value::String(s)))
     }
 
@@ -1202,6 +1310,7 @@ impl<'a> Parser<'a> {
                 if !buf.is_empty() {
                     parts.push(Part::Text(std::mem::take(&mut buf)));
                 }
+
                 parts.push(Part::Ref(p));
                 rest = &r[close + 1..];
             } else {
@@ -1209,13 +1318,16 @@ impl<'a> Parser<'a> {
                 rest = &rest[1..];
             }
         }
+
         buf.push_str(rest);
         if parts.is_empty() {
             return Ok(Node::Lit(Value::String(buf)));
         }
+
         if !buf.is_empty() {
             parts.push(Part::Text(buf));
         }
+
         Ok(Node::Interp(parts))
     }
 
@@ -1229,6 +1341,7 @@ impl<'a> Parser<'a> {
         while self.peek().is_some_and(|c| c.is_ascii_digit()) {
             self.pos += 1;
         }
+
         let n: usize = self.src[s..self.pos].parse().map_err(|_| self.error_at(s, "expected a row count"))?;
         self.expect(b']', "`]` after row count")?;
         self.expect(b'{', "`{` to start the column list")?;
@@ -1240,9 +1353,11 @@ impl<'a> Parser<'a> {
                 Key::Lit(s) => s,
                 Key::Interp(_) => return self.err("interpolation is not allowed in table headers"),
             };
+
             if fields.contains(&f) {
                 return Err(self.error_at(fpos, format!("duplicate column {f:?}")));
             }
+
             fields.push(f);
             self.skip_inline_ws();
             match self.peek() {
@@ -1254,6 +1369,7 @@ impl<'a> Parser<'a> {
                 _ => return self.err("expected `,` or `}` in table header"),
             }
         }
+
         Ok((n, fields))
     }
 
@@ -1266,6 +1382,7 @@ impl<'a> Parser<'a> {
                 Some(i) if i == indent => self.pos += i,
                 _ => return self.err(format!("table declares {n} rows but only {r} were found (rows are indented {indent} spaces)")),
             }
+
             let row_start = self.pos;
             #[expect(
                 clippy::cast_possible_wrap,
@@ -1280,12 +1397,15 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     continue;
                 }
+
                 if self.at_eol_or_comment() {
                     if !cells.is_empty() {
                         cells.push(None); // trailing empty cell after a comma
                     }
+
                     break;
                 }
+
                 let field = fields.get(cells.len()).cloned().unwrap_or_default();
                 let start = self.pos;
                 cells.push(Some(self.spanned(
@@ -1302,10 +1422,12 @@ impl<'a> Parser<'a> {
                     _ => return self.err("expected `,` between table cells"),
                 }
             }
+
             self.end_line()?;
             if cells.len() != fields.len() {
                 return self.err(format!("table row has {} cells; the header declares {}", cells.len(), fields.len()));
             }
+
             if !self.template
                 && let Some(spans) = self.spans.as_mut()
             {
@@ -1317,6 +1439,7 @@ impl<'a> Parser<'a> {
                     kind: SpanKind::TableRow,
                 });
             }
+
             self.cur.pop();
             let entries = fields
                 .iter()
@@ -1325,11 +1448,13 @@ impl<'a> Parser<'a> {
                 .collect();
             rows.push(Item::Node(Node::Record(entries)));
         }
+
         let save = self.pos;
         self.skip_blank_lines();
         if matches!(self.line_indent()?, Some(i) if i >= indent) {
             return self.err(format!("table declares {n} rows but more follow"));
         }
+
         self.pos = save;
         Ok(Node::List(rows))
     }
@@ -1343,6 +1468,7 @@ impl<'a> Parser<'a> {
         if !matches!(self.line_indent()?, Some(i) if i == indent) {
             return self.err(format!("expected a body indented {indent} spaces"));
         }
+
         Ok(match kind {
             BlockKind::Record => Ctl2::Entries(self.block_record(indent, false)?),
             BlockKind::List => Ctl2::Items(self.block_list(indent)?),
@@ -1363,6 +1489,7 @@ impl<'a> Parser<'a> {
             BlockKind::Record => Ctl2::Entries(Vec::new()),
             BlockKind::List => Ctl2::Items(Vec::new()),
         };
+
         if matches!(self.line_indent()?, Some(i) if i == indent) && self.src[self.pos + indent..].starts_with("@else") {
             self.pos += indent + 5;
             self.skip_inline_ws();
@@ -1382,6 +1509,7 @@ impl<'a> Parser<'a> {
         } else {
             self.pos = save;
         }
+
         Ok(match (then, els) {
             (Ctl2::Entries(t), Ctl2::Entries(e)) => Ctl::Entry(Entry::If(Box::new(cond), t, e)),
             (Ctl2::Items(t), Ctl2::Items(e)) => Ctl::Item(Item::If(Box::new(cond), t, e)),
@@ -1407,10 +1535,12 @@ impl<'a> Parser<'a> {
         } else {
             (None, first)
         };
+
         self.skip_inline_ws();
         if !self.starts_with("in ") {
             return self.err("expected `in` in @for");
         }
+
         self.pos += 3;
         self.skip_inline_ws();
         let iter = self.parse_flow()?;
@@ -1462,6 +1592,7 @@ impl<'a> Parser<'a> {
             self.pos += 3;
             return Ok(Cond::Not(Box::new(self.cond_unary()?)));
         }
+
         if self.peek() == Some(b'(') {
             // Grouping, unless it is a tuple literal operand.
             let save = self.pos;
@@ -1473,8 +1604,10 @@ impl<'a> Parser<'a> {
                     return Ok(c);
                 }
             }
+
             self.pos = save;
         }
+
         let l = self.parse_flow()?;
         self.skip_inline_ws();
         if self.starts_with("==") || self.starts_with("!=") {
@@ -1484,6 +1617,7 @@ impl<'a> Parser<'a> {
             let r = self.parse_flow()?;
             return Ok(if eq { Cond::Eq(l, r) } else { Cond::Ne(l, r) });
         }
+
         Ok(Cond::Test(l))
     }
 
@@ -1495,11 +1629,13 @@ impl<'a> Parser<'a> {
         if self.peek() != Some(b'@') {
             return false;
         }
+
         let b = &self.b[self.pos + 1..];
         let n = b.iter().take_while(|&&c| is_ident_char(c)).count();
         if n == 0 || !matches!(b.get(n), None | Some(b' ' | b'\t' | b'\r' | b'\n')) {
             return false;
         }
+
         let name = &self.src[self.pos + 1..self.pos + 1 + n];
         !(self.template && matches!(name, "if" | "for" | "else"))
     }
@@ -1516,9 +1652,11 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+
         if cut < line.len() && self.spans.is_some() {
             self.comments.push((start + cut, start + line.trim_end_matches('\r').len()));
         }
+
         self.pos = (end + 1).min(self.src.len());
         line[..cut].trim().to_owned()
     }
@@ -1534,6 +1672,7 @@ impl<'a> Parser<'a> {
         if self.starts_with("\u{feff}") {
             self.pos += 3;
         }
+
         let mut directives = Vec::new();
         let mut tpl: Option<TemplateHeader> = None;
         loop {
@@ -1541,6 +1680,7 @@ impl<'a> Parser<'a> {
             if !self.directive_ahead() {
                 break;
             }
+
             let dpos = self.pos;
             let line = self.error_at(dpos, "").line;
             self.pos += 1;
@@ -1551,6 +1691,7 @@ impl<'a> Parser<'a> {
                     if !directives.is_empty() || tpl.is_some() {
                         return Err(self.error_at(dpos, "@nova must be the first directive"));
                     }
+
                     let arg = self.rest_of_line_arg();
                     crate::version::NOVA_VERSION.check(&arg, "NOVA").map_err(|m| self.error_at(dpos, m))?;
                     directives.push(Directive { name, arg, line });
@@ -1559,12 +1700,14 @@ impl<'a> Parser<'a> {
                     if directives.iter().any(|d: &Directive| d.name != "nova") || tpl.is_some() {
                         return Err(self.error_at(dpos, "@template must be the first directive (after @nova)"));
                     }
+
                     let arg = self.rest_of_line_arg();
                     if !arg.is_empty() {
                         crate::version::TEMPLATE_VERSION
                             .check(&arg, "the NOVA template language")
                             .map_err(|m| self.error_at(dpos, m))?;
                     }
+
                     self.template = true;
                     tpl = Some(TemplateHeader::default());
                 }
@@ -1572,6 +1715,7 @@ impl<'a> Parser<'a> {
                     let Some(h) = tpl.as_mut() else {
                         return Err(self.error_at(dpos, format!("@{name} requires @template")));
                     };
+
                     match name.as_str() {
                         "param" => {
                             let pname = self.ident()?;
@@ -1579,6 +1723,7 @@ impl<'a> Parser<'a> {
                             if optional {
                                 self.pos += 1;
                             }
+
                             self.expect(b':', "`:` after parameter name")?;
                             let s = self.pos;
                             let end = self.src[s..].find('\n').map_or(self.src.len(), |i| s + i);
@@ -1588,6 +1733,7 @@ impl<'a> Parser<'a> {
                             if ty.is_empty() {
                                 return self.err("expected a type after `:`");
                             }
+
                             self.pos = s + ty_end;
                             self.skip_inline_ws();
                             let default = if self.peek() == Some(b'=') {
@@ -1597,6 +1743,7 @@ impl<'a> Parser<'a> {
                             } else {
                                 None
                             };
+
                             self.end_line()?;
                             h.params.push(Param {
                                 name: pname,
@@ -1622,6 +1769,7 @@ impl<'a> Parser<'a> {
                                 }
                                 _ => return self.err("expected `=` or `:` after @let name"),
                             };
+
                             h.lets.push(Let { name: lname, value });
                         }
                         _ => {
@@ -1630,6 +1778,7 @@ impl<'a> Parser<'a> {
                             if !self.starts_with("as ") {
                                 return self.err("expected `as <name>` after @import path");
                             }
+
                             self.pos += 3;
                             self.skip_inline_ws();
                             let alias = self.ident()?;
@@ -1642,11 +1791,13 @@ impl<'a> Parser<'a> {
                     if !allowed(&name) && !name.starts_with("x-") {
                         return Err(self.error_at(dpos, format!("unknown directive @{name}")));
                     }
+
                     let arg = self.rest_of_line_arg();
                     directives.push(Directive { name, arg, line });
                 }
             }
         }
+
         let body = self.parse_body()?;
         Ok(Document {
             directives,
@@ -1679,10 +1830,12 @@ impl<'a> Parser<'a> {
                 }
             }
         };
+
         self.skip_blank_lines();
         if !self.at_eof() {
             return self.err("unexpected content after the document body");
         }
+
         if !self.template
             && let Some(spans) = self.spans.as_mut()
         {
@@ -1694,6 +1847,7 @@ impl<'a> Parser<'a> {
                 kind: SpanKind::Root,
             });
         }
+
         Ok(body)
     }
 }

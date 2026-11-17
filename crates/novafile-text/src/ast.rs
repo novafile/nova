@@ -95,6 +95,7 @@ impl Node {
                         _ => return Err(TPL.to_string()),
                     }
                 }
+
                 Value::Record(r)
             }
             Node::Variant(tag, p) => Value::Variant(tag.clone(), p.as_ref().map(|p| p.to_value().map(Box::new)).transpose()?),

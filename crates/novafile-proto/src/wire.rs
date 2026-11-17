@@ -9,6 +9,7 @@ pub(crate) fn put_varint(buf: &mut Vec<u8>, mut v: u64) {
         buf.push((v as u8) | 0x80);
         v >>= 7;
     }
+
     buf.push(v as u8);
 }
 
@@ -82,12 +83,14 @@ impl<'a> Reader<'a> {
             if i == 9 && b > 1 {
                 return Err("varint overflows 64 bits".into());
             }
+
             v |= u64::from(b & 0x7f) << (7 * i);
             if b & 0x80 == 0 {
                 self.bytes = &self.bytes[i + 1..];
                 return Ok(v);
             }
         }
+
         Err(if self.bytes.len() < 10 {
             "truncated varint"
         } else {
@@ -100,6 +103,7 @@ impl<'a> Reader<'a> {
         if n > self.bytes.len() {
             return Err(format!("truncated input: need {n} bytes, {} remain", self.bytes.len()));
         }
+
         let (head, tail) = self.bytes.split_at(n);
         self.bytes = tail;
         Ok(head)
@@ -122,6 +126,7 @@ impl<'a> Reader<'a> {
         if number == 0 || number > u64::from(MAX_FIELD_NUMBER) {
             return Err(format!("invalid field number {number}"));
         }
+
         #[expect(clippy::cast_possible_truncation, reason = "checked against MAX_FIELD_NUMBER above")]
         let number = number as u32;
         let value = match key & 7 {
@@ -136,6 +141,7 @@ impl<'a> Reader<'a> {
             5 => Wire::I32(self.fixed32()?),
             wt => return Err(format!("field {number}: invalid wire type {wt}")),
         };
+
         Ok((number, value))
     }
 }
@@ -147,6 +153,7 @@ pub(crate) fn fields(bytes: &[u8]) -> Result<Vec<(u32, Wire<'_>)>, String> {
     while !r.is_empty() {
         out.push(r.field()?);
     }
+
     Ok(out)
 }
 
@@ -163,6 +170,7 @@ mod tests {
             assert_eq!(r.varint().unwrap(), v);
             assert!(r.is_empty());
         }
+
         let mut buf = Vec::new();
         put_varint(&mut buf, 300);
         assert_eq!(buf, [0xac, 0x02]);
@@ -182,6 +190,7 @@ mod tests {
             assert_eq!(unzigzag32(zigzag32(n)), n);
             assert_eq!(unzigzag64(zigzag64(i64::from(n))), i64::from(n));
         }
+
         assert_eq!(zigzag32(-1), 1);
         assert_eq!(zigzag64(i64::MIN), u64::MAX);
         assert_eq!(unzigzag64(u64::MAX), i64::MIN);

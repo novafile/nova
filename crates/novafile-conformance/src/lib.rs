@@ -70,6 +70,7 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
         let v = novafile_text::parse(&read(&f)).unwrap_or_else(|e| panic!("{} should be valid: {e}", f.display()));
         out.push((expect_path(&f), value_expect(&v)));
     }
+
     for f in files(&root.join("text/invalid"), "nova") {
         let e = novafile_text::parse(&read(&f))
             .err()
@@ -82,6 +83,7 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
         let v = novafile_value::decode(&std::fs::read(&f).unwrap()).unwrap_or_else(|e| panic!("{} should decode: {e}", f.display()));
         out.push((expect_path(&f), value_expect(&v)));
     }
+
     for f in files(&root.join("binary/invalid"), "bin") {
         let e = novafile_value::decode(&std::fs::read(&f).unwrap())
             .err()
@@ -97,6 +99,7 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
             let r = schema.resolve(&v).unwrap_or_else(|e| panic!("{}: {e:?}", f.display()));
             out.push((expect_path(&f), value_expect(&r)));
         }
+
         for f in files(&d.join("invalid"), "nova") {
             let v = novafile_text::parse(&read(&f)).unwrap();
             let issues = schema.resolve(&v).err().unwrap_or_else(|| panic!("{} should not resolve", f.display()));
@@ -116,6 +119,7 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
             novafile_schema::ChangeKind::Compatible => "compatible",
             novafile_schema::ChangeKind::Breaking => "breaking",
         };
+
         out.push((
             d.join("expect.json"),
             json!({"kind": kind, "minimum": r.minimum.to_string(), "accepted": r.problems.is_empty()}),
@@ -142,12 +146,15 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
                             novafile_text::PathError::Type { .. } => "type",
                             novafile_text::PathError::NotSingular(_) => "not-singular",
                         };
+
                         json!({"query": q, "error": kind, "message": e.to_string()})
                     }
                 },
             };
+
             results.push(r);
         }
+
         out.push((d.join("expect.json"), J::Array(results)));
     }
 
@@ -166,14 +173,17 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
                         novafile_patch::PatchError::Op { .. } => "op-failed",
                         novafile_patch::PatchError::Invalid(_) => "invalid",
                     };
+
                     let mut j = json!({"error": kind, "message": e.to_string()});
                     if let novafile_patch::PatchError::Op { index, .. } = e {
                         j["op"] = json!(index + 1);
                     }
+
                     j
                 }
             },
         };
+
         out.push((d.join("expect.json"), e));
     }
 
@@ -183,12 +193,15 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
             Value::Record(r) => r,
             _ => Record::new(),
         };
+
         let e = match novafile_template::render(&read(&d.join("template.nova")), &args, &novafile_template::Options::default()) {
             Ok(v) => value_expect(&v),
             Err(e) => json!({"error": true, "message": e.to_string()}),
         };
+
         out.push((d.join("expect.json"), e));
     }
+
     out
 }
 
@@ -208,6 +221,7 @@ pub fn locate() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("NOVA_CONFORMANCE") {
         return Some(PathBuf::from(p));
     }
+
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     [here.join("../../spec/conformance"), here.join("../../../spec/conformance")]
         .into_iter()

@@ -18,10 +18,12 @@ impl Decimal {
         if coeff == 0 {
             return Decimal { coeff: 0, exp: 0 };
         }
+
         while coeff % 10 == 0 {
             coeff /= 10;
             exp = exp.saturating_add(1);
         }
+
         Decimal { coeff, exp }
     }
 
@@ -54,6 +56,7 @@ impl Decimal {
         if neg {
             i += 1;
         }
+
         let mut coeff: i128 = 0;
         let mut digits = 0usize;
         let mut frac = 0i64;
@@ -64,14 +67,17 @@ impl Decimal {
                 .ok_or_else(|| format!("decimal {s:?} exceeds 38 significant digits"))?;
             Ok(())
         };
+
         while i < b.len() && b[i].is_ascii_digit() {
             push(b[i], &mut coeff)?;
             digits += 1;
             i += 1;
         }
+
         if digits == 0 {
             return Err(err());
         }
+
         if i < b.len() && b[i] == b'.' {
             i += 1;
             let start = i;
@@ -80,10 +86,12 @@ impl Decimal {
                 frac += 1;
                 i += 1;
             }
+
             if i == start {
                 return Err(err());
             }
         }
+
         let mut e: i64 = 0;
         if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
             i += 1;
@@ -98,24 +106,30 @@ impl Decimal {
                 }
                 _ => false,
             };
+
             let start = i;
             while i < b.len() && b[i].is_ascii_digit() {
                 e = e * 10 + i64::from(b[i] - b'0');
                 if e > i64::from(i32::MAX) {
                     return Err(err());
                 }
+
                 i += 1;
             }
+
             if i == start {
                 return Err(err());
             }
+
             if eneg {
                 e = -e;
             }
         }
+
         if i != b.len() {
             return Err(err());
         }
+
         let exp = i32::try_from(e - frac).map_err(|_| err())?;
         Ok(Decimal::new(if neg { -coeff } else { coeff }, exp))
     }
@@ -131,10 +145,12 @@ impl Decimal {
         if self.exp < 0 {
             return None;
         }
+
         let mut v = self.coeff;
         for _ in 0..self.exp {
             v = v.checked_mul(10)?;
         }
+
         Some(v)
     }
 }
@@ -185,6 +201,7 @@ mod tests {
             let d = Decimal::parse(s).unwrap();
             assert_eq!(Decimal::parse(&d.to_string()).unwrap(), d, "{s}");
         }
+
         assert!(Decimal::parse(".5").is_err());
         assert!(Decimal::parse("1.").is_err());
         assert!(Decimal::parse("1e").is_err());

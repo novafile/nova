@@ -6,6 +6,7 @@ fn main() {
         eprintln!("usage: nova-conformance generate [CONFORMANCE_DIR]");
         std::process::exit(2);
     }
+
     let dir = args
         .next()
         .map(std::path::PathBuf::from)
@@ -15,5 +16,6 @@ fn main() {
     for (path, j) in &exp {
         std::fs::write(path, novafile_conformance::render(j)).unwrap();
     }
+
     eprintln!("wrote {} expectation files under {}", exp.len(), dir.display());
 }

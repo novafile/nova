@@ -93,6 +93,7 @@ pub fn crc32(data: &[u8]) -> u32 {
             crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
         }
     }
+
     !crc
 }
 
@@ -102,6 +103,7 @@ fn put_varint(out: &mut Vec<u8>, mut v: u64) {
         out.push((v as u8) | 0x80);
         v >>= 7;
     }
+
     out.push(v as u8);
 }
 
@@ -115,6 +117,7 @@ fn get_varint(buf: &[u8], pos: &mut usize) -> Result<u64, FrameError> {
             return Ok(v);
         }
     }
+
     Err(FrameError::Malformed("varint too long".into()))
 }
 
@@ -132,19 +135,23 @@ pub fn encode_frame(frame: &Frame, opts: FrameOptions) -> Vec<u8> {
     if frame.schema.is_some() {
         f |= flags::SCHEMA;
     }
+
     if opts.canonical {
         f |= flags::CANONICAL;
     } else {
         if opts.dedupe_strings {
             f |= flags::DEDUPE;
         }
+
         if opts.tables {
             f |= flags::TABLES;
         }
     }
+
     if opts.checksum {
         f |= flags::CRC32;
     }
+
     let mut out = Vec::with_capacity(payload.len() + 16);
     out.extend_from_slice(MAGIC);
     out.push(VERSION);
@@ -153,11 +160,13 @@ pub fn encode_frame(frame: &Frame, opts: FrameOptions) -> Vec<u8> {
         put_varint(&mut out, s.len() as u64);
         out.extend_from_slice(s.as_bytes());
     }
+
     put_varint(&mut out, payload.len() as u64);
     out.extend_from_slice(&payload);
     if opts.checksum {
         out.extend_from_slice(&crc32(&payload).to_be_bytes());
     }
+
     out
 }
 
@@ -176,16 +185,20 @@ pub fn decode_frame(buf: &[u8]) -> Result<(Frame, usize), FrameError> {
             FrameError::Truncated
         });
     }
+
     if &buf[..4] != MAGIC {
         return Err(FrameError::BadMagic);
     }
+
     if buf[4] != VERSION {
         return Err(FrameError::UnsupportedVersion(buf[4]));
     }
+
     let f = buf[5];
     if f & !flags::KNOWN != 0 {
         return Err(FrameError::UnknownFlags(f));
     }
+
     let mut pos = 6;
     let schema = if f & flags::SCHEMA != 0 {
         let n = usize::try_from(get_varint(buf, &mut pos)?).map_err(|_| FrameError::Truncated)?;
@@ -195,6 +208,7 @@ pub fn decode_frame(buf: &[u8]) -> Result<(Frame, usize), FrameError> {
     } else {
         None
     };
+
     let len = usize::try_from(get_varint(buf, &mut pos)?).map_err(|_| FrameError::Truncated)?;
     let end = pos.checked_add(len).ok_or(FrameError::Truncated)?;
     let payload = buf.get(pos..end).ok_or(FrameError::Truncated)?;
@@ -208,10 +222,12 @@ pub fn decode_frame(buf: &[u8]) -> Result<(Frame, usize), FrameError> {
             return Err(FrameError::Checksum { expected, actual });
         }
     }
+
     let (value, used) = decode_prefix(payload, Limits::default()).map_err(FrameError::Payload)?;
     if used != payload.len() {
         return Err(FrameError::Malformed("payload length does not match value".into()));
     }
+
     Ok((Frame { schema, value }, pos))
 }
 
@@ -250,6 +266,7 @@ impl Iterator for FrameReader<'_> {
         if self.failed || self.pos >= self.buf.len() {
             return None;
         }
+
         let at = self.pos;
         match decode_frame(&self.buf[at..]) {
             Ok((f, n)) => {
@@ -266,6 +283,7 @@ impl Iterator for FrameReader<'_> {
                 } else {
                     self.failed = true;
                 }
+
                 Some(Err((at, e)))
             }
         }
@@ -295,6 +313,7 @@ mod tests {
             schema: Some("infrastructure@1.0.0".into()),
             value: val(3),
         };
+
         for opts in [
             FrameOptions::default(),
             FrameOptions {
@@ -317,6 +336,7 @@ mod tests {
         for i in 0..3 {
             stream.extend(encode_frame(&Frame { schema: None, value: val(i) }, FrameOptions::default()));
         }
+
         let second = encode_frame(&Frame { schema: None, value: val(0) }, FrameOptions::default()).len();
         stream[second + 9] ^= 0xFF; // corrupt the second frame's payload
         let all: Vec<_> = FrameReader::new(&stream).recovering().collect();

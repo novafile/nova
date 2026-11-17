@@ -46,6 +46,7 @@ fn infrastructure_documents() {
         assert!(schema.resolve(&nova).is_err(), "NOVA accepted {j}");
         e
     };
+
     let e = bad(&|j| j["services"][0]["port"] = 70000.into());
     assert!(
         e.len() == 1 && e[0].starts_with("/services/0/port: 70000 is greater than the maximum of 65535"),
@@ -126,6 +127,7 @@ fn every_kind_validates() {
         j[field] = serde_json::from_str(value).unwrap();
         assert_eq!(errors(&v, &j), Vec::<String>::new(), "{field}: {value}");
     };
+
     ok("status", r#""idle""#);
     ok("status", r#"{"busy": 3}"#);
     ok("status", r#""stopped""#);
@@ -141,6 +143,7 @@ fn every_kind_validates() {
         edit(&mut j);
         errors(&v, &j)
     };
+
     let cases: Vec<(&str, Box<Edit>)> = vec![
         ("i8 range", Box::new(|j| j["i8"] = (-129).into())),
         ("@range on i16", Box::new(|j| j["i16"] = 101.into())),
@@ -168,6 +171,7 @@ fn every_kind_validates() {
     for (what, edit) in cases {
         assert!(!bad(&*edit).is_empty(), "{what}: expected a validation error");
     }
+
     // Documented limits: constraints JSON Schema cannot express are not checked.
     assert!(bad(&|j| j["price"] = "2000".into()).is_empty(), "decimal @range is x-nova-range only");
     assert!(bad(&|j| j["name"] = "x".repeat(11).into()).is_empty(), "@len(.., utf8) is x-nova-len only");

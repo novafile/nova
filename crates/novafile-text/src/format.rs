@@ -46,6 +46,7 @@ fn prev_line_blank(src: &str, at: usize) -> bool {
     if ls == 0 {
         return false;
     }
+
     let pls = line_start(src, ls - 1);
     src[pls..ls - 1].trim().is_empty()
 }
@@ -67,6 +68,7 @@ impl Trivia {
         for (i, s) in spans.iter().enumerate() {
             t.order.entry(s.path.to_string()).or_insert(i);
         }
+
         let mut leading_start: HashMap<String, usize> = HashMap::new();
         for &(cs, ce) in &spans.comments {
             let text = src[cs..ce].trim_end().to_owned();
@@ -74,6 +76,7 @@ impl Trivia {
                 t.header.push((cs, text));
                 continue;
             }
+
             let ls = line_start(src, cs);
             if !src[ls..cs].trim().is_empty() {
                 // Trailing: the innermost line-level construct that starts on this line.
@@ -84,10 +87,12 @@ impl Trivia {
                     if !e.is_empty() {
                         e.push(' ');
                     }
+
                     e.push_str(&text);
                     continue;
                 }
             }
+
             // Leading: the next line-level construct (outermost when several start together).
             // Blocks are sorted by (start, depth): the first one at or after the comment is the outermost next construct.
             match blocks.get(blocks.partition_point(|s| s.start < ce)) {
@@ -99,19 +104,23 @@ impl Trivia {
                 None => t.footer.push(text),
             }
         }
+
         for s in &blocks {
             let p = s.path.to_string();
             let first = leading_start.get(&p).copied().unwrap_or(s.start).min(s.start);
             if line_start(src, first) > body_start && prev_line_blank(src, first) {
                 t.blank_before.insert(p.clone());
             }
+
             if matches!(s.kind, SpanKind::BlockEntry | SpanKind::BlockItem) && table_parents.contains(&p) {
                 t.tables.insert(p.clone());
             }
         }
+
         if table_parents.contains(&Path::root().to_string()) {
             t.tables.insert(Path::root().to_string());
         }
+
         for s in spans
             .iter()
             .filter(|s| matches!(s.kind, SpanKind::BlockEntry | SpanKind::BlockItem | SpanKind::TableCell))
@@ -121,12 +130,14 @@ impl Trivia {
             if text.is_empty() || text.contains('\n') || text.starts_with('|') {
                 continue;
             }
+
             if let Ok(v) = s.path.get(value)
                 && !v.is_container()
             {
                 t.spelling.insert(s.path.to_string(), (text.to_owned(), v.clone()));
             }
         }
+
         t.blank_before_body = body_start > 0 && body_start < src.len() && prev_line_blank(src, body_start);
         t
     }
@@ -150,6 +161,7 @@ pub fn format_preserving(src: &str, profile: Profile) -> Result<String, ParseErr
             message: "formatting @template documents is not supported yet".into(),
         });
     }
+
     let value = doc.body.to_value().map_err(|m| ParseError {
         line: 1,
         col: 1,
@@ -196,11 +208,13 @@ fn render_parsed(src: &str, doc: &crate::Document, spans: &SpanMap, orig: &Value
     if keep {
         header.extend(trivia.header.iter().cloned());
     }
+
     header.sort_by_key(|(o, _)| *o);
     for (_, line) in &header {
         out.push_str(line);
         out.push('\n');
     }
+
     if !header.is_empty() && profile != Profile::Compact && (trivia.blank_before_body || !doc.directives.is_empty()) {
         out.push('\n');
     }
@@ -213,6 +227,7 @@ fn render_parsed(src: &str, doc: &crate::Document, spans: &SpanMap, orig: &Value
     } else {
         value
     };
+
     let mut w = W::new(profile == Profile::Compact, keep.then_some(&trivia));
     write_body(&mut w, v);
     out.push_str(&w.out);
@@ -222,6 +237,7 @@ fn render_parsed(src: &str, doc: &crate::Document, spans: &SpanMap, orig: &Value
             out.push('\n');
         }
     }
+
     out
 }
 
@@ -251,6 +267,7 @@ pub fn render_fragment(src: Option<&str>, parent: &Path, seg: &crate::path::Segm
         trivia.leading.remove(&here);
         trivia.blank_before.remove(&here);
     }
+
     let mut w = W::new(false, Some(&trivia));
     w.path.clone_from(&parent.0);
     match seg {
@@ -261,9 +278,11 @@ pub fn render_fragment(src: Option<&str>, parent: &Path, seg: &crate::path::Segm
         crate::path::Segment::Field(k) => w.entry(k, value, indent, true),
         other => panic!("render_fragment: unsupported segment {other:?}"),
     }
+
     if continuation {
         w.out.drain(..indent.min(w.out.len()));
     }
+
     w.out
 }
 

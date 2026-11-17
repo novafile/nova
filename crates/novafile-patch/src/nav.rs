@@ -21,6 +21,7 @@ pub fn get_mut<'v>(root: &'v mut Value, path: &Path) -> Result<&'v mut Value, Pa
             expected,
             found,
         };
+
         cur = match (seg, cur) {
             (Segment::Field(n), Value::Record(r)) => r.get_mut(n).ok_or(PathError::NotFound(upto))?,
             (Segment::Field(n), Value::Map(m)) => m
@@ -61,5 +62,6 @@ pub fn get_mut<'v>(root: &'v mut Value, path: &Path) -> Result<&'v mut Value, Pa
             (Segment::All | Segment::Filter(..) | Segment::Project(_), _) => return Err(PathError::NotSingular(path.clone())),
         };
     }
+
     Ok(cur)
 }

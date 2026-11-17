@@ -130,6 +130,7 @@ fn output_budget_stops_exponential_reuse() {
             p = i - 1
         );
     }
+
     src.push_str("x: $a7\n");
     let opts = Options {
         limits: Limits {
@@ -138,6 +139,7 @@ fn output_budget_stops_exponential_reuse() {
         },
         ..Options::default()
     };
+
     let e = render(&src, &Record::new(), &opts).unwrap_err().to_string();
     assert!(e.contains("exceeds the limit"), "{e}");
 }
@@ -170,6 +172,7 @@ fn sandboxed_imports() {
         loader: &loader,
         ..Options::default()
     };
+
     let src = std::fs::read_to_string(dir.join("app.nova")).unwrap();
     let v = render(&src, &Record::new(), &opts).unwrap();
     assert_eq!(

@@ -33,6 +33,7 @@ fn digits_log10(x: &BigInt) -> f64 {
         let v = d.first().copied().unwrap_or(0) as f64;
         return if v == 0.0 { f64::NEG_INFINITY } else { v.log10() };
     }
+
     bits * std::f64::consts::LOG10_2
 }
 
@@ -52,9 +53,11 @@ fn of(v: &Value) -> Option<Num> {
             if f.is_nan() {
                 return None;
             }
+
             if f.is_infinite() {
                 return Some(if *f > 0.0 { Num::PosInf } else { Num::NegInf });
             }
+
             // f = mantissa * 2^exp exactly.
             let bits = f.to_bits();
             let neg = bits >> 63 == 1;
@@ -66,15 +69,18 @@ fn of(v: &Value) -> Option<Num> {
             } else {
                 (frac | (1u64 << 52), exp_bits - 1075)
             };
+
             let mut n = BigInt::from(mantissa);
             if neg {
                 n = -n;
             }
+
             let (num, den) = if exp2 >= 0 {
                 (n << exp2.unsigned_abs(), BigInt::from(1))
             } else {
                 (n, BigInt::from(1) << exp2.unsigned_abs())
             };
+
             Num::Finite {
                 num,
                 den,
@@ -146,15 +152,18 @@ pub fn numeric_cmp(a: &Value, b: &Value) -> Option<Ordering> {
             },
         ) => (an, ad, ae, al, bn, bd, be, bl),
     };
+
     let (sa, sb) = (sign(&an), sign(&bn));
     if sa != sb || sa == 0 {
         return Some(sa.cmp(&sb));
     }
+
     // Same nonzero sign: if magnitudes differ by more than a decade (with margin), decide directly.
     if (al - bl).abs() > 2.0 {
         let mag = al.partial_cmp(&bl)?;
         return Some(if sa > 0 { mag } else { mag.reverse() });
     }
+
     // Magnitudes are close, so the decimal exponents differ by a bounded amount.
     let m = ae.min(be);
     let (an, bn) = (scale(an, ae - m), scale(bn, be - m));
@@ -169,6 +178,7 @@ mod tests {
     fn d(s: &str) -> Value {
         Value::Decimal(Decimal::parse(s).unwrap())
     }
+
     fn r(n: i128, dd: i128) -> Value {
         Value::Rational(Rational::new(n, dd).unwrap())
     }
@@ -198,6 +208,7 @@ mod tests {
             assert_eq!(numeric_cmp(&a, &b), Some(want), "{a:?} vs {b:?}");
             assert_eq!(numeric_cmp(&b, &a), Some(want.reverse()), "{b:?} vs {a:?}");
         }
+
         assert_eq!(numeric_cmp(&Value::Float(f64::NAN), &Value::Int(1)), None);
         assert_eq!(numeric_cmp(&Value::String("1".into()), &Value::Int(1)), None);
     }

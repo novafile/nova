@@ -105,6 +105,7 @@ fn round_trips_text_binary_and_value() {
         let t = to_string_with(&s, p).unwrap();
         assert_eq!(from_str::<Infra>(&t).unwrap_or_else(|e| panic!("{e}\n{t}")), s, "{t}");
     }
+
     assert_eq!(from_slice::<Infra>(&to_vec(&s).unwrap()).unwrap(), s);
     assert_eq!(from_value::<Infra>(to_value(&s).unwrap()).unwrap(), s);
 }
@@ -143,6 +144,7 @@ fn the_rust_type_acts_as_a_schema() {
         status: Status,
         ratio: Rational,
     }
+
     let t: T = from_str("at: 2026-11-17T16:00:00Z\nprice: 12.50\nstatus: Active\nratio: 3\n").unwrap();
     assert_eq!(t.at.to_string(), "2026-11-17T16:00:00Z");
     assert_eq!(t.price.to_string(), "12.5");
@@ -157,6 +159,7 @@ fn errors_carry_paths() {
         #[serde(with = "novafile_serde::with::set")]
         tags: Vec<&'static str>,
     }
+
     let text = to_string(&sample()).unwrap().replace("port: 3000", "port: 70000");
     let e = from_str::<Infra>(&text).unwrap_err();
     assert_eq!(e.path(), "services[1].port");
@@ -196,12 +199,14 @@ fn internally_tagged_and_untagged_enums() {
         Circle { r: f64 },
         Square { side: f64 },
     }
+
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
     #[serde(untagged)]
     enum Num {
         I(i64),
         S(String),
     }
+
     let shapes = vec![Shape::Circle { r: 1.5 }, Shape::Square { side: 2.0 }];
     let t = to_string_with(&shapes, Profile::Compact).unwrap();
     assert_eq!(t, "[2]{kind,r,side}:\n  Circle,1.5,\n  Square,,2.0\n");

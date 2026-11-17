@@ -28,6 +28,7 @@ fn rec(entries: Vec<(&str, Value)>) -> Value {
     for (k, v) in entries {
         r.set(k, v);
     }
+
     Value::Record(r)
 }
 
@@ -59,6 +60,7 @@ fn type_value(t: &TypeRef) -> Value {
         TypeKind::Tuple(_) => "tuple",
         TypeKind::Named(_) => "named",
     };
+
     e.push(("kind", tag(kind)));
     match &t.kind {
         TypeKind::Named(n) => e.push(("ref", s(n))),
@@ -70,32 +72,41 @@ fn type_value(t: &TypeRef) -> Value {
         TypeKind::Tuple(ts) => e.push(("items", Value::List(ts.iter().map(type_value).collect()))),
         _ => {}
     }
+
     if t.nullable {
         e.push(("nullable", Value::Bool(true)));
     }
+
     if let Some((lo, hi)) = &t.constraints.range {
         let mut r = Vec::new();
         if let Some(lo) = lo {
             r.push(("min", lo.0.clone()));
         }
+
         if let Some(hi) = hi {
             r.push(("max", hi.0.clone()));
         }
+
         e.push(("range", rec(r)));
     }
+
     if let Some((lo, hi)) = t.constraints.len {
         let mut l = Vec::new();
         if let Some(lo) = lo {
             l.push(("min", Value::Int(i128::from(lo))));
         }
+
         if let Some(hi) = hi {
             l.push(("max", Value::Int(i128::from(hi))));
         }
+
         if t.constraints.len_unit != LenUnit::Scalars {
             l.push(("unit", tag(t.constraints.len_unit.name())));
         }
+
         e.push(("len", rec(l)));
     }
+
     rec(e)
 }
 
@@ -107,12 +118,15 @@ impl Schema {
         if let Some(n) = &self.name {
             top.push(("name", s(n)));
         }
+
         if let Some(v) = &self.version {
             top.push(("version", Value::String(v.to_string())));
         }
+
         if let Some(r) = &self.root {
             top.push(("root", s(r)));
         }
+
         let mut defs: Vec<&(String, Def)> = self.defs.iter().collect();
         defs.sort_by(|a, b| a.0.cmp(&b.0));
         let defs = defs
@@ -129,6 +143,7 @@ impl Schema {
                                     if let Some(p) = &v.payload {
                                         e.push(("payload", type_value(p)));
                                     }
+
                                     rec(e)
                                 })
                                 .collect(),
@@ -143,18 +158,23 @@ impl Schema {
                                 if f.optional {
                                     e.push(("optional", Value::Bool(true)));
                                 }
+
                                 if let Some(d) = &f.default {
                                     e.push(("default", d.clone()));
                                 }
+
                                 if f.key {
                                     e.push(("key", Value::Bool(true)));
                                 }
+
                                 if let Some(id) = f.id {
                                     e.push(("id", Value::Int(i128::from(id))));
                                 }
+
                                 if f.deprecated {
                                     e.push(("deprecated", Value::Bool(true)));
                                 }
+
                                 rec(e)
                             })
                             .collect();
@@ -162,10 +182,12 @@ impl Schema {
                         if r.open {
                             e.push(("open", Value::Bool(true)));
                         }
+
                         e.push(("fields", Value::List(fields)));
                         ("record", rec(e))
                     }
                 };
+
                 rec(vec![("name", s(name)), body])
             })
             .collect();
@@ -196,9 +218,11 @@ impl Schema {
             root: text("root"),
             defs: Vec::new(),
         };
+
         if let Some(ver) = text("version") {
             schema.version = Some(crate::Version::parse(&ver)?);
         }
+
         for d in r.get("defs").and_then(Value::as_list).into_iter().flatten() {
             let d = d.as_record().ok_or("definition must be a record")?;
             let name = d.get("name").and_then(Value::as_str).ok_or("definition without name")?.to_owned();
@@ -207,6 +231,7 @@ impl Schema {
             if bodies != 1 {
                 return Err(at("needs exactly one of `record`, `enum` and `alias`"));
             }
+
             let def = if let Some(t) = d.get("alias") {
                 Def::Alias(value_type(t).map_err(|e| at(&e))?)
             } else if let Some(Value::List(vs)) = d.get("enum") {
@@ -252,8 +277,10 @@ impl Schema {
                     open: flag(rd, "open"),
                 })
             };
+
             schema.defs.push((name, def));
         }
+
         // Validate exactly like schema text (names, references, ids, cycles, defaults).
         crate::parse_schema(&schema.to_canonical_text()).map_err(|e| format!("invalid schema descriptor: {}", e.message))
     }
@@ -265,6 +292,7 @@ fn value_type(v: &Value) -> Result<TypeRef, String> {
         Some(Value::Variant(k, None) | Value::String(k)) => k.as_str(),
         _ => return Err("type without kind".into()),
     };
+
     let sub = |k: &str| -> Result<Box<TypeRef>, String> { Ok(Box::new(value_type(r.get(k).ok_or_else(|| format!("{kind} type needs `{k}`"))?)?)) };
     let tk = match kind {
         "any" => TypeKind::Any,
@@ -291,21 +319,25 @@ fn value_type(v: &Value) -> Result<TypeRef, String> {
         "named" => TypeKind::Named(r.get("ref").and_then(Value::as_str).ok_or("named type needs `ref`")?.to_owned()),
         other => TypeKind::Int(IntKind::from_name(other).ok_or_else(|| format!("unknown kind {other:?}"))?),
     };
+
     let mut t = TypeRef::new(tk);
     t.nullable = matches!(r.get("nullable"), Some(Value::Bool(true)));
     if let Some(Value::Record(rg)) = r.get("range") {
         let bound = |k: &str| rg.get(k).map(|v| Num::of(v).ok_or_else(|| format!("range {k} must be a number"))).transpose();
         t.constraints.range = Some((bound("min")?, bound("max")?));
     }
+
     if let Some(Value::Record(l)) = r.get("len") {
         let n = |k: &str| match l.get(k) {
             Some(Value::Int(i)) => u64::try_from(*i).map(Some).map_err(|_| format!("len {k} out of range")),
             _ => Ok(None),
         };
+
         t.constraints.len = Some((n("min")?, n("max")?));
         if let Some(Value::Variant(u, None)) = l.get("unit") {
             t.constraints.len_unit = LenUnit::from_name(u).ok_or("unknown len unit")?;
         }
     }
+
     Ok(t)
 }

@@ -31,16 +31,19 @@ impl<'s> Decoder<'s> {
         if depth > MAX_DEPTH {
             return Err(Fail::new(format!("nesting is deeper than {MAX_DEPTH} messages")));
         }
+
         let mut wire = Vec::new();
         for part in parts {
             wire.extend(fields(part)?);
         }
+
         match m {
             Message::Record(name, def) => {
                 let mut by_number: HashMap<u32, Vec<Wire<'_>>> = HashMap::new();
                 for (n, w) in wire {
                     by_number.entry(n).or_default().push(w);
                 }
+
                 let mut out = Record::new();
                 for f in &def.fields {
                     let number = field_number(name, f)?;
@@ -49,11 +52,13 @@ impl<'s> Decoder<'s> {
                         Some(entries) => Some(self.field(entries, c, depth)),
                         None => self.missing(f, c, depth).transpose(),
                     };
+
                     if let Some(v) = value {
                         let v = v.map_err(|e| e.at(Segment::Field(f.name.clone())))?;
                         out.insert(f.name.clone(), v).expect("schema field names are unique");
                     }
                 }
+
                 // Fields with other numbers are unknown and skipped.
                 Ok(Value::Record(out))
             }
@@ -67,9 +72,11 @@ impl<'s> Decoder<'s> {
                             current = Some(n);
                             entries.clear();
                         }
+
                         entries.push(w);
                     }
                 }
+
                 let n = current.ok_or_else(|| Fail::new(format!("no variant of {name} is set")))?;
                 let vd = &vs[n as usize - 1];
                 let payload = match classify_payload(self.schema, name, vd)? {
@@ -82,6 +89,7 @@ impl<'s> Decoder<'s> {
                         self.field(&entries, single(s), depth).map_err(|e| e.at(Segment::Field(vd.name.clone())))?,
                     )),
                 };
+
                 Ok(Value::Variant(vd.name.clone(), payload))
             }
             Message::Timestamp => {
@@ -98,6 +106,7 @@ impl<'s> Decoder<'s> {
                 if nanos.abs() >= NANOS_PER_SEC || (secs > 0 && nanos < 0) || (secs < 0 && nanos > 0) {
                     return Err(Fail::new(format!("invalid google.protobuf.Duration: seconds {secs}, nanos {nanos}")));
                 }
+
                 let total = i128::from(secs) * i128::from(NANOS_PER_SEC) + i128::from(nanos);
                 Duration::from_nanos(total).map(Value::Duration).map_err(Fail::new)
             }
@@ -110,13 +119,16 @@ impl<'s> Decoder<'s> {
         if f.optional {
             return Ok(None);
         }
+
         if c.nullable {
             return Ok(Some(Value::Null));
         }
+
         if let Some(d) = &f.default {
             // Defaults are written as flow values; resolve them like the schema does.
             return Ok(Some(self.schema.resolve_as(d, &f.ty).unwrap_or_else(|_| d.clone())));
         }
+
         Ok(Some(match c.shape {
             Shape::Single(s) => self.zero(s, depth)?,
             Shape::Repeated { set: false, .. } => Value::List(Vec::new()),
@@ -162,6 +174,7 @@ impl<'s> Decoder<'s> {
                     }
                     .map_err(|e| e.at(at))?;
                 }
+
                 Ok(if set { Value::Set(items) } else { Value::List(items) })
             }
             Shape::Map { key, value } => {
@@ -175,11 +188,13 @@ impl<'s> Decoder<'s> {
                         Some(w) => scalar(*w, key)?,
                         None => self.zero(Single::Scalar(key), depth)?,
                     };
+
                     let v = if values.is_empty() {
                         self.zero(value, depth)
                     } else {
                         self.field(&values, single(value), depth)
                     };
+
                     let v = v.map_err(|e| e.at(Segment::Key(k.clone())))?;
                     // Last entry wins for duplicate keys.
                     if let Some(&i) = index.get(&k) {
@@ -189,6 +204,7 @@ impl<'s> Decoder<'s> {
                         out.push((k, v));
                     }
                 }
+
                 Ok(Value::Map(out))
             }
         }
@@ -231,8 +247,10 @@ fn packed(bytes: &[u8], s: Scalar<'_>, items: &mut Vec<Value>) -> Result<(), Fai
             WireType::I64 => Wire::I64(r.fixed64()?),
             wt => unreachable!("{wt:?} is not packable"),
         };
+
         items.push(scalar(w, s).map_err(|e| e.at(index(items.len())))?);
     }
+
     Ok(())
 }
 
@@ -241,6 +259,7 @@ fn scalar(w: Wire<'_>, s: Scalar<'_>) -> Result<Value, Fail> {
     if w.wire_type() != s.wire_type() {
         return Err(wire_mismatch(w, s.wire_type()));
     }
+
     let text = |b: &[u8]| String::from_utf8(b.to_vec()).map_err(|_| Fail::new("string is not valid UTF-8"));
     Ok(match (s, w) {
         (Scalar::Bool, Wire::Varint(v)) => Value::Bool(v != 0),

@@ -73,6 +73,7 @@ impl Timestamp {
         if nanos >= 1_000_000_000 || !(MIN_SECS..=MAX_SECS).contains(&secs) {
             return Err("timestamp out of range (years 0001-9999)".into());
         }
+
         Ok(Timestamp { secs, nanos })
     }
 
@@ -99,22 +100,27 @@ impl Timestamp {
         if b.len() < 20 {
             return Err(err());
         }
+
         let num = |r: std::ops::Range<usize>| -> Result<u32, String> {
             let part = &b[r];
             if !part.iter().all(u8::is_ascii_digit) {
                 return Err(err());
             }
+
             // At most 9 digits, so this cannot overflow.
             Ok(part.iter().fold(0, |acc, &c| acc * 10 + u32::from(c - b'0')))
         };
+
         if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
             return Err(err());
         }
+
         let (y, mo, d) = (i64::from(num(0..4)?), num(5..7)?, num(8..10)?);
         let (h, mi, se) = (num(11..13)?, num(14..16)?, num(17..19)?);
         if y < 1 || !(1..=12).contains(&mo) || d < 1 || d > days_in_month(y, mo) || h > 23 || mi > 59 || se > 59 {
             return Err(err());
         }
+
         let mut i = 19;
         let mut nanos = 0u32;
         if b[i] == b'.' {
@@ -123,12 +129,15 @@ impl Timestamp {
             while i < b.len() && b[i].is_ascii_digit() {
                 i += 1;
             }
+
             let n = i - start;
             if n == 0 || n > 9 {
                 return Err(err());
             }
+
             nanos = frac_nanos(&b[start..i]);
         }
+
         let offset: i64 = match b.get(i) {
             Some(b'Z') if i + 1 == b.len() => 0,
             Some(c @ (b'+' | b'-')) if i + 6 == b.len() && b[i + 3] == b':' => {
@@ -137,11 +146,13 @@ impl Timestamp {
                 if oh > 23 || om > 59 {
                     return Err(err());
                 }
+
                 let o = oh * 3600 + om * 60;
                 if *c == b'-' { -o } else { o }
             }
             _ => return Err(err()),
         };
+
         let secs = days_from_civil(y, mo, d) * 86_400 + i64::from(h * 3600 + mi * 60 + se) - offset;
         Timestamp::new(secs, nanos).map_err(|_| err())
     }
@@ -158,6 +169,7 @@ impl fmt::Display for Timestamp {
             let frac = format!("{:09}", self.nanos);
             write!(f, ".{}", frac.trim_end_matches('0'))?;
         }
+
         f.write_str("Z")
     }
 }
@@ -183,6 +195,7 @@ impl Duration {
         if nanos.abs() > MAX_DURATION {
             return Err("duration out of range".into());
         }
+
         Ok(Duration { nanos })
     }
 
@@ -203,6 +216,7 @@ impl Duration {
         if s.strip_prefix('-').unwrap_or(s).starts_with('P') {
             return Duration::parse_iso8601(s);
         }
+
         let err = || format!("invalid duration {s:?} (expected e.g. 1h30m, 1.5s or PT1H30M)");
         let b = s.as_bytes();
         let mut i = 0;
@@ -210,6 +224,7 @@ impl Duration {
         if neg {
             i += 1;
         }
+
         let units = [(b'd', 86_400 * NS), (b'h', 3_600 * NS), (b'm', 60 * NS), (b's', NS)];
         let mut next_unit = 0;
         let mut total: i128 = 0;
@@ -221,9 +236,11 @@ impl Duration {
                 n = n.checked_mul(10).and_then(|v| v.checked_add(i128::from(b[i] - b'0'))).ok_or_else(err)?;
                 i += 1;
             }
+
             if i == start {
                 return Err(err());
             }
+
             let mut frac_ns: i128 = 0;
             if i < b.len() && b[i] == b'.' {
                 i += 1;
@@ -231,12 +248,15 @@ impl Duration {
                 while i < b.len() && b[i].is_ascii_digit() {
                     i += 1;
                 }
+
                 let len = i - fs;
                 if len == 0 || len > 9 || b.get(i) != Some(&b's') {
                     return Err(err());
                 }
+
                 frac_ns = i128::from(frac_nanos(&b[fs..i]));
             }
+
             let u = *b.get(i).ok_or_else(err)?;
             let idx = units[next_unit..].iter().position(|(c, _)| *c == u).ok_or_else(err)? + next_unit;
             next_unit = idx + 1;
@@ -248,9 +268,11 @@ impl Duration {
             any = true;
             i += 1;
         }
+
         if !any {
             return Err(err());
         }
+
         Duration::from_nanos(if neg { -total } else { total }).map_err(|_| err())
     }
 }
@@ -274,16 +296,19 @@ impl Duration {
             Some(r) => (true, r),
             None => (false, s),
         };
+
         let body = rest.strip_prefix('P').ok_or_else(|| err("must start with P"))?;
         let (date, time) = match body.split_once('T') {
             Some((d, t)) => {
                 if t.is_empty() {
                     return Err(err("`T` must be followed by at least one of H, M, S"));
                 }
+
                 (d, Some(t))
             }
             None => (body, None),
         };
+
         let mut total: i128 = 0;
         let mut any = false;
         let mut part = |section: &str, units: &[(u8, i128)], fraction_unit: Option<u8>| -> Result<(), String> {
@@ -295,9 +320,11 @@ impl Duration {
                 while i < b.len() && b[i].is_ascii_digit() {
                     i += 1;
                 }
+
                 if i == st {
                     return Err(err("expected digits"));
                 }
+
                 let n: i128 = section[st..i].parse().map_err(|_| err("number too large"))?;
                 let mut frac_ns: i128 = 0;
                 if i < b.len() && (b[i] == b'.' || b[i] == b',') {
@@ -306,19 +333,24 @@ impl Duration {
                     while i < b.len() && b[i].is_ascii_digit() {
                         i += 1;
                     }
+
                     let len = i - fs;
                     if len == 0 || len > 9 {
                         return Err(err("a fraction needs 1 to 9 digits"));
                     }
+
                     if b.get(i).copied() != fraction_unit {
                         return Err(err("only seconds may have a fraction"));
                     }
+
                     frac_ns = i128::from(frac_nanos(&b[fs..i]));
                 }
+
                 let u = *b.get(i).ok_or_else(|| err("missing unit designator"))?;
                 if u == b'Y' || (u == b'M' && fraction_unit.is_none()) {
                     return Err(err("years and months are calendar-dependent and not supported; use days (D) or weeks (W)"));
                 }
+
                 let idx = units[next..]
                     .iter()
                     .position(|(c, _)| *c == u)
@@ -333,15 +365,19 @@ impl Duration {
                 any = true;
                 i += 1;
             }
+
             Ok(())
         };
+
         part(date, &[(b'W', 7 * 86_400 * NS), (b'D', 86_400 * NS)], None)?;
         if let Some(t) = time {
             part(t, &[(b'H', 3_600 * NS), (b'M', 60 * NS), (b'S', NS)], Some(b'S'))?;
         }
+
         if !any {
             return Err(err("needs at least one component"));
         }
+
         Duration::from_nanos(if neg { -total } else { total }).map_err(|_| err("out of range"))
     }
 
@@ -352,6 +388,7 @@ impl Duration {
         if self.nanos < 0 {
             out.push('-');
         }
+
         out.push('P');
         let mut n = self.nanos.unsigned_abs();
         let ns = NS as u128;
@@ -360,6 +397,7 @@ impl Duration {
         if days > 0 {
             let _ = write!(out, "{days}D");
         }
+
         if n > 0 || days == 0 {
             out.push('T');
             let (h, m) = (n / (3_600 * ns), n / (60 * ns) % 60);
@@ -367,17 +405,21 @@ impl Duration {
             if h > 0 {
                 let _ = write!(out, "{h}H");
             }
+
             if m > 0 {
                 let _ = write!(out, "{m}M");
             }
+
             if rem > 0 || (h == 0 && m == 0) {
                 let _ = write!(out, "{}", rem / ns);
                 if !rem.is_multiple_of(ns) {
                     let _ = write!(out, ".{}", format!("{:09}", rem % ns).trim_end_matches('0'));
                 }
+
                 out.push('S');
             }
         }
+
         out
     }
 }
@@ -387,9 +429,11 @@ impl fmt::Display for Duration {
         if self.nanos == 0 {
             return f.write_str("0s");
         }
+
         if self.nanos < 0 {
             f.write_str("-")?;
         }
+
         let mut n = self.nanos.unsigned_abs();
         let ns = NS as u128;
         for (unit, size) in [("d", 86_400 * ns), ("h", 3_600 * ns), ("m", 60 * ns)] {
@@ -398,14 +442,17 @@ impl fmt::Display for Duration {
                 n %= size;
             }
         }
+
         if n > 0 {
             write!(f, "{}", n / ns)?;
             if !n.is_multiple_of(ns) {
                 let frac = format!("{:09}", n % ns);
                 write!(f, ".{}", frac.trim_end_matches('0'))?;
             }
+
             f.write_str("s")?;
         }
+
         Ok(())
     }
 }
@@ -442,6 +489,7 @@ mod tests {
         ] {
             assert_eq!(Duration::parse(s).unwrap().to_string(), c, "{s}");
         }
+
         assert!(Duration::parse("1m1h").is_err());
         // ISO 8601 input; canonical output stays in NOVA notation.
         for (iso, c) in [
@@ -459,12 +507,14 @@ mod tests {
             assert_eq!(d.to_string(), c, "{iso}");
             assert_eq!(Duration::parse(&d.to_iso8601()).unwrap(), d, "{iso}");
         }
+
         assert_eq!(Duration::parse("90m").unwrap().to_iso8601(), "PT1H30M");
         assert_eq!(Duration::parse("0s").unwrap().to_iso8601(), "PT0S");
         assert_eq!(Duration::parse("-1d0.5s").unwrap().to_iso8601(), "-P1DT0.5S");
         for bad in ["P", "PT", "P1Y", "P1M", "P1DT", "PT1.5M", "P1H", "PT1S1M", "P1D2W", "pt1h", "PT1.S"] {
             assert!(Duration::parse(bad).is_err(), "{bad}");
         }
+
         assert!(Duration::parse("P1M").unwrap_err().contains("calendar-dependent"));
         assert!(Duration::parse("").is_err());
         assert!(Duration::parse("1.5m").is_err());

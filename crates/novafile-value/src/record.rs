@@ -57,6 +57,7 @@ impl Record {
         for (k, v) in entries {
             r.insert(k, v)?;
         }
+
         Ok(r)
     }
 
@@ -117,6 +118,7 @@ impl Record {
         if self.contains_key(&key) {
             return Err(DuplicateKey(key));
         }
+
         self.push(key, value);
         Ok(())
     }
@@ -138,6 +140,7 @@ impl Record {
         if self.index.is_some() {
             self.reindex();
         }
+
         Some(v)
     }
 
@@ -176,6 +179,7 @@ mod tests {
         for i in 0..100 {
             r.insert(format!("k{i}"), Value::Int(i)).unwrap();
         }
+
         assert!(r.insert("k5", Value::Null).is_err());
         assert_eq!(r.remove("k3"), Some(Value::Int(3)));
         assert_eq!(r.get("k99"), Some(&Value::Int(99)));

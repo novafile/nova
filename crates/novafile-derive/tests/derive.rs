@@ -89,6 +89,7 @@ fn serde_values_resolve_against_the_derived_schema() {
             },
         ],
     };
+
     let v = novafile_serde::to_value(&infra).unwrap();
     schema.resolve(&v).unwrap_or_else(|e| panic!("{e:?}"));
     // Constraints from attributes are enforced.
@@ -158,6 +159,7 @@ fn mapping_of_rust_types() {
     ] {
         assert!(text.contains(line), "missing {line:?} in\n{text}");
     }
+
     assert!(!text.contains("hidden"));
     // The rendered schema is valid schema text.
     parse_schema(&text).unwrap();

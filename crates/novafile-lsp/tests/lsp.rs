@@ -22,9 +22,11 @@ impl Client {
             }
         }
     }
+
     fn notify(&self, method: &str, params: Value) {
         self.conn.sender.send(Message::Notification(Notification::new(method.into(), params))).unwrap();
     }
+
     fn diagnostics(&self) -> Value {
         loop {
             if let Message::Notification(n) = self.conn.receiver.recv_timeout(Duration::from_secs(10)).unwrap()

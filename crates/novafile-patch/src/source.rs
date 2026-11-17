@@ -38,10 +38,12 @@ pub fn apply_to_source(src: &str, patch: &Patch, validate: &dyn Fn(&Value) -> Re
         col: e.col,
         message: format!("document: {}", e.message),
     };
+
     let (doc, _) = parse_with_spans(src).map_err(syntax)?;
     if doc.is_template() {
         return Err(PatchError::Invalid(vec!["patches apply to rendered documents, not @template sources".into()]));
     }
+
     let value = doc.body.to_value().map_err(|m| PatchError::Invalid(vec![m]))?;
     let applied = apply(&value, patch, validate)?;
 
@@ -53,18 +55,22 @@ pub fn apply_to_source(src: &str, patch: &Patch, validate: &dyn Fn(&Value) -> Re
         if apply_op(&mut next, &full, &op.kind).is_err() {
             break; // cannot happen: `apply` succeeded on the same sequence
         }
+
         if let Some(t) = edit(&text, &cur, &next, &full, &op.kind) {
             text = t;
         } else {
             text = String::new();
             break;
         }
+
         cur = next;
     }
+
     let surgical = !text.is_empty() && novafile_text::parse(&text).ok().as_ref() == Some(&applied.value);
     if !surgical {
         text = render_preserving(src, &applied.value, Profile::Human).map_err(syntax)?;
     }
+
     Ok(SourceEdit { text, applied, surgical })
 }
 
@@ -91,9 +97,11 @@ fn concretize(root: &Value, path: &Path) -> Option<Path> {
             }
             _ => return None, // maps, sets: their entries have no own spans
         };
+
         out.push(seg);
         cur = next;
     }
+
     Some(Path(out))
 }
 
@@ -121,9 +129,11 @@ fn insert_after_line(t: &str, at: usize, block: &str) -> String {
         if !s.ends_with('\n') {
             s.push('\n');
         }
+
         s.push_str(block);
         return s;
     }
+
     splice(t, e + 1, e + 1, block)
 }
 
@@ -139,6 +149,7 @@ fn block_start_with_comments(t: &str, s: &Span) -> usize {
             break;
         }
     }
+
     start
 }
 
@@ -146,11 +157,13 @@ fn edit(text: &str, cur: &Value, next: &Value, path: &Path, kind: &OpKind) -> Op
     if matches!(kind, OpKind::Test(_)) {
         return Some(text.to_owned());
     }
+
     let (_, spans) = parse_with_spans(text).ok()?;
     let (parent, last) = match path.parent() {
         Some((p, l)) => (p, Some(l.clone())),
         None => (Path::root(), None),
     };
+
     let target = concretize(cur, path);
     let cparent = concretize(cur, &parent)?;
     match kind {
@@ -160,6 +173,7 @@ fn edit(text: &str, cur: &Value, next: &Value, path: &Path, kind: &OpKind) -> Op
             if t.is_root() {
                 return None;
             }
+
             replace_at(text, &spans, &t, t.get(next).ok()?)
         }
         OpKind::Remove(_) => remove_at(text, &spans, next, &target?),
@@ -179,6 +193,7 @@ fn edit(text: &str, cur: &Value, next: &Value, path: &Path, kind: &OpKind) -> Op
                 let idx = usize::try_from(i).ok()?;
                 insert_item(text, &spans, next, &cparent, idx, l.get(idx)?)
             }
+
             // Sets, maps, other containers: re-render the container.
             _ => replace_at(text, &spans, &cparent, cparent.get(next).ok()?),
         },
@@ -248,6 +263,7 @@ fn replace_whole(text: &str, spans: &SpanMap, next: &Value, path: &Path) -> Opti
     if path.is_root() {
         return None;
     }
+
     replace_at(text, spans, path, path.get(next).ok()?)
 }
 
@@ -269,8 +285,10 @@ fn remove_at(text: &str, spans: &SpanMap, next: &Value, path: &Path) -> Option<S
             if next_blank && (prev.is_empty() || prev.ends_with(':')) {
                 b = (line_end(text, b) + 1).min(text.len());
             }
+
             Some(splice(text, a, b, ""))
         }
+
         // Flow elements, table rows, sole children, first fields of list items: re-render the parent.
         _ => replace_whole(text, spans, next, &parent),
     }

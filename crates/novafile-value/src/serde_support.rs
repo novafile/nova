@@ -68,15 +68,18 @@ macro_rules! text_type {
                     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
                         f.write_str($expect)
                     }
+
                     fn visit_str<E: de::Error>(self, s: &str) -> Result<$ty, E> {
                         let parse: fn(&str) -> Result<$ty, String> = $parse;
                         parse(s).map_err(E::custom)
                     }
+
                     fn visit_newtype_struct<D: Deserializer<'de>>(self, d: D) -> Result<$ty, D::Error> {
                         let s = String::deserialize(d)?;
                         self.visit_str(&s)
                     }
                 }
+
                 d.deserialize_newtype_struct($name, V)
             }
         }
@@ -122,6 +125,7 @@ impl Serialize for Natural<'_> {
         if captured {
             return s.serialize_unit();
         }
+
         match self.0 {
             Value::Null => s.serialize_unit(),
             Value::Bool(b) => s.serialize_bool(*b),
@@ -146,6 +150,7 @@ impl Serialize for Natural<'_> {
                 for e in l {
                     q.serialize_element(e)?;
                 }
+
                 q.end()
             }
             Value::Tuple(l) => {
@@ -153,6 +158,7 @@ impl Serialize for Natural<'_> {
                 for e in l {
                     q.serialize_element(e)?;
                 }
+
                 q.end()
             }
             Value::Set(l) => s.serialize_newtype_struct(magic::SET, l),
@@ -161,6 +167,7 @@ impl Serialize for Natural<'_> {
                 for (k, v) in r.iter() {
                     m.serialize_entry(k, v)?;
                 }
+
                 m.end()
             }
             Value::Map(entries) => {
@@ -168,6 +175,7 @@ impl Serialize for Natural<'_> {
                 for (k, v) in entries {
                     m.serialize_entry(k, v)?;
                 }
+
                 m.end()
             }
             Value::Variant(tag, None) => s.serialize_str(tag),
@@ -192,63 +200,81 @@ impl<'de> Visitor<'de> for ValueVisitor {
     fn visit_newtype_struct<D: Deserializer<'de>>(self, d: D) -> Result<Value, D::Error> {
         d.deserialize_any(ValueVisitor)
     }
+
     fn visit_unit<E>(self) -> Result<Value, E> {
         Ok(INJECT.with(|c| c.borrow_mut().take()).unwrap_or(Value::Null))
     }
+
     fn visit_none<E>(self) -> Result<Value, E> {
         Ok(Value::Null)
     }
+
     fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Value, D::Error> {
         Value::deserialize(d)
     }
+
     fn visit_bool<E>(self, b: bool) -> Result<Value, E> {
         Ok(Value::Bool(b))
     }
+
     fn visit_i64<E>(self, i: i64) -> Result<Value, E> {
         Ok(Value::Int(i128::from(i)))
     }
+
     fn visit_u64<E>(self, i: u64) -> Result<Value, E> {
         Ok(Value::Int(i128::from(i)))
     }
+
     fn visit_i128<E>(self, i: i128) -> Result<Value, E> {
         Ok(Value::Int(i))
     }
+
     fn visit_u128<E: de::Error>(self, i: u128) -> Result<Value, E> {
         i128::try_from(i).map(Value::Int).map_err(|_| E::custom("integer exceeds the i128 range"))
     }
+
     fn visit_f64<E>(self, f: f64) -> Result<Value, E> {
         Ok(Value::Float(f))
     }
+
     fn visit_str<E>(self, s: &str) -> Result<Value, E> {
         Ok(Value::String(s.to_owned()))
     }
+
     fn visit_string<E>(self, s: String) -> Result<Value, E> {
         Ok(Value::String(s))
     }
+
     fn visit_bytes<E>(self, b: &[u8]) -> Result<Value, E> {
         Ok(Value::Bytes(b.to_vec()))
     }
+
     fn visit_byte_buf<E>(self, b: Vec<u8>) -> Result<Value, E> {
         Ok(Value::Bytes(b))
     }
+
     fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<Value, A::Error> {
         let mut out = Vec::with_capacity(a.size_hint().unwrap_or(0).min(4096));
         while let Some(v) = a.next_element::<Value>()? {
             out.push(v);
         }
+
         Ok(Value::List(out))
     }
+
     fn visit_map<A: MapAccess<'de>>(self, mut a: A) -> Result<Value, A::Error> {
         let mut entries: Vec<(Value, Value)> = Vec::new();
         while let Some((k, v)) = a.next_entry::<Value, Value>()? {
             entries.push((k, v));
         }
+
         if entries.iter().all(|(k, _)| matches!(k, Value::String(_))) {
             let mut r = Record::new();
             for (k, v) in entries {
                 let Value::String(k) = k else { unreachable!() };
                 r.insert(k, v).map_err(de::Error::custom)?;
             }
+
             Ok(Value::Record(r))
         } else {
             Value::map(entries).map_err(de::Error::custom)

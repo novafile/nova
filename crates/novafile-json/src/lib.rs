@@ -30,11 +30,13 @@ impl P<'_> {
     fn err<T>(&self, m: &str) -> Result<T, String> {
         Err(format!("JSON byte {}: {m}", self.i))
     }
+
     fn ws(&mut self) {
         while matches!(self.b.get(self.i), Some(b' ' | b'\t' | b'\n' | b'\r')) {
             self.i += 1;
         }
     }
+
     fn lit(&mut self, word: &str, v: Value) -> Result<Value, String> {
         if self.s[self.i..].starts_with(word) {
             self.i += word.len();
@@ -43,12 +45,14 @@ impl P<'_> {
             self.err("invalid literal")
         }
     }
+
     fn value(&mut self) -> Result<Value, String> {
         self.ws();
         self.depth += 1;
         if self.depth > 128 {
             return self.err("nesting too deep");
         }
+
         let v = match self.b.get(self.i) {
             None => return self.err("unexpected end of input"),
             Some(b'n') => self.lit("null", Value::Null)?,
@@ -75,6 +79,7 @@ impl P<'_> {
                         }
                     }
                 }
+
                 Value::List(out)
             }
             Some(b'{') => {
@@ -89,17 +94,20 @@ impl P<'_> {
                         if self.b.get(self.i) != Some(&b'"') {
                             return self.err("expected a string key");
                         }
+
                         let at = self.i;
                         let k = self.string()?;
                         self.ws();
                         if self.b.get(self.i) != Some(&b':') {
                             return self.err("expected `:`");
                         }
+
                         self.i += 1;
                         let v = self.value()?;
                         if r.insert(k.clone(), v).is_err() {
                             return Err(format!("JSON byte {at}: duplicate key {k:?}"));
                         }
+
                         self.ws();
                         match self.b.get(self.i) {
                             Some(b',') => self.i += 1,
@@ -111,18 +119,22 @@ impl P<'_> {
                         }
                     }
                 }
+
                 Value::Record(r)
             }
             Some(_) => self.number()?,
         };
+
         self.depth -= 1;
         Ok(v)
     }
+
     fn number(&mut self) -> Result<Value, String> {
         let st = self.i;
         while matches!(self.b.get(self.i), Some(b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')) {
             self.i += 1;
         }
+
         let t = &self.s[st..self.i];
         // JSON's number grammar is the same as NOVA's (spec §4.5).
         let intlike = t.bytes().all(|c| c.is_ascii_digit() || c == b'-');
@@ -138,48 +150,60 @@ impl P<'_> {
                     while b.get(j).is_some_and(u8::is_ascii_digit) {
                         j += 1;
                     }
+
                     true
                 }
                 _ => false,
             };
+
             if ok_int && b.get(j) == Some(&b'.') {
                 j += 1;
                 let s = j;
                 while b.get(j).is_some_and(u8::is_ascii_digit) {
                     j += 1;
                 }
+
                 if s == j {
                     j = usize::MAX;
                 }
             }
+
             if ok_int && j != usize::MAX && matches!(b.get(j), Some(b'e' | b'E')) {
                 j += 1;
                 if matches!(b.get(j), Some(b'+' | b'-')) {
                     j += 1;
                 }
+
                 let s = j;
                 while b.get(j).is_some_and(u8::is_ascii_digit) {
                     j += 1;
                 }
+
                 if s == j {
                     j = usize::MAX;
                 }
             }
+
             ok_int && j == b.len()
         };
+
         if !valid {
             self.i = st;
             return self.err("invalid number");
         }
+
         if intlike {
             return t.parse().map(Value::Int).map_err(|_| format!("integer {t} exceeds the supported range"));
         }
+
         let f: f64 = t.parse().map_err(|_| format!("invalid number {t}"))?;
         if f.is_infinite() {
             return Err(format!("number {t} overflows binary64"));
         }
+
         Ok(Value::Float(f))
     }
+
     fn string(&mut self) -> Result<String, String> {
         self.i += 1;
         let mut out = String::new();
@@ -219,6 +243,7 @@ impl P<'_> {
             }
         }
     }
+
     fn hex4(&mut self) -> Result<u32, String> {
         let h = self.s.get(self.i..self.i + 4).ok_or("JSON: bad \\u escape")?;
         self.i += 4;
@@ -241,11 +266,13 @@ pub fn from_json_str(s: &str) -> Result<Value, String> {
         i: 0,
         depth: 0,
     };
+
     let v = p.value()?;
     p.ws();
     if p.i != s.len() {
         return p.err("trailing content");
     }
+
     Ok(v)
 }
 
@@ -278,6 +305,7 @@ fn quote(s: &str, out: &mut String) {
             c => out.push(c),
         }
     }
+
     out.push('"');
 }
 
@@ -306,6 +334,7 @@ fn write(value: &Value, out: &mut String, path: &mut String, warnings: &mut Vec<
             message: m.to_owned(),
         });
     };
+
     let inner = indent.map(|n| n + 2);
     match value {
         Value::Null => out.push_str("null"),
@@ -314,6 +343,7 @@ fn write(value: &Value, out: &mut String, path: &mut String, warnings: &mut Vec<
             if i.unsigned_abs() > (1u128 << 53) {
                 warn("integer beyond ±2^53 may lose precision in many JSON readers");
             }
+
             out.push_str(&i.to_string());
         }
         Value::Float(f) if f.is_finite() => {
@@ -350,20 +380,24 @@ fn write(value: &Value, out: &mut String, path: &mut String, warnings: &mut Vec<
                 Value::Set(_) => warn("set written as an array"),
                 _ => {}
             }
+
             out.push('[');
             for (i, e) in l.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
+
                 nl(out, inner);
                 let mark = path.len();
                 let _ = write!(path, "[{i}]");
                 write(e, out, path, warnings, inner);
                 path.truncate(mark);
             }
+
             if !l.is_empty() {
                 nl(out, indent);
             }
+
             out.push(']');
         }
         Value::Record(r) => {
@@ -372,6 +406,7 @@ fn write(value: &Value, out: &mut String, path: &mut String, warnings: &mut Vec<
                 if i > 0 {
                     out.push(',');
                 }
+
                 nl(out, inner);
                 quote(k, out);
                 out.push_str(if indent.is_some() { ": " } else { ":" });
@@ -381,9 +416,11 @@ fn write(value: &Value, out: &mut String, path: &mut String, warnings: &mut Vec<
                 write(e, out, path, warnings, inner);
                 path.truncate(mark);
             }
+
             if !r.is_empty() {
                 nl(out, indent);
             }
+
             out.push('}');
         }
         Value::Map(m) => {

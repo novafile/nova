@@ -155,6 +155,7 @@ fn serialized_values_resolve() {
     if let Value::Record(r) = &mut v {
         r.remove("enabled");
     }
+
     let s = schema.resolve_as(&v, &novafile_schema::parse_type("Service").unwrap()).unwrap();
     assert_eq!(s.as_record().unwrap().get("enabled"), Some(&Value::Bool(false)));
 }
@@ -169,6 +170,7 @@ fn json_fleet(edit: impl FnOnce(&mut serde_json::Value)) -> Value {
     for s in &mut f.services {
         s.status = Status::Draining;
     }
+
     let mut j = serde_json::to_value(&f).unwrap();
     edit(&mut j);
     novafile_json::from_json_str(&j.to_string()).unwrap()
@@ -221,6 +223,7 @@ fn serde_attributes_and_open_records() {
         #[deprecated]
         old: Option<i8>,
     }
+
     let schema = novafile_schemars::schema_for::<Loose>("loose", "0.1.0").unwrap();
     assert_eq!(
         schema.to_string(),
@@ -235,6 +238,7 @@ fn serde_attributes_and_open_records() {
         Circle { r: f64 },
         Square { side: f64 },
     }
+
     #[derive(JsonSchema)]
     #[serde(untagged)]
     #[allow(dead_code)]
@@ -242,12 +246,14 @@ fn serde_attributes_and_open_records() {
         N(u8),
         S(String),
     }
+
     #[derive(JsonSchema)]
     #[allow(dead_code)]
     struct Holder {
         shape: Shape,
         either: Either,
     }
+
     let c = novafile_schemars::conversion_for::<Holder>("holder", "1.0.0").unwrap();
     assert_eq!(
         c.schema.to_string(),

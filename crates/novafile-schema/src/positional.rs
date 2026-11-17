@@ -55,12 +55,14 @@ impl Schema {
         if matches!(v, Value::Variant(tag, _) if tag == ABSENT) {
             return Err(format!("{at}: the variant tag `_` is reserved in the positional profile"));
         }
+
         let (t, def) = self.deref(t);
         Ok(match (v, def, &t.kind) {
             (Value::Record(r), Some(Def::Record(rd)), _) => {
                 if let Some(extra) = r.keys().find(|k| rd.field(k).is_none()) {
                     return Err(format!("{at}.{extra}: unknown fields cannot be written positionally"));
                 }
+
                 let items = rd
                     .fields
                     .iter()
@@ -77,6 +79,7 @@ impl Schema {
                     Some(pt) => self.pos_out(p, pt, &format!("{at}!{tag}"))?,
                     None => (**p).clone(),
                 };
+
                 Value::Variant(tag.clone(), Some(Box::new(p)))
             }
             (Value::List(l), _, TypeKind::List(et)) => Value::List(self.each_out(l, et, at)?),
@@ -108,14 +111,17 @@ impl Schema {
                 if items.len() != rd.fields.len() {
                     return Err(format!("{at}: expected {} positional fields, found {}", rd.fields.len(), items.len()));
                 }
+
                 let mut r = Record::new();
                 for (f, x) in rd.fields.iter().zip(items) {
                     if matches!(x, Value::Variant(tag, None) if tag == ABSENT) {
                         continue;
                     }
+
                     r.insert(f.name.clone(), self.pos_in(x, &f.ty, &format!("{at}.{}", f.name))?)
                         .map_err(|e| e.to_string())?;
                 }
+
                 Value::Record(r)
             }
             (Value::Variant(tag, Some(p)), Some(Def::Enum(vs)), _) => {
@@ -124,6 +130,7 @@ impl Schema {
                     Some(pt) => self.pos_in(p, pt, &format!("{at}!{tag}"))?,
                     None => (**p).clone(),
                 };
+
                 Value::Variant(tag.clone(), Some(Box::new(p)))
             }
             (Value::List(l), _, TypeKind::List(et)) => Value::List(self.each_in(l, et, at)?),

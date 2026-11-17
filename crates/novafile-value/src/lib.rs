@@ -96,6 +96,7 @@ impl Value {
                 return Err("duplicate set element".into());
             }
         }
+
         Ok(Value::Set(items))
     }
 
@@ -111,6 +112,7 @@ impl Value {
                 return Err("duplicate map key".into());
             }
         }
+
         Ok(Value::Map(entries))
     }
 
@@ -168,21 +170,25 @@ impl From<&str> for Value {
         Value::String(s.to_owned())
     }
 }
+
 impl From<String> for Value {
     fn from(s: String) -> Self {
         Value::String(s)
     }
 }
+
 impl From<i64> for Value {
     fn from(i: i64) -> Self {
         Value::Int(i128::from(i))
     }
 }
+
 impl From<bool> for Value {
     fn from(b: bool) -> Self {
         Value::Bool(b)
     }
 }
+
 impl From<Record> for Value {
     fn from(r: Record) -> Self {
         Value::Record(r)
@@ -203,6 +209,7 @@ impl PartialEq for Value {
         }
     }
 }
+
 impl Eq for Value {}
 
 impl Hash for Value {
@@ -217,6 +224,7 @@ impl Ord for Value {
         canonical_bytes(self).cmp(&canonical_bytes(other))
     }
 }
+
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))

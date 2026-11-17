@@ -88,6 +88,7 @@ pub fn from_slice(b: &[u8]) -> Result<Value, String> {
     if d.i != b.len() {
         return d.err("trailing bytes after the data item");
     }
+
     Ok(v)
 }
 
@@ -110,6 +111,7 @@ impl Decoder<'_> {
         if n > self.remaining() {
             return self.err("unexpected end of input");
         }
+
         let s = &self.b[self.i..self.i + n];
         self.i += n;
         Ok(s)
@@ -138,6 +140,7 @@ impl Decoder<'_> {
             31 => return Ok(None),
             _ => return self.err("reserved additional information value"),
         };
+
         Ok(Some(self.take(n)?.iter().fold(0u64, |a, &b| a << 8 | u64::from(b))))
     }
 
@@ -162,6 +165,7 @@ impl Decoder<'_> {
         if self.depth > MAX_DEPTH {
             return self.err(&format!("nesting deeper than {MAX_DEPTH} levels"));
         }
+
         Ok(())
     }
 
@@ -171,8 +175,10 @@ impl Decoder<'_> {
             if major == 3 && std::str::from_utf8(chunk).is_err() {
                 return d.err("invalid UTF-8 in text string");
             }
+
             Ok(())
         };
+
         if let Some(n) = self.arg(ai)? {
             let n = self.length(n, 1)?;
             let s = self.take(n)?.to_vec();
@@ -185,9 +191,11 @@ impl Decoder<'_> {
                 if ib == 0xff {
                     return Ok(out);
                 }
+
                 if ib >> 5 != major {
                     return self.err("indefinite-length string chunk of the wrong type");
                 }
+
                 let n = self.definite(ib & 31)?;
                 let n = self.length(n, 1)?;
                 let chunk = self.take(n)?.to_vec();
@@ -211,8 +219,10 @@ impl Decoder<'_> {
             while self.peek()? != 0xff {
                 out.push(self.item()?);
             }
+
             self.i += 1;
         }
+
         self.depth -= 1;
         Ok(out)
     }
@@ -227,6 +237,7 @@ impl Decoder<'_> {
             out.push((k, v));
             Ok(())
         };
+
         if let Some(n) = self.arg(ai)? {
             let n = self.length(n, 2)?;
             for _ in 0..n {
@@ -236,8 +247,10 @@ impl Decoder<'_> {
             while self.peek()? != 0xff {
                 next(self)?;
             }
+
             self.i += 1;
         }
+
         self.depth -= 1;
         let at = self.i;
         match Value::map(out).map_err(|e| format!("CBOR byte {at}: {e}"))? {
@@ -263,6 +276,7 @@ impl Decoder<'_> {
                         let Value::String(k) = k else { unreachable!() };
                         r.insert(k, v).map_err(|e| format!("CBOR: {e}"))?;
                     }
+
                     Value::Record(r)
                 } else {
                     Value::Map(entries)
@@ -316,6 +330,7 @@ impl Decoder<'_> {
                         secs += 1.0;
                         nanos = 0.0;
                     }
+
                     #[expect(
                         clippy::cast_possible_truncation,
                         clippy::cast_sign_loss,
@@ -330,14 +345,17 @@ impl Decoder<'_> {
                 let Value::Bytes(b) = self.item()? else {
                     return bad("expected a byte string");
                 };
+
                 let digits = b.iter().skip_while(|&&x| x == 0).copied().collect::<Vec<_>>();
                 if digits.len() > 16 {
                     return bad("bignum exceeds the supported integer range");
                 }
+
                 let n = digits.iter().fold(0u128, |a, &x| a << 8 | u128::from(x));
                 let Ok(n) = i128::try_from(n) else {
                     return bad("bignum exceeds the supported integer range");
                 };
+
                 Ok(Value::Int(if tag == TAG_POS_BIGNUM { n } else { -1 - n }))
             }
             TAG_DECIMAL => match self.pair()? {
@@ -350,6 +368,7 @@ impl Decoder<'_> {
                         c /= 10;
                         tz += 1;
                     }
+
                     match i32::try_from(e).ok().filter(|e| e.checked_add(tz).is_some()) {
                         Some(e) => Ok(Value::Decimal(Decimal::new(m, e))),
                         None => bad("exponent outside the 32-bit range"),
@@ -370,6 +389,7 @@ impl Decoder<'_> {
                 if ib >> 5 != 5 {
                     return bad("expected a map");
                 }
+
                 Ok(Value::Map(self.map_entries(ib & 31)?))
             }
             _ => self.err(&format!("unsupported tag {tag}")),
@@ -383,6 +403,7 @@ impl Decoder<'_> {
         if ib >> 5 != 4 {
             return Err(format!("CBOR byte {at}: expected a two-element array"));
         }
+
         let mut items = self.array(ib & 31)?.into_iter();
         match (items.next(), items.next(), items.next()) {
             (Some(a), Some(b), None) => Ok((a, b)),
@@ -415,18 +436,22 @@ fn f64_to_f16_exact(f: f64) -> Option<u16> {
     if f.is_nan() {
         return Some(0x7e00);
     }
+
     let bits = f.to_bits();
     let sign = ((bits >> 48) & 0x8000) as u16;
     if f.is_infinite() {
         return Some(sign | 0x7c00);
     }
+
     if f == 0.0 {
         return Some(sign);
     }
+
     let biased = ((bits >> 52) & 0x7ff) as i32;
     if biased == 0 {
         return None; // binary64 subnormals are far below binary16's range
     }
+
     let e = biased - 1023;
     let mant = bits & ((1 << 52) - 1);
     if (-14..=15).contains(&e) {
@@ -434,8 +459,10 @@ fn f64_to_f16_exact(f: f64) -> Option<u16> {
         if mant & ((1 << 42) - 1) != 0 {
             return None;
         }
+
         return Some(sign | ((e + 15) as u16) << 10 | (mant >> 42) as u16);
     }
+
     if (-24..-14).contains(&e) {
         // Subnormal binary16: value = m × 2^-24.
         let sig = mant | 1 << 52;
@@ -443,8 +470,10 @@ fn f64_to_f16_exact(f: f64) -> Option<u16> {
         if sig & ((1u64 << shift) - 1) != 0 {
             return None;
         }
+
         return Some(sign | (sig >> shift) as u16);
     }
+
     None
 }
 
@@ -458,6 +487,7 @@ pub fn to_vec(v: &Value, deterministic: bool) -> (Vec<u8>, Vec<Warning>) {
         det: deterministic,
         rep: Reporter::default(),
     };
+
     let mut out = Vec::new();
     e.value(v, &mut out);
     (out, e.rep.warnings)
@@ -500,6 +530,7 @@ fn int(out: &mut Vec<u8>, i: i128) {
     } else {
         (1, TAG_NEG_BIGNUM, (-1 - i).cast_unsigned())
     };
+
     if let Ok(n) = u64::try_from(n) {
         head(out, major, n);
     } else {
@@ -544,6 +575,7 @@ impl Encoder {
         if sort && self.det {
             items.sort();
         }
+
         for b in items {
             out.extend(b);
         }
@@ -564,6 +596,7 @@ impl Encoder {
         if self.det {
             pairs.sort();
         }
+
         for (k, v) in pairs {
             out.extend(k);
             out.extend(v);
@@ -626,6 +659,7 @@ impl Encoder {
                 if m.iter().all(|(k, _)| matches!(k, Value::String(_))) {
                     head(out, 6, TAG_MAP);
                 }
+
                 let pairs = m
                     .iter()
                     .enumerate()

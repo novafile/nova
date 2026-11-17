@@ -32,6 +32,7 @@ fn range_of(t: &TypeRef) -> (Option<Num>, Option<Num>) {
             });
         }
     }
+
     (lo, hi)
 }
 
@@ -41,9 +42,11 @@ pub fn widens(old: &TypeRef, new: &TypeRef) -> bool {
     if matches!(new.kind, TypeKind::Any) {
         return true;
     }
+
     if old.nullable && !new.nullable {
         return false;
     }
+
     let kinds = match (&old.kind, &new.kind) {
         (TypeKind::Int(_), TypeKind::Int(_) | TypeKind::Decimal | TypeKind::Rational) | (TypeKind::Decimal, TypeKind::Rational) => true,
         (TypeKind::Int(k), TypeKind::Float) => matches!(k, IntKind::I8 | IntKind::I16 | IntKind::I32 | IntKind::U8 | IntKind::U16 | IntKind::U32),
@@ -54,9 +57,11 @@ pub fn widens(old: &TypeRef, new: &TypeRef) -> bool {
         (TypeKind::Tuple(a), TypeKind::Tuple(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| widens(x, y)),
         (a, b) => a == b,
     };
+
     if !kinds {
         return false;
     }
+
     // Numeric ranges must not narrow.
     let (olo, ohi) = range_of(old);
     let (nlo, nhi) = range_of(new);
@@ -65,11 +70,13 @@ pub fn widens(old: &TypeRef, new: &TypeRef) -> bool {
         (None, Some(_)) => false,
         (Some(o), Some(n)) => n.le(&o),
     };
+
     let hi_ok = match (ohi, nhi) {
         (_, None) => true,
         (None, Some(_)) => false,
         (Some(o), Some(n)) => o.le(&n),
     };
+
     let (olen, nlen) = (old.constraints.len.unwrap_or((None, None)), new.constraints.len.unwrap_or((None, None)));
     let len_ok = nlen.0.is_none_or(|n| olen.0.is_some_and(|o| n <= o)) && nlen.1.is_none_or(|n| olen.1.is_some_and(|o| o <= n));
     // Changing what @len counts is only safe if the new type has no @len.
@@ -87,14 +94,17 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
             message: m,
         });
     };
+
     if old.root != new.root {
         push(true, "@root", format!("root changed from {:?} to {:?}", old.root, new.root));
     }
+
     for (name, od) in &old.defs {
         let Some(nd) = new.def(name) else {
             push(true, name, "definition removed".into());
             continue;
         };
+
         match (od, nd) {
             (Def::Alias(a), Def::Alias(b)) => {
                 if !widens(a, b) {
@@ -112,6 +122,7 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
                         },
                     }
                 }
+
                 for w in b.iter().filter(|w| !a.iter().any(|v| v.name == w.name)) {
                     push(false, &format!("{name}.{}", w.name), "variant added (old readers will reject it)".into());
                 }
@@ -120,6 +131,7 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
                 if a.open && !b.open {
                     push(true, name, "record closed (@open removed)".into());
                 }
+
                 for f in &a.fields {
                     let at = format!("{name}.{}", f.name);
                     let g = b.fields.iter().find(|g| f.id.is_some() && g.id == f.id).or_else(|| b.field(&f.name));
@@ -129,8 +141,10 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
                         } else {
                             push(true, &at, "field removed; old data containing it is rejected".into());
                         }
+
                         continue;
                     };
+
                     if g.name != f.name {
                         push(
                             true,
@@ -138,16 +152,20 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
                             format!("renamed to {} (same @id; compatible for positional/binary encodings only)", g.name),
                         );
                     }
+
                     if !widens(&f.ty, &g.ty) {
                         push(true, &at, format!("type {} changed incompatibly to {}", f.ty, g.ty));
                     }
+
                     if f.optional && !g.optional && g.default.is_none() {
                         push(true, &at, "optional field became required".into());
                     }
+
                     if f.key != g.key {
                         push(g.key, &at, if g.key { "@key added".into() } else { "@key removed".into() });
                     }
                 }
+
                 for g in &b.fields {
                     let existed = a.fields.iter().any(|f| f.name == g.name || (g.id.is_some() && f.id == g.id));
                     if !existed {
@@ -163,10 +181,12 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
             _ => push(true, name, "definition kind changed".into()),
         }
     }
+
     for (name, _) in &new.defs {
         if old.def(name).is_none() {
             push(false, name, "definition added".into());
         }
     }
+
     out
 }

@@ -37,12 +37,14 @@ fn compile(schema: &Schema) -> MessageDescriptor {
     if let Err(e) = compiler.open_file("nova.proto") {
         panic!("generated .proto does not compile: {e:?}\n{source}");
     }
+
     let pool: DescriptorPool = compiler.descriptor_pool();
     let root = schema.root.as_deref().unwrap().replace('-', "_");
     let full = match novafile_proto::package_name(schema) {
         Some(p) => format!("{p}.{root}"),
         None => root,
     };
+
     pool.get_message_by_name(&full).unwrap_or_else(|| panic!("no message {full} in\n{source}"))
 }
 

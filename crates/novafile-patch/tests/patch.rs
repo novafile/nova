@@ -116,6 +116,7 @@ fn filters() {
         Value::List(l) => l.into_iter().map(|v| novafile_text::flow_string(&v)).collect::<Vec<_>>(),
         other => panic!("{other:?}"),
     };
+
     assert_eq!(ids("services[?replicas>3].id"), ["api"]);
     assert_eq!(ids("services[?replicas>=3].id"), ["auth", "api"]);
     assert_eq!(ids("services[?id!=auth].id"), ["api"]);
@@ -238,6 +239,7 @@ fn existence_absence_and_in_filters() {
         Value::List(l) => l.into_iter().map(|v| novafile_text::flow_string(&v)).collect::<Vec<_>>(),
         other => panic!("{other:?}"),
     };
+
     assert_eq!(ids("services[?tags].id"), ["api"]);
     assert_eq!(ids("services[?!tags].id"), ["auth"]);
     assert_eq!(ids("services[?id in [auth, nope]].id"), ["auth"]);
@@ -245,6 +247,7 @@ fn existence_absence_and_in_filters() {
     for p in ["services[?tags]", "services[?!tags]", "services[?id in [auth, api]]"] {
         assert_eq!(novafile_text::Path::parse(p).unwrap().to_string(), p);
     }
+
     assert!(novafile_text::Path::parse("services[?!tags=1]").is_err());
     assert!(novafile_text::Path::parse("services[?id in auth]").is_err());
 }

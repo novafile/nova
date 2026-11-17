@@ -16,6 +16,7 @@ fn gcd(mut a: u128, mut b: u128) -> u128 {
     while b != 0 {
         (a, b) = (b, a % b);
     }
+
     a
 }
 
@@ -29,9 +30,11 @@ impl Rational {
         if den == 0 {
             return Err("rational with zero denominator".into());
         }
+
         if num == i128::MIN || den == i128::MIN {
             return Err("rational component out of range".into());
         }
+
         // Both magnitudes are at most i128::MAX (MIN is rejected above), so the gcd is too.
         let g = gcd(num.unsigned_abs(), den.unsigned_abs()).max(1).cast_signed();
         let (mut n, mut d) = (num / g, den / g);
@@ -39,6 +42,7 @@ impl Rational {
             n = -n;
             d = -d;
         }
+
         Ok(Rational { num: n, den: d })
     }
 
@@ -66,6 +70,7 @@ impl Rational {
         if !digits(nd) || !digits(d) {
             return Err(err());
         }
+
         let num: i128 = n.parse().map_err(|_| err())?;
         let den: i128 = d.parse().map_err(|_| err())?;
         Rational::new(num, den)
@@ -86,13 +91,16 @@ impl Rational {
             d /= 2;
             twos += 1;
         }
+
         while d % 5 == 0 {
             d /= 5;
             fives += 1;
         }
+
         if d != 1 {
             return None;
         }
+
         let k = twos.max(fives);
         // num/den = num * 2^(k-twos) * 5^(k-fives) / 10^k
         let scale = 2i128.checked_pow(k - twos)?.checked_mul(5i128.checked_pow(k - fives)?)?;
@@ -119,6 +127,7 @@ mod tests {
         for bad in ["1/0", "01/2", "1/02", "1/-2", "/2", "1/", "a/b", "1.5/2"] {
             assert!(Rational::parse(bad).is_err(), "{bad}");
         }
+
         assert_eq!(Rational::parse("3/8").unwrap().to_decimal().unwrap().to_string(), "0.375");
         assert!(Rational::parse("1/3").unwrap().to_decimal().is_none());
     }

@@ -71,6 +71,7 @@ macro_rules! key_number {
                     return ValueDeserializer::new(n.into_value()?).deserialize_any(v);
                 }
             }
+
             self.deserialize_any(v)
         }
     };
@@ -79,9 +80,11 @@ macro_rules! key_number {
 trait IntoValue {
     fn into_value(self) -> Result<Value, Error>;
 }
+
 macro_rules! into_value_int {
     ($($t:ty),*) => {$(impl IntoValue for $t { fn into_value(self) -> Result<Value, Error> { Ok(Value::Int(self.into())) } })*};
 }
+
 into_value_int!(i8, i16, i32, i64, i128, u8, u16, u32, u64);
 impl IntoValue for u128 {
     fn into_value(self) -> Result<Value, Error> {
@@ -90,16 +93,19 @@ impl IntoValue for u128 {
             .map_err(|_| Error::new("u128 value exceeds the NOVA integer range of this implementation"))
     }
 }
+
 impl IntoValue for f32 {
     fn into_value(self) -> Result<Value, Error> {
         Ok(Value::Float(self.into()))
     }
 }
+
 impl IntoValue for f64 {
     fn into_value(self) -> Result<Value, Error> {
         Ok(Value::Float(self))
     }
 }
+
 impl IntoValue for bool {
     fn into_value(self) -> Result<Value, Error> {
         Ok(Value::Bool(self))
@@ -167,6 +173,7 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer {
                     Value::String(s) => s,
                     _ => return self.invalid(&v),
                 };
+
                 v.visit_string(text)
             }
             _ => v.visit_newtype_struct(self),
@@ -253,10 +260,12 @@ fn visit_seq<'de, V: Visitor<'de>>(items: Vec<Value>, v: V) -> Result<V::Value, 
     let mut access = SeqAccess {
         iter: items.into_iter().enumerate(),
     };
+
     let out = v.visit_seq(&mut access)?;
     if access.iter.len() != 0 {
         return Err(de::Error::invalid_length(len, &"fewer elements"));
     }
+
     Ok(out)
 }
 
@@ -272,6 +281,7 @@ impl<'de> de::SeqAccess<'de> for SeqAccess {
             None => Ok(None),
         }
     }
+
     fn size_hint(&self) -> Option<usize> {
         Some(self.iter.len())
     }
@@ -303,10 +313,12 @@ impl<'de> de::MapAccess<'de> for RecordAccess {
             None => Ok(None),
         }
     }
+
     fn next_value_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<T::Value, Error> {
         let (k, v) = self.value.take().ok_or_else(|| Error::new("value requested before key"))?;
         seed.deserialize(ValueDeserializer::new(v)).map_err(|e| e.at(field_seg(&k)))
     }
+
     fn size_hint(&self) -> Option<usize> {
         Some(self.iter.len())
     }
@@ -329,6 +341,7 @@ impl<'de> de::MapAccess<'de> for MapAccess {
             None => Ok(None),
         }
     }
+
     fn next_value_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<T::Value, Error> {
         let (k, v) = self.value.take().ok_or_else(|| Error::new("value requested before key"))?;
         seed.deserialize(ValueDeserializer::new(v))
@@ -370,10 +383,12 @@ impl<'de> de::VariantAccess<'de> for VariantAccess {
             Some(_) => Err(Error::new(format!("variant {} takes no payload", self.tag))),
         }
     }
+
     fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, Error> {
         seed.deserialize(ValueDeserializer::new(self.payload.unwrap_or(Value::Null)))
             .map_err(|e| e.at(self.tag))
     }
+
     fn tuple_variant<V: Visitor<'de>>(self, _: usize, v: V) -> Result<V::Value, Error> {
         let tag = self.tag;
         match self.payload {
@@ -381,6 +396,7 @@ impl<'de> de::VariantAccess<'de> for VariantAccess {
             _ => Err(Error::new(format!("variant {tag} expects a tuple payload"))),
         }
     }
+
     fn struct_variant<V: Visitor<'de>>(self, _: &'static [&'static str], v: V) -> Result<V::Value, Error> {
         let tag = self.tag;
         match self.payload {

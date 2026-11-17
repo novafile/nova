@@ -55,6 +55,7 @@ fn ignore(meta: &syn::meta::ParseNestedMeta) -> syn::Result<()> {
         syn::parenthesized!(content in meta.input);
         let _: Ts = content.parse()?;
     }
+
     Ok(())
 }
 
@@ -76,6 +77,7 @@ fn container_attrs(attrs: &[Attribute]) -> syn::Result<Container> {
                 } else {
                     return Err(m.error("unknown #[nova] container attribute (name, version, rename, rename_all, open)"));
                 }
+
                 Ok(())
             })?;
         } else if a.path().is_ident("serde") {
@@ -91,10 +93,12 @@ fn container_attrs(attrs: &[Attribute]) -> syn::Result<Container> {
                 } else {
                     ignore(&m)?;
                 }
+
                 Ok(())
             })?;
         }
     }
+
     Ok(c)
 }
 
@@ -125,6 +129,7 @@ fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                 } else {
                     return Err(m.error("unknown #[nova] field attribute (rename, key, id, range, len, default, deprecated, skip)"));
                 }
+
                 Ok(())
             })?;
         } else if a.path().is_ident("serde") {
@@ -144,10 +149,12 @@ fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                 } else {
                     ignore(&m)?;
                 }
+
                 Ok(())
             })?;
         }
     }
+
     Ok(f)
 }
 
@@ -161,19 +168,24 @@ fn rename(name: &str, rule: Option<&str>, is_variant: bool) -> syn::Result<Strin
             if c.is_uppercase() && !cur.is_empty() {
                 w.push(std::mem::take(&mut cur));
             }
+
             cur.extend(c.to_lowercase());
         }
+
         if !cur.is_empty() {
             w.push(cur);
         }
+
         w
     } else {
         name.split('_').filter(|s| !s.is_empty()).map(str::to_lowercase).collect()
     };
+
     let cap = |s: &str| {
         let mut c = s.chars();
         c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
     };
+
     Ok(match rule {
         "lowercase" => words.concat(),
         "UPPERCASE" => words.concat().to_uppercase(),
@@ -195,31 +207,37 @@ fn record_fields(owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> 
         if a.skip {
             continue;
         }
+
         let ident = f.ident.as_ref().unwrap().to_string();
         let ident = ident.strip_prefix("r#").unwrap_or(&ident).to_owned();
         let name = match &a.rename {
             Some(r) => r.clone(),
             None => rename(&ident, rule, false)?,
         };
+
         let ty = &f.ty;
         let at = format!("{owner}.{name}");
         let mut attr_text = String::new();
         if let Some(r) = &a.range {
             let _ = write!(attr_text, " @range({r})");
         }
+
         if let Some(l) = &a.len {
             let _ = write!(attr_text, " @len({l})");
         }
+
         let with = if attr_text.is_empty() {
             quote!()
         } else {
             quote!(let ty = ::novafile_schema::derive::__with_attrs(ty, #attr_text, #at);)
         };
+
         let default = if let Some(d) = &a.default {
             quote!(Some(::novafile_schema::derive::__default(#d, #at)))
         } else {
             quote!(None)
         };
+
         let has_default = a.default.is_some();
         let serde_default = a.serde_default;
         let key = a.key;
@@ -240,6 +258,7 @@ fn record_fields(owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> 
             });
         }});
     }
+
     Ok(quote! {{
         let mut fields: Vec<::novafile_schema::FieldDef> = Vec::new();
         #(#out)*
@@ -251,6 +270,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
     if !input.generics.params.is_empty() {
         return Err(Error::new(input.generics.span(), "NovaSchema cannot be derived for generic types yet"));
     }
+
     let ident = &input.ident;
     let c = container_attrs(&input.attrs)?;
     let def_name = c.rename.clone().unwrap_or_else(|| ident.to_string());
@@ -270,14 +290,17 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
                 if let Some(r) = &a.range {
                     let _ = write!(attr_text, " @range({r})");
                 }
+
                 if let Some(l) = &a.len {
                     let _ = write!(attr_text, " @len({l})");
                 }
+
                 let with = if attr_text.is_empty() {
                     quote!()
                 } else {
                     quote!(let ty = ::novafile_schema::derive::__with_attrs(ty, #attr_text, #def_name);)
                 };
+
                 quote!({
                     let ty = <#ty as ::novafile_schema::NovaSchema>::nova_type(generator);
                     #with
@@ -301,10 +324,12 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
                 if a.skip {
                     continue;
                 }
+
                 let name = match &a.rename {
                     Some(r) => r.clone(),
                     None => rename(&v.ident.to_string(), rule, true)?,
                 };
+
                 let payload = match &v.fields {
                     Fields::Unit => quote!(None),
                     Fields::Unnamed(u) if u.unnamed.len() == 1 => {
@@ -324,12 +349,15 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
                         quote!(Some(generator.named(#rec, |generator| ::novafile_schema::Def::Record(::novafile_schema::RecordDef { fields: #fields, open: false }))))
                     }
                 };
+
                 variants.push(quote!(::novafile_schema::VariantDef { name: #name.to_owned(), payload: #payload }));
             }
+
             quote!(::novafile_schema::Def::Enum(vec![#(#variants),*]))
         }
         Data::Union(u) => return Err(Error::new(u.union_token.span, "NovaSchema cannot be derived for unions")),
     };
+
     let id = match (&c.name, &c.version) {
         (Some(n), Some(v)) => quote! {
             fn nova_schema_id() -> Option<(&'static str, &'static str)> {
@@ -339,11 +367,13 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
         (None, None) => quote!(),
         _ => return Err(Error::new(ident.span(), "#[nova(name = …)] and #[nova(version = …)] go together")),
     };
+
     Ok(quote! {
         impl ::novafile_schema::NovaSchema for #ident {
             fn nova_type(generator: &mut ::novafile_schema::derive::SchemaGen) -> ::novafile_schema::TypeRef {
                 generator.named(#def_name, |generator| #body)
             }
+
             #id
         }
     })

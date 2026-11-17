@@ -36,6 +36,7 @@ impl SchemaGen {
         if self.in_progress.contains(name) || self.defs.iter().any(|(n, _)| n == name) {
             return r;
         }
+
         self.in_progress.insert(name.to_owned());
         let def = build(self);
         self.in_progress.remove(name);
@@ -98,6 +99,7 @@ pub fn schema_for<T: NovaSchema>() -> Schema {
         generator.defs.push(("Root".into(), Def::Alias(ty)));
         "Root".into()
     };
+
     let (name, version) = T::nova_schema_id().map_or((None, None), |(n, v)| (Some(n), Some(v)));
     generator.into_schema(Some(root), name, version)
 }
@@ -112,6 +114,7 @@ pub fn __with_attrs(mut ty: TypeRef, attrs: &str, field: &str) -> TypeRef {
     if let Some((a, _)) = rest.first() {
         panic!("#[nova] on {field}: @{a} is not a type attribute");
     }
+
     ty
 }
 
@@ -166,11 +169,13 @@ impl<T: NovaSchema + ?Sized> NovaSchema for Box<T> {
         T::nova_type(g)
     }
 }
+
 impl<T: NovaSchema + ?Sized> NovaSchema for Rc<T> {
     fn nova_type(g: &mut SchemaGen) -> TypeRef {
         T::nova_type(g)
     }
 }
+
 impl<T: NovaSchema + ?Sized> NovaSchema for Arc<T> {
     fn nova_type(g: &mut SchemaGen) -> TypeRef {
         T::nova_type(g)
@@ -183,6 +188,7 @@ impl<T: NovaSchema> NovaSchema for Option<T> {
         t.nullable = true;
         t
     }
+
     fn nova_field_optional() -> bool {
         true
     }
@@ -201,16 +207,19 @@ impl<T: NovaSchema> NovaSchema for Vec<T> {
         list_of(T::nova_type(g))
     }
 }
+
 impl<T: NovaSchema> NovaSchema for [T] {
     fn nova_type(g: &mut SchemaGen) -> TypeRef {
         list_of(T::nova_type(g))
     }
 }
+
 impl<T: NovaSchema> NovaSchema for std::collections::VecDeque<T> {
     fn nova_type(g: &mut SchemaGen) -> TypeRef {
         list_of(T::nova_type(g))
     }
 }
+
 impl<T: NovaSchema, const N: usize> NovaSchema for [T; N] {
     /// Serde writes arrays as tuples.
     fn nova_type(g: &mut SchemaGen) -> TypeRef {
@@ -218,21 +227,25 @@ impl<T: NovaSchema, const N: usize> NovaSchema for [T; N] {
         TypeRef::new(TypeKind::Tuple(vec![t; N]))
     }
 }
+
 impl<T: NovaSchema, S> NovaSchema for std::collections::HashSet<T, S> {
     fn nova_type(g: &mut SchemaGen) -> TypeRef {
         set_of(T::nova_type(g))
     }
 }
+
 impl<T: NovaSchema> NovaSchema for std::collections::BTreeSet<T> {
     fn nova_type(g: &mut SchemaGen) -> TypeRef {
         set_of(T::nova_type(g))
     }
 }
+
 impl<K: NovaSchema, V: NovaSchema, S> NovaSchema for std::collections::HashMap<K, V, S> {
     fn nova_type(g: &mut SchemaGen) -> TypeRef {
         TypeRef::new(TypeKind::Map(Box::new(K::nova_type(g)), Box::new(V::nova_type(g))))
     }
 }
+
 impl<K: NovaSchema, V: NovaSchema> NovaSchema for std::collections::BTreeMap<K, V> {
     fn nova_type(g: &mut SchemaGen) -> TypeRef {
         TypeRef::new(TypeKind::Map(Box::new(K::nova_type(g)), Box::new(V::nova_type(g))))
@@ -248,6 +261,7 @@ macro_rules! tuples {
         }
     )*};
 }
+
 tuples!(
     (A),
     (A, B),

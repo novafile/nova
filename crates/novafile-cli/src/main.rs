@@ -282,6 +282,7 @@ fn read_bytes(p: &Path) -> R<Vec<u8>> {
         std::io::stdin().read_to_end(&mut b).map_err(|e| e.to_string())?;
         return Ok(b);
     }
+
     Ok(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?)
 }
 
@@ -325,6 +326,7 @@ fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> 
             value: load_schema(p)?.to_value(),
         });
     }
+
     let bytes = read_bytes(p)?;
     let ctx = |e: String| format!("{}: {e}", p.display());
     let from = match from {
@@ -337,6 +339,7 @@ fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> 
         InputFormat::Auto if ext == "pb" || ext == "binpb" => InputFormat::Protobuf,
         f => f,
     };
+
     match from {
         InputFormat::Cbor => return Ok(json_loaded(novafile_formats::cbor::from_slice(&bytes).map_err(ctx)?)),
         InputFormat::Protobuf => {
@@ -348,14 +351,17 @@ fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> 
         }
         _ => {}
     }
+
     if from == InputFormat::Binary {
         let (f, n) = decode_frame(&bytes).map_err(|e| ctx(e.to_string()))?;
         if n != bytes.len() {
             return Err(ctx("trailing bytes after the first frame".into()).into());
         }
+
         let directives = f.schema.map(|s| vec![("schema".to_owned(), s)]).unwrap_or_default();
         return Ok(Loaded { directives, value: f.value });
     }
+
     let text = String::from_utf8(bytes).map_err(|_| ctx("not UTF-8".into()))?;
     match from {
         InputFormat::Jsonl => return Ok(compat_loaded(Value::List(novafile_json::from_jsonl_str(&text).map_err(ctx)?), "json")),
@@ -369,6 +375,7 @@ fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> 
                 if let Ok(v) = novafile_json::from_json_str(&text) {
                     return Ok(compat_loaded(v, "json"));
                 }
+
                 let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
                 if lines.len() > 1
                     && lines.iter().all(|l| l.trim_start().starts_with('{') || l.trim_start().starts_with('['))
@@ -380,10 +387,12 @@ fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> 
         }
         _ => {}
     }
+
     let doc = parse_document(&text).map_err(|e| e.to_diagnostic(&name_of(p), &text))?;
     if doc.is_template() {
         return Err(ctx("this is a @template; use `nvf render`".into()).into());
     }
+
     let mut value = doc.body.to_value().map_err(ctx)?;
     if doc.directive("mode") == Some("positional") {
         // Positional text is only meaningful with exactly the schema it was written for.
@@ -392,10 +401,12 @@ fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> 
         if want != s.fingerprint() {
             return Err(ctx(format!("positional document was written for {want:?}, but the schema is {}", s.fingerprint())).into());
         }
+
         value = s.from_positional(&value).map_err(ctx)?;
         let directives = vec![("schema".to_owned(), s.reference().map(|r| r.to_string()).unwrap_or_default())];
         return Ok(Loaded { directives, value });
     }
+
     Ok(Loaded {
         directives: doc.directives.into_iter().map(|d| (d.name, d.arg)).collect(),
         value,
@@ -419,6 +430,7 @@ fn load_schema(p: &Path) -> R<Schema> {
         let v = doc.body.to_value().map_err(|e| format!("{}: {e}", p.display()))?;
         return Ok(Schema::from_value(&v).map_err(|e| format!("{}: {e}", p.display()))?);
     }
+
     parse_schema(&src).map_err(|e| {
         if e.line == 0 {
             E::from(format!("{}: {}", p.display(), e.message))
@@ -433,10 +445,12 @@ fn lossy<W: std::fmt::Display>(what: &str, warnings: &[W], strict: bool) -> R<()
     if warnings.is_empty() {
         return Ok(());
     }
+
     let msg = warnings.iter().map(|w| format!("  {w}")).collect::<Vec<_>>().join("\n");
     if strict {
         return Err(format!("conversion to {what} is lossy:\n{msg}").into());
     }
+
     eprintln!("warning: conversion to {what} is lossy:\n{msg}");
     Ok(())
 }
@@ -459,8 +473,10 @@ fn render_with(l: &Loaded, f: Format, strict: bool, schema: Option<&Schema>) -> 
                 if strict {
                     return Err(format!("conversion to JSON is lossy:\n{msg}").into());
                 }
+
                 eprintln!("warning: conversion to JSON is lossy:\n{msg}");
             }
+
             (s + "\n").into_bytes()
         }
         Format::Yaml => {
@@ -530,6 +546,7 @@ fn patch_error(e: &novafile_patch::PatchError, file: &Path, src: &str) -> E {
             if let Some(h) = h {
                 d = d.with_help(h);
             }
+
             d.into()
         }
         P::Op { index, line, message, .. } => {
@@ -570,6 +587,7 @@ fn run(cli: Cli) -> R<ExitCode> {
                 Format::Compact => Some(Profile::Compact),
                 _ => None,
             };
+
             let text = read_text(&file)
                 .ok()
                 .filter(|t| is_nova_text(&file, t) && file.extension().is_none_or(|e| e != "novs"));
@@ -577,14 +595,17 @@ fn run(cli: Cli) -> R<ExitCode> {
                 out(load_schema(&file)?.to_canonical_text().as_bytes(), write.then_some(file.as_path()))?;
                 return Ok(ExitCode::SUCCESS);
             }
+
             let bytes = match (profile, text) {
                 (Some(p), Some(t)) => novafile_text::format_preserving(&t, p)
                     .map_err(|e| e.to_diagnostic(&name_of(&file), &t))?
                     .into_bytes(),
                 _ => render_as(&load(&file)?, to, false)?,
             };
+
             out(&bytes, write.then_some(file.as_path()))?;
         }
+
         Cmd::Convert {
             schema,
             file,
@@ -606,6 +627,7 @@ fn run(cli: Cli) -> R<ExitCode> {
             {
                 s.accepts_reference(r).map_err(|e| format!("{}: {e}", file.display()))?;
             }
+
             match s.resolve(&l.value) {
                 Ok(v) => {
                     if resolve {
@@ -613,6 +635,7 @@ fn run(cli: Cli) -> R<ExitCode> {
                             directives: vec![("schema".into(), s.fingerprint())],
                             value: v,
                         };
+
                         out(&render_as(&resolved, Format::Nova, false)?, None)?;
                     } else {
                         eprintln!("ok: valid against {}", s.fingerprint());
@@ -640,10 +663,12 @@ fn run(cli: Cli) -> R<ExitCode> {
                         )
                         .into());
                     }
+
                     return Err(format!("{} is invalid:\n{}", file.display(), issues(&i)).into());
                 }
             }
         }
+
         Cmd::Get {
             file,
             path,
@@ -664,6 +689,7 @@ fn run(cli: Cli) -> R<ExitCode> {
                     _ => novafile_text::flow_string(v),
                 }
             };
+
             if raw {
                 // jq -r style: one line per result.
                 match (&r.value, multi) {
@@ -675,6 +701,7 @@ fn run(cli: Cli) -> R<ExitCode> {
                 for w in warnings {
                     eprintln!("warning: {w}");
                 }
+
                 println!("{s}");
             } else {
                 let p = match to {
@@ -682,12 +709,14 @@ fn run(cli: Cli) -> R<ExitCode> {
                     Format::Canonical => Profile::Canonical,
                     _ => Profile::Compact,
                 };
+
                 if bare {
                     print!("{}", novafile_text::to_text(&r.value, p));
                 } else {
                     print!("{}", r.to_text(p));
                 }
             }
+
             let empty = matches!(&r.value, Value::Null | Value::Bool(false)) || matches!(&r.value, Value::List(l) if l.is_empty());
             if exit_status && empty {
                 return Ok(ExitCode::from(1));
@@ -703,10 +732,12 @@ fn run(cli: Cli) -> R<ExitCode> {
             {
                 s.accepts_reference(r).map_err(|e| format!("{}: {e}", patch.display()))?;
             }
+
             let validate = |v: &Value| match &s {
                 Some(s) => s.validate(v).map_err(|i| i.iter().map(std::string::ToString::to_string).collect()),
                 None => Ok(()),
             };
+
             let text = read_text(&file).ok().filter(|t| is_nova_text(&file, t));
             let (bytes, applied) = if let Some(src) = text {
                 // Document-preserving: minimal edits to the source text.
@@ -728,9 +759,11 @@ fn run(cli: Cli) -> R<ExitCode> {
                         directives: l.directives,
                         value: applied.value.clone(),
                     };
+
                     (render_as(&result, Format::Nova, false)?, applied)
                 }
             };
+
             out(&bytes, write.then_some(file.as_path()))?;
             eprintln!("{} -> {}", applied.base, applied.revision);
         }
@@ -744,26 +777,31 @@ fn run(cli: Cli) -> R<ExitCode> {
                 },
                 None => Record::new(),
             };
+
             for s in set {
                 let (k, v) = s.split_once('=').ok_or_else(|| format!("--set {s:?}: expected NAME=VALUE"))?;
                 let v = novafile_text::parse_flow(v).map_err(|e| format!("--set {k}: {e}"))?;
                 args.set(k, v);
             }
+
             let s = schema.as_deref().map(load_schema).transpose()?;
             let loader = novafile_template::FsLoader {
                 root: file.parent().map(Path::to_path_buf).unwrap_or_default(),
             };
+
             let opts = novafile_template::Options {
                 loader: &loader,
                 schema: s.as_ref(),
                 limits: novafile_template::Limits::default(),
             };
+
             let v = novafile_template::render(&src, &args, &opts).map_err(|e| format!("{}: {e}", file.display()))?;
             if let Some(s) = &s
                 && s.root.is_some()
             {
                 s.validate(&v).map_err(|i| format!("rendered document is invalid:\n{}", issues(&i)))?;
             }
+
             out(&render_as(&Loaded { directives: vec![], value: v }, to, false)?, None)?;
         }
         Cmd::Stats { file } => {
@@ -786,6 +824,7 @@ fn run(cli: Cli) -> R<ExitCode> {
                     directives: vec![],
                     value: l.value.clone(),
                 };
+
                 let bytes = match f {
                     Format::Json | Format::JsonCompact => novafile_json::to_json_string(&plain.value, matches!(f, Format::Json)).0.into_bytes(),
                     Format::Yaml => novafile_formats::yaml::to_string(&plain.value).0.into_bytes(),
@@ -796,12 +835,14 @@ fn run(cli: Cli) -> R<ExitCode> {
                     Format::Cbor => novafile_formats::cbor::to_vec(&plain.value, false).0,
                     _ => render_as(&plain, f, false)?,
                 };
+
                 let tokens = std::str::from_utf8(&bytes)
                     .ok()
                     .filter(|_| !matches!(f, Format::Binary | Format::BinaryCanonical | Format::Cbor))
                     .map_or_else(|| "-".into(), |t| c.count(t).to_string());
                 println!("{name:<18} {:>9} {tokens:>9}", bytes.len());
             }
+
             eprintln!("(token counts are a tokenizer-independent heuristic; see spec §10)");
         }
         Cmd::Schema { cmd } => match cmd {
@@ -823,6 +864,7 @@ fn run(cli: Cli) -> R<ExitCode> {
                 for w in &c.warnings {
                     eprintln!("warning: {w}");
                 }
+
                 print!("{}", c.schema.to_canonical_text());
             }
             SchemaCmd::Check { old, new } => {
@@ -830,22 +872,27 @@ fn run(cli: Cli) -> R<ExitCode> {
                 for c in &r.changes {
                     println!("{c}");
                 }
+
                 let kind = match r.kind {
                     novafile_schema::ChangeKind::None => "no semantic changes",
                     novafile_schema::ChangeKind::Compatible => "backward-compatible changes",
                     novafile_schema::ChangeKind::Breaking => "breaking changes",
                 };
+
                 println!("{} -> {}: {kind}; minimum version {}", r.old, r.new, r.minimum);
                 if !r.problems.is_empty() {
                     for p in &r.problems {
                         eprintln!("error: {p}");
                     }
+
                     return Ok(ExitCode::from(1));
                 }
+
                 println!("ok: version bump is valid");
             }
         },
     }
+
     Ok(ExitCode::SUCCESS)
 }
 
@@ -854,6 +901,7 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
     if let Some(c) = case {
         config.case = novafile_lint::Case::parse(&c).ok_or_else(|| format!("unknown case {c:?} (snake, camel, kebab)"))?;
     }
+
     config.allow = allow;
     let mut warnings = 0;
     for file in files {
@@ -866,6 +914,7 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
                 Ok(novafile_lint::lint_document(src, &config).map_err(|e| e.to_diagnostic(&name_of(file), src))?)
             }
         };
+
         let mut findings = run(&src)?;
         if fix && findings.iter().any(|f| f.fix.is_some()) {
             let fixed = novafile_lint::apply_fixes(&src, &findings);
@@ -875,6 +924,7 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
             src = fixed;
             findings = run(&src)?;
         }
+
         warnings += findings.iter().filter(|f| f.level == novafile_lint::Level::Warning).count();
         for f in &findings {
             if format == "json" {
@@ -894,6 +944,7 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
                 ] {
                     rec.set(k, v);
                 }
+
                 println!("{}", novafile_json::to_json_string(&Value::Record(rec), false).0);
             } else {
                 let mut d = SourceDiagnostic::new("nova::lint", format!("[{}] {}", f.rule, f.message), &name_of(file), &src).with_label(
@@ -910,6 +961,7 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
             }
         }
     }
+
     Ok(if warnings > 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
 }
 
@@ -939,10 +991,12 @@ fn main() -> ExitCode {
         // Plain, narratable diagnostics are easier for models to parse than box drawings.
         let _ = miette::set_hook(Box::new(|_| Box::new(miette::NarratableReportHandler::new())));
     }
+
     let cli = match Cli::from_arg_matches(&cmd.get_matches()) {
         Ok(c) => c,
         Err(e) => e.exit(),
     };
+
     match run(cli) {
         Ok(c) => c,
         Err(E(report)) => {

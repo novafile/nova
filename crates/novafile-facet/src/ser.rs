@@ -13,6 +13,7 @@ pub(crate) fn value(p: Peek<'_, '_>) -> R {
     if let Some(v) = nova_kind(p)? {
         return Ok(v);
     }
+
     let shape = p.shape();
     // A container-level `#[facet(proxy = X)]` serializes as `X`.
     if shape.proxy.is_some()
@@ -20,9 +21,11 @@ pub(crate) fn value(p: Peek<'_, '_>) -> R {
     {
         return value(owned.as_peek());
     }
+
     if let Some(st) = p.scalar_type() {
         return scalar(p, st);
     }
+
     match shape.def {
         Def::Option(_) => {
             let o = p.into_option()?;
@@ -42,6 +45,7 @@ pub(crate) fn value(p: Peek<'_, '_>) -> R {
             if let Some(b) = list.as_bytes() {
                 return Ok(Value::Bytes(b.to_vec()));
             }
+
             let items = list
                 .iter()
                 .enumerate()
@@ -66,13 +70,16 @@ pub(crate) fn value(p: Peek<'_, '_>) -> R {
                     Value::String(s) => novafile_text::key_text(s),
                     other => format!("[{}]", novafile_text::flow_string(other)),
                 };
+
                 entries.push((k, value(v).map_err(|e| e.at(seg))?));
             }
+
             return map_or_record(entries);
         }
         Def::DynamicValue(_) => return Err(Error::new(format!("dynamic value type {shape} is not supported"))),
         _ => {}
     }
+
     match shape.ty {
         Type::User(UserType::Struct(_)) => structure(p.into_struct()?),
         Type::User(UserType::Enum(_)) => enumeration(p.into_enum()?),
@@ -85,10 +92,12 @@ pub(crate) fn value(p: Peek<'_, '_>) -> R {
                     return value(inner);
                 }
             }
+
             // Other scalars (addresses, paths, …) use their display form.
             if matches!(shape.def, Def::Scalar) && shape.vtable.has_display() {
                 return Ok(Value::String(p.to_string()));
             }
+
             Err(Error::new(format!("cannot serialize a value of type {shape}")))
         }
     }
@@ -101,6 +110,7 @@ fn deref<'mem, 'facet>(p: Peek<'mem, 'facet>) -> Peek<'mem, 'facet> {
     {
         return deref(inner);
     }
+
     p
 }
 
@@ -129,6 +139,7 @@ fn scalar(p: Peek<'_, '_>, st: ScalarType) -> R {
             Value::Int((*p.get::<$t>()?).into())
         };
     }
+
     Ok(match st {
         ScalarType::Unit => Value::Null,
         ScalarType::Bool => Value::Bool(*p.get::<bool>()?),
@@ -163,6 +174,7 @@ fn map_or_record(entries: Vec<(Value, Value)>) -> R {
             let Value::String(k) = k else { unreachable!() };
             r.insert(k, v).map_err(|e| Error::new(e.to_string()))?;
         }
+
         Ok(Value::Record(r))
     } else {
         Value::map(entries).map_err(Error::new)
@@ -188,8 +200,10 @@ fn record<'mem, 'facet>(fields: impl Iterator<Item = (facet_reflect::FieldItem, 
             Ok(e) if item.flattened => variant_payload(e)?.unwrap_or(Value::Null),
             _ => field_value(item.field, v)?,
         };
+
         r.insert(key.clone(), v).map_err(|e| Error::new(e.to_string())).map_err(|e| e.at_field(&key))?;
     }
+
     Ok(Value::Record(r))
 }
 
@@ -204,6 +218,7 @@ fn structure(s: PeekStruct<'_, '_>) -> R {
                 let (item, v) = fields.into_iter().next().unwrap();
                 return field_value(item.field, v);
             }
+
             let items = fields
                 .into_iter()
                 .enumerate()
@@ -237,6 +252,7 @@ fn variant_payload(e: PeekEnum<'_, '_>) -> Result<Option<Value>, Error> {
             }
         }
     };
+
     payload.map(Some).map_err(|err| err.at(tag.to_owned()))
 }
 
@@ -249,10 +265,12 @@ fn enumeration(e: PeekEnum<'_, '_>) -> R {
     if shape.is_numeric() {
         return Ok(Value::Int(e.discriminant().into()));
     }
+
     let payload = variant_payload(e)?;
     if shape.is_untagged() {
         return Ok(payload.unwrap_or(Value::Null));
     }
+
     match (shape.get_tag_attr(), shape.get_content_attr()) {
         // As with novafile-serde: serde writes the adjacent tag as a unit variant.
         (Some(t), Some(c)) => {
@@ -261,6 +279,7 @@ fn enumeration(e: PeekEnum<'_, '_>) -> R {
             if let Some(p) = payload {
                 r.insert(c, p).map_err(|e| Error::new(e.to_string()))?;
             }
+
             Ok(Value::Record(r))
         }
         (Some(t), None) => {
@@ -280,6 +299,7 @@ fn enumeration(e: PeekEnum<'_, '_>) -> R {
                     )));
                 }
             }
+
             Ok(Value::Record(r))
         }
         _ => Ok(Value::Variant(tag.into(), payload.map(Box::new))),

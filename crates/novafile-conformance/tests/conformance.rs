@@ -5,6 +5,7 @@ fn conformance_suite() {
         eprintln!("skipping: no spec checkout found (set NOVA_CONFORMANCE or clone github.com/novafile/spec next to this repo)");
         return;
     };
+
     let mut failures = Vec::new();
     let exp = novafile_conformance::expectations(&dir);
     for (path, j) in &exp {
@@ -13,6 +14,7 @@ fn conformance_suite() {
             failures.push(path.display().to_string());
         }
     }
+
     assert!(
         failures.is_empty(),
         "{} of {} cases differ:\n  {}",
@@ -31,6 +33,7 @@ fn embedded_meta_schema_matches_spec() {
         eprintln!("skipping: no spec checkout found");
         return;
     };
+
     let spec = std::fs::read_to_string(dir.join("../meta/nova-schema.novs")).expect("spec meta/nova-schema.novs");
     assert_eq!(
         novafile_schema::META_SCHEMA_SRC,

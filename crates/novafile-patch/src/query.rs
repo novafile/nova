@@ -18,6 +18,7 @@ fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value
     let Some((seg, rest)) = segs.split_first() else {
         return Ok(cur.clone());
     };
+
     let here = || Path(full.0[..depth].to_vec());
     let upto = || Path(full.0[..=depth].to_vec());
     match seg {
@@ -36,6 +37,7 @@ fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value
                     });
                 }
             };
+
             let keep = |e: &&Value| {
                 filters.iter().all(|f| match f {
                     Segment::Filter(lhs, CmpOp::Absent, _) => lhs.get(e).is_err(),
@@ -43,6 +45,7 @@ fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value
                     _ => unreachable!(),
                 })
             };
+
             Ok(Value::List(
                 elems
                     .into_iter()
@@ -64,6 +67,7 @@ fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value
                     });
                 }
             };
+
             Ok(Value::List(elems.into_iter().map(|e| sel(e, rest, depth + 1, full)).collect::<Result<_, _>>()?))
         }
         Segment::Project(fields) => project(cur, fields, &here()),
@@ -80,6 +84,7 @@ fn project(v: &Value, fields: &[String], at: &Path) -> Result<Value, PathError> 
                     out.set(f.clone(), x.clone());
                 }
             }
+
             Ok(Value::Record(out))
         }
         Value::List(l) => Ok(Value::List(l.iter().map(|e| project(e, fields, at)).collect::<Result<_, _>>()?)),
@@ -112,6 +117,7 @@ impl Response {
         {
             d.push(("scope", s));
         }
+
         document_to_text(&d, &self.value, profile)
     }
 }
@@ -130,6 +136,7 @@ pub fn get(root: &Value, request: &str) -> Result<Response, String> {
     if matches!(base.0.last(), Some(Segment::Project(_))) {
         base.0.pop();
     }
+
     let scope = base.is_singular().then_some(base);
     Ok(Response {
         revision: revision(root),

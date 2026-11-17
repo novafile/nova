@@ -156,6 +156,7 @@ pub(crate) fn classify<'s>(schema: &'s Schema, ty: &'s TypeRef, at: &dyn Fn() ->
                 nullable,
             })
         };
+
         let scalar = |s| single(Single::Scalar(s));
         return match &cur.kind {
             TypeKind::Named(name) => match schema.def(name) {
@@ -202,6 +203,7 @@ pub(crate) fn classify<'s>(schema: &'s Schema, ty: &'s TypeRef, at: &dyn Fn() ->
                     }
                     _ => return unsupported(&format!("a map with {k} keys (only string and integer keys are)")),
                 };
+
                 let val = classify(schema, v, at)?;
                 match val.shape {
                     _ if val.nullable => unsupported("a map with nullable values"),
@@ -217,6 +219,7 @@ pub(crate) fn classify<'s>(schema: &'s Schema, ty: &'s TypeRef, at: &dyn Fn() ->
             TypeKind::Null => unsupported("`null`"),
         };
     }
+
     Err(format!("{}: alias chain is too deep", at()))
 }
 
@@ -231,6 +234,7 @@ pub(crate) fn classify_payload<'s>(schema: &'s Schema, name: &str, v: &'s Varian
     let Some(ty) = &v.payload else {
         return Ok(Single::Message(Message::Empty));
     };
+
     let at = || format!("{name}.{}", v.name);
     let c = classify(schema, ty, &at)?;
     match c.shape {
@@ -253,9 +257,11 @@ pub(crate) fn field_number(record: &str, f: &FieldDef) -> Result<u32, String> {
             f.name
         ));
     }
+
     if RESERVED_FIELD_NUMBERS.contains(&id) {
         return Err(format!("{record}.{}: @id({id}) is in the range 19000..=19999 reserved by Protobuf", f.name));
     }
+
     Ok(id)
 }
 
@@ -276,10 +282,12 @@ pub(crate) fn screaming_snake(name: &str) -> String {
             if c.is_ascii_uppercase() && prev_lower {
                 out.push('_');
             }
+
             out.push(c.to_ascii_uppercase());
             prev_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
         }
     }
+
     out
 }
 
@@ -323,10 +331,12 @@ impl<'s> Plan<'s> {
             }
             Single::Scalar(_) => {}
         };
+
         while let Some(name) = queue.pop() {
             if !reachable.insert(name) {
                 continue;
             }
+
             match schema.def(name) {
                 Some(Def::Record(r)) => {
                     let mut numbers = HashMap::new();
@@ -336,13 +346,16 @@ impl<'s> Plan<'s> {
                         if let Some(other) = numbers.insert(n, &f.name) {
                             return Err(format!("{name}.{}: @id({n}) is also used by field {other}", f.name));
                         }
+
                         if let Some(other) = names.insert(ident(&f.name), &f.name) {
                             return Err(format!("{name}.{}: Protobuf field name collides with field {other}", f.name));
                         }
+
                         let c = classify_field(schema, name, f)?;
                         if c.nullable && !matches!(c.shape, Shape::Single(_)) {
                             return Err(format!("{name}.{}: a nullable list, set or map has no Protobuf mapping", f.name));
                         }
+
                         match c.shape {
                             Shape::Single(s) | Shape::Repeated { elem: s, .. } => visit(s, &mut queue, &mut imports),
                             Shape::Map { value, .. } => visit(value, &mut queue, &mut imports),
@@ -356,12 +369,14 @@ impl<'s> Plan<'s> {
                             return Err(format!("{name}.{}: Protobuf name collides with variant {other}", v.name));
                         }
                     }
+
                     if vs.iter().any(|v| v.payload.is_some()) {
                         for v in vs {
                             visit(classify_payload(schema, name, v)?, &mut queue, &mut imports);
                         }
                     }
                 }
+
                 // Aliases are always followed by `classify`.
                 _ => {}
             }
@@ -396,6 +411,7 @@ fn root_message(schema: &Schema) -> Result<Message<'_>, String> {
             _ => return Err(not_a_message()),
         },
     };
+
     match single {
         Single::Message(m @ (Message::Record(..) | Message::Union(..))) => Ok(m),
         _ => Err(not_a_message()),
@@ -414,6 +430,7 @@ fn check_package_names(defs: &[(&str, &Def)]) -> Result<(), String> {
             Ok(())
         }
     };
+
     for (name, def) in defs {
         claim(ident(name), (*name).to_owned())?;
         if let Def::Enum(vs) = def
@@ -425,5 +442,6 @@ fn check_package_names(defs: &[(&str, &Def)]) -> Result<(), String> {
             }
         }
     }
+
     Ok(())
 }

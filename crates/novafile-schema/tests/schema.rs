@@ -156,6 +156,7 @@ fn type_lookup_by_path() {
         s.type_at(&novafile_text::Path::parse(p).unwrap())
             .map(|(t, f)| (t.to_string(), f.map(|f| f.name)))
     };
+
     assert_eq!(t("services[3].port"), Some(("Port".into(), Some("port".into()))));
     assert_eq!(t("services"), Some(("list<Service>".into(), Some("services".into()))));
     assert_eq!(t("services[0]"), Some(("Service".into(), None)));
@@ -172,6 +173,7 @@ fn exact_ranges_and_len_units() {
         Ok(_) => vec![],
         Err(i) => i.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
     };
+
     // The binary64 nearest 0.1 is slightly above 1/10, so it is outside 0..0.1 exactly.
     let ok = "q: 0.34\nn: abcd\ng: \"e\u{301}\"\nu: \"ab\"\nc: \"äöüß\"\n";
     assert_eq!(issues(&format!("p: 0.1\n{ok}")), ["p: 0.1 is outside @range(0..0.1)"]);
@@ -274,6 +276,7 @@ fn schemas_as_data() {
         let reparsed = novafile_schema::Schema::from_value(&novafile_text::parse(&text).unwrap()).unwrap();
         assert_eq!(reparsed.fingerprint(), s.fingerprint(), "{text}");
     }
+
     // The meta-schema describes itself.
     meta.validate(&meta.to_value()).unwrap();
     // Queries work on descriptors.

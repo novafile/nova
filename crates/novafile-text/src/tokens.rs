@@ -28,6 +28,7 @@ impl TokenCounter for HeuristicCounter {
                     chars.next();
                     len += 1;
                 }
+
                 n += len.div_ceil(6);
             } else if c.is_ascii_digit() {
                 let mut len: usize = 1;
@@ -35,11 +36,13 @@ impl TokenCounter for HeuristicCounter {
                     chars.next();
                     len += 1;
                 }
+
                 n += len.div_ceil(3);
             } else if c == '\n' {
                 while chars.peek() == Some(&' ') {
                     chars.next();
                 }
+
                 n += 1;
             } else if c == ' ' {
                 if chars.peek() == Some(&' ') {
@@ -52,6 +55,7 @@ impl TokenCounter for HeuristicCounter {
                 n += 1;
             }
         }
+
         n
     }
 }

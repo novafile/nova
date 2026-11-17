@@ -16,6 +16,7 @@ fn assert_round_trip(old: &Schema) -> Schema {
         let breaking: Vec<_> = check_compatibility(a, b).into_iter().filter(|c| c.breaking).collect();
         assert!(breaking.is_empty(), "{breaking:#?}\n{}", serde_json::to_string_pretty(&json).unwrap());
     }
+
     // Re-parsable, and converting again is a fixed point.
     let text = new.to_string();
     assert_eq!(parse_schema(&text).unwrap().to_string(), text);

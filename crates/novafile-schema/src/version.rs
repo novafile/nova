@@ -23,9 +23,11 @@ fn numeric(s: &str, what: &str) -> Result<u64, String> {
     if s.is_empty() || !s.bytes().all(|c| c.is_ascii_digit()) {
         return Err(format!("{what} must be a non-negative integer, got {s:?}"));
     }
+
     if s.len() > 1 && s.starts_with('0') {
         return Err(format!("{what} must not have leading zeros, got {s:?}"));
     }
+
     s.parse().map_err(|_| format!("{what} is too large: {s:?}"))
 }
 
@@ -59,10 +61,12 @@ impl Version {
                 if !ids.iter().all(|i| ident_ok(i)) {
                     return Err(ctx("build metadata identifiers must be non-empty [0-9A-Za-z-]".into()));
                 }
+
                 (r, ids)
             }
             None => (s, Vec::new()),
         };
+
         let (core, pre) = match rest.split_once('-') {
             Some((c, p)) => {
                 let mut ids = Vec::new();
@@ -70,20 +74,24 @@ impl Version {
                     if !ident_ok(id) {
                         return Err(ctx("pre-release identifiers must be non-empty [0-9A-Za-z-]".into()));
                     }
+
                     if id.bytes().all(|c| c.is_ascii_digit()) {
                         ids.push(PreId::Num(numeric(id, "numeric pre-release identifier").map_err(ctx)?));
                     } else {
                         ids.push(PreId::Alpha(id.to_owned()));
                     }
                 }
+
                 (c, ids)
             }
             None => (rest, Vec::new()),
         };
+
         let parts: Vec<&str> = core.split('.').collect();
         if parts.len() != 3 {
             return Err(ctx("expected MAJOR.MINOR.PATCH".into()));
         }
+
         Ok(Version {
             major: numeric(parts[0], "major").map_err(ctx)?,
             minor: numeric(parts[1], "minor").map_err(ctx)?,
@@ -115,10 +123,12 @@ impl Version {
                             (PreId::Alpha(_), PreId::Num(_)) => Ordering::Greater,
                             (PreId::Alpha(x), PreId::Alpha(y)) => x.cmp(y),
                         };
+
                         if o != Ordering::Equal {
                             return o;
                         }
                     }
+
                     self.pre.len().cmp(&other.pre.len())
                 }
             })
@@ -136,12 +146,15 @@ impl Version {
         if self.is_prerelease() || data.is_prerelease() || (self.major == 0 && self.minor == 0) || (data.major == 0 && data.minor == 0) {
             return self.same_release(data);
         }
+
         if self.major != data.major {
             return false;
         }
+
         if self.major == 0 && self.minor != data.minor {
             return false;
         }
+
         self.precedence(data) != Ordering::Less
     }
 
@@ -186,9 +199,11 @@ impl fmt::Display for Version {
                 .collect();
             write!(f, "-{}", p.join("."))?;
         }
+
         if !self.build.is_empty() {
             write!(f, "+{}", self.build.join("."))?;
         }
+
         Ok(())
     }
 }
@@ -224,16 +239,19 @@ impl SchemaRef {
                 if f.len() != 16 || !f.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
                     return Err(format!("invalid fingerprint {f:?} (expected 16 lowercase hex digits)"));
                 }
+
                 (b, Some(f.to_owned()))
             }
             None => (s, None),
         };
+
         let (name, ver) = body
             .rsplit_once('@')
             .ok_or_else(|| format!("schema reference {s:?} must be `name@MAJOR.MINOR.PATCH`"))?;
         if !valid_schema_name(name) {
             return Err(format!("invalid schema name {name:?} (lowercase letters, digits, `-_./`)"));
         }
+
         Ok(SchemaRef {
             name: name.to_owned(),
             version: Version::parse(ver)?,
@@ -248,6 +266,7 @@ impl fmt::Display for SchemaRef {
         if let Some(fp) = &self.fingerprint {
             write!(f, "#{fp}")?;
         }
+
         Ok(())
     }
 }
@@ -275,6 +294,7 @@ mod tests {
         ] {
             assert_eq!(v(ok).to_string(), ok);
         }
+
         for bad in [
             "1",
             "1.2",
@@ -311,6 +331,7 @@ mod tests {
         for w in chain.windows(2) {
             assert_eq!(v(w[0]).precedence(&v(w[1])), Ordering::Less, "{} < {}", w[0], w[1]);
         }
+
         assert_eq!(v("1.0.0+a").precedence(&v("1.0.0+b")), Ordering::Equal);
     }
 

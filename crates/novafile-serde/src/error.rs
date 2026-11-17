@@ -29,8 +29,10 @@ impl Error {
             if !seg.starts_with('[') && !s.is_empty() {
                 s.push('.');
             }
+
             s.push_str(seg);
         }
+
         s
     }
 

@@ -122,6 +122,7 @@ pub fn to_vec<T: ?Sized + Serialize>(v: &T) -> Result<Vec<u8>, Error> {
         schema: None,
         value: to_value(v)?,
     };
+
     Ok(novafile_binary::encode_frame(&frame, novafile_binary::FrameOptions::default()))
 }
 
@@ -136,5 +137,6 @@ pub fn from_slice<T: DeserializeOwned>(b: &[u8]) -> Result<T, Error> {
     if n != b.len() {
         return Err(Error::new("trailing bytes after frame"));
     }
+
     from_value(frame.value)
 }

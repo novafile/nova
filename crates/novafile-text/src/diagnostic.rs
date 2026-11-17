@@ -83,10 +83,13 @@ impl SourceDiagnostic {
                 } else {
                     span.key.unwrap_or((span.start, span.end))
                 };
+
                 item = item.with_label(start, end.saturating_sub(start), if exact { "this value" } else { "in here" });
             }
+
             d.related.push(item);
         }
+
         d
     }
 }
@@ -99,6 +102,7 @@ fn token_len(src: &str, offset: usize) -> usize {
     } else {
         n
     };
+
     n.min(rest.len())
 }
 
@@ -110,6 +114,7 @@ fn offset_of(src: &str, line: usize, col: usize) -> usize {
             None => return src.len(),
         }
     }
+
     let line_text = &src[start..];
     start + line_text.char_indices().nth(col.saturating_sub(1)).map_or(line_text.len(), |(i, _)| i)
 }
@@ -126,25 +131,32 @@ impl Diagnostic for SourceDiagnostic {
     fn code<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
         Some(Box::new(self.code))
     }
+
     fn severity(&self) -> Option<miette::Severity> {
         self.severity
     }
+
     fn help<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
         self.help.as_ref().map(|h| Box::new(h) as Box<dyn fmt::Display>)
     }
+
     fn source_code(&self) -> Option<&dyn SourceCode> {
         if self.labels.is_empty() { None } else { Some(&self.src) }
     }
+
     fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
         if self.labels.is_empty() {
             return None;
         }
+
         Some(Box::new(self.labels.iter().map(|(o, l, t)| LabeledSpan::new(Some(t.clone()), *o, *l))))
     }
+
     fn related<'a>(&'a self) -> Option<Box<dyn Iterator<Item = &'a dyn Diagnostic> + 'a>> {
         if self.related.is_empty() {
             return None;
         }
+
         Some(Box::new(self.related.iter().map(|d| d as &dyn Diagnostic)))
     }
 }
@@ -158,10 +170,12 @@ impl ParseError {
             Some((m, h)) => (m.to_owned(), Some(h.to_owned())),
             None => (self.message.clone(), None),
         };
+
         let mut d = SourceDiagnostic::new("nova::syntax", msg.clone(), name, src).with_point(self.offset, "here");
         if let Some(h) = help {
             d = d.with_help(h);
         }
+
         d
     }
 }

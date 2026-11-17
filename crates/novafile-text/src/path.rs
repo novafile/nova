@@ -175,10 +175,12 @@ impl Path {
         if s.is_empty() || s == "." {
             return Ok(Path::root());
         }
+
         let (p, n) = Path::parse_prefix(s)?;
         if n != s.len() {
             return Err(format!("unexpected {:?} in path", &s[n..]));
         }
+
         Ok(p)
     }
 
@@ -216,12 +218,14 @@ impl Path {
                             while b.get(i) == Some(&b' ') {
                                 i += 1;
                             }
+
                             let (name, n) = parse_name(&s[i..])?;
                             i += n;
                             fields.push(name);
                             while b.get(i) == Some(&b' ') {
                                 i += 1;
                             }
+
                             match b.get(i) {
                                 Some(b',') => i += 1,
                                 Some(b'}') => {
@@ -231,6 +235,7 @@ impl Path {
                                 _ => return Err("expected `,` or `}` in projection".into()),
                             }
                         }
+
                         segs.push(Segment::Project(fields));
                     } else {
                         let (name, n) = parse_name(&s[i..])?;
@@ -245,13 +250,16 @@ impl Path {
                 }
                 _ => break,
             }
+
             first = false;
         }
+
         if let Some(pos) = segs.iter().position(|s| matches!(s, Segment::Project(_)))
             && pos + 1 != segs.len()
         {
             return Err("a projection must be the last path segment".into());
         }
+
         Ok((Path(segs), i))
     }
 
@@ -271,6 +279,7 @@ impl Path {
                 _ => step(cur, seg, &here, &upto)?,
             };
         }
+
         Ok(cur)
     }
 }
@@ -287,6 +296,7 @@ pub fn step<'v>(cur: &'v Value, seg: &Segment, here: &dyn Fn() -> Path, upto: &d
         expected,
         found: cur.kind(),
     };
+
     match seg {
         Segment::Field(name) => match cur {
             Value::Record(r) => r.get(name).ok_or_else(|| PathError::NotFound(upto())),
@@ -380,15 +390,18 @@ fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
         while b.get(j) == Some(&b' ') {
             j += 1;
         }
+
         if b.get(j) == Some(&b']') {
             Ok(j + 1)
         } else {
             Err("expected `]` to close selector".into())
         }
     };
+
     if b.first() == Some(&b'*') {
         return Ok((Segment::All, close(1)?));
     }
+
     // ?path op value | ?path | ?!path | ?path in [..]
     if b.first() == Some(&b'?') {
         let mut j = 1;
@@ -396,25 +409,31 @@ fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
         if negated {
             j += 1;
         }
+
         while b.get(j) == Some(&b' ') {
             j += 1;
         }
+
         let (lhs, n) = Path::parse_prefix(&s[j..])?;
         if lhs.is_root() || !lhs.is_singular() {
             return Err("a filter needs a field path, e.g. [?replicas>3]".into());
         }
+
         j += n;
         while b.get(j) == Some(&b' ') {
             j += 1;
         }
+
         let rest = &s[j..];
         if rest.starts_with(']') {
             let op = if negated { CmpOp::Absent } else { CmpOp::Exists };
             return Ok((Segment::Filter(lhs, op, Value::Null), close(j)?));
         }
+
         if negated {
             return Err("`[?!path]` tests absence and takes no comparison".into());
         }
+
         if let Some(r) = rest.strip_prefix("in").filter(|r| r.starts_with([' ', '['])) {
             let k = j + 2 + (r.len() - r.trim_start().len());
             let mut p = Parser::new(&s[k..], false);
@@ -422,9 +441,11 @@ fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
             if !matches!(v, Value::List(_)) {
                 return Err("`in` needs a list, e.g. [?tier in [web, api]]".into());
             }
+
             let end = close(k + p.pos)?;
             return Ok((Segment::Filter(lhs, CmpOp::In, v), end));
         }
+
         let (op, len) = [
             ("!=", CmpOp::Ne),
             ("<=", CmpOp::Le),
@@ -442,11 +463,13 @@ fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
         while b.get(j) == Some(&b' ') {
             j += 1;
         }
+
         let mut p = Parser::new(&s[j..], false);
         let v = p.parse_flow_value().map_err(|e| e.message)?;
         let end = close(j + p.pos)?;
         return Ok((Segment::Filter(lhs, op, v), end));
     }
+
     // ident '=' value
     if b.first().is_some_and(|&c| is_ident_start(c)) {
         let n = b.iter().take_while(|&&c| is_ident_char(c)).count();
@@ -454,17 +477,20 @@ fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
         while b.get(j) == Some(&b' ') {
             j += 1;
         }
+
         if b.get(j) == Some(&b'=') {
             j += 1;
             while b.get(j) == Some(&b' ') {
                 j += 1;
             }
+
             let mut p = Parser::new(&s[j..], false);
             let v = p.parse_flow_value().map_err(|e| e.message)?;
             let end = close(j + p.pos)?;
             return Ok((Segment::Match(s[..n].to_owned(), v), end));
         }
     }
+
     let mut p = Parser::new(s, false);
     let v = p.parse_flow_value().map_err(|e| e.message)?;
     let end = close(p.pos)?;
@@ -482,12 +508,14 @@ impl fmt::Display for Path {
         if self.0.is_empty() {
             return f.write_str(".");
         }
+
         for (i, seg) in self.0.iter().enumerate() {
             match seg {
                 Segment::Field(n) => {
                     if i > 0 {
                         f.write_str(".")?;
                     }
+
                     f.write_str(&key_text(n))?;
                 }
                 Segment::Index(n) => write!(f, "[{n}]")?,
@@ -500,6 +528,7 @@ impl fmt::Display for Path {
                 Segment::Project(fs) => write!(f, ".{{{}}}", fs.iter().map(|s| key_text(s)).collect::<Vec<_>>().join(","))?,
             }
         }
+
         Ok(())
     }
 }

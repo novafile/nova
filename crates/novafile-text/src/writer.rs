@@ -47,6 +47,7 @@ pub fn quote(s: &str) -> String {
             c => o.push(c),
         }
     }
+
     o.push('"');
     o
 }
@@ -107,14 +108,17 @@ fn write_flow(o: &mut String, v: &Value, sep: &str) {
         o.push_str(&t);
         return;
     }
+
     let seq = |o: &mut String, items: &[Value]| {
         for (i, it) in items.iter().enumerate() {
             if i > 0 {
                 o.push_str(sep);
             }
+
             write_flow(o, it, sep);
         }
     };
+
     match v {
         Value::String(s) => o.push_str(&if word_safe(s) { s.clone() } else { quote(s) }),
         Value::List(l) => {
@@ -133,6 +137,7 @@ fn write_flow(o: &mut String, v: &Value, sep: &str) {
             if l.len() == 1 {
                 o.push(',');
             }
+
             o.push(')');
         }
         Value::Record(r) => {
@@ -141,10 +146,12 @@ fn write_flow(o: &mut String, v: &Value, sep: &str) {
                 if i > 0 {
                     o.push_str(sep);
                 }
+
                 o.push_str(&key_text(k));
                 o.push_str(": ");
                 write_flow(o, v, sep);
             }
+
             o.push('}');
         }
         Value::Map(m) => {
@@ -153,10 +160,12 @@ fn write_flow(o: &mut String, v: &Value, sep: &str) {
                 if i > 0 {
                     o.push_str(sep);
                 }
+
                 write_flow(o, k, sep);
                 o.push_str(" => ");
                 write_flow(o, v, sep);
             }
+
             o.push('}');
         }
         Value::Variant(t, None) => {
@@ -187,6 +196,7 @@ pub fn canonicalize(v: &mut Value) {
                 for x in l.iter_mut() {
                     walk(x);
                 }
+
                 l.sort_by_cached_key(canonical_bytes);
             }
             Value::Map(m) => {
@@ -194,6 +204,7 @@ pub fn canonicalize(v: &mut Value) {
                     walk(k);
                     walk(v);
                 }
+
                 m.sort_by_cached_key(|(k, _)| canonical_bytes(k));
             }
             Value::Record(r) => r.iter_mut().for_each(|(_, v)| walk(v)),
@@ -201,6 +212,7 @@ pub fn canonicalize(v: &mut Value) {
             _ => {}
         }
     }
+
     v.sort_keys();
     walk(v);
 }
@@ -235,6 +247,7 @@ impl<'t> W<'t> {
         if t.blank_before.contains(&here) && !self.out.is_empty() && !self.out.ends_with("\n\n") {
             self.out.push('\n');
         }
+
         if let Some(cs) = t.leading.get(&here) {
             for c in cs {
                 self.pad(indent);
@@ -255,11 +268,13 @@ impl<'t> W<'t> {
                 found.extend(cs.iter().map(|c| (t.order.get(p).unwrap_or(&0), c)));
             }
         }
+
         for (p, c) in &t.trailing {
             if below(p) {
                 found.push((t.order.get(p).unwrap_or(&0), c));
             }
         }
+
         found.sort();
         for (_, c) in found {
             self.pad(indent);
@@ -283,6 +298,7 @@ impl<'t> W<'t> {
         let (text, orig) = t.spelling.get(&self.here())?;
         (t.keep_spelling && orig == v).then(|| text.clone())
     }
+
     fn sep(&self) -> &'static str {
         if self.compact { "," } else { ", " }
     }
@@ -313,6 +329,7 @@ impl<'t> W<'t> {
         if !(was_table || (self.compact && l.len() >= 2)) || l.is_empty() {
             return None;
         }
+
         let mut fields: Vec<String> = Vec::new();
         let mut present = 0usize;
         for v in l {
@@ -320,16 +337,20 @@ impl<'t> W<'t> {
             if r.is_empty() {
                 return None;
             }
+
             for (k, v) in r.iter() {
                 if v.is_container() {
                     return None;
                 }
+
                 if !fields.contains(k) {
                     fields.push(k.clone());
                 }
+
                 present += 1;
             }
         }
+
         // Require a mostly-dense table; sparse data reads better as records.
         (fields.len() <= 64 && present * 2 >= fields.len() * l.len()).then_some(fields)
     }
@@ -356,6 +377,7 @@ impl<'t> W<'t> {
             self.out.push('\n');
             return;
         }
+
         match v {
             Value::String(s) => {
                 self.out.push_str(if s.ends_with('\n') { " |\n" } else { " |-\n" });
@@ -364,6 +386,7 @@ impl<'t> W<'t> {
                         self.pad(indent + 2);
                         self.out.push_str(line);
                     }
+
                     self.out.push('\n');
                 }
             }
@@ -405,13 +428,16 @@ impl<'t> W<'t> {
             Value::List(l) => self.table_fields(l),
             _ => None,
         };
+
         if pad {
             self.emit_leading(indent);
             if table.is_none() && v.is_container() && !self.wants_block(v, indent + key.len() + 2) {
                 self.emit_hoisted(indent);
             }
+
             self.pad(indent);
         }
+
         let mark = self.out.len();
         if let (Value::List(l), Some(fields)) = (v, &table) {
             self.out.push_str(&key);
@@ -421,6 +447,7 @@ impl<'t> W<'t> {
             self.out.push(':');
             self.value_after_marker(v, indent, indent + key.len() + 2);
         }
+
         self.emit_trailing(mark);
         self.path.pop();
     }
@@ -459,6 +486,7 @@ impl<'t> W<'t> {
         if v.is_container() && !matches!(v, Value::Record(r) if !r.is_empty()) && !self.wants_block(v, indent + 2) {
             self.emit_hoisted(indent);
         }
+
         self.pad(indent);
         let mark = self.out.len();
         self.item_body(v, indent);
@@ -504,6 +532,7 @@ pub fn to_text(v: &Value, profile: Profile) -> String {
     } else {
         v
     };
+
     let mut w = W::new(profile == Profile::Compact, None);
     write_body(&mut w, v);
     w.out
@@ -539,11 +568,14 @@ pub fn document_to_text(directives: &[(&str, &str)], v: &Value, profile: Profile
             out.push(' ');
             out.push_str(a);
         }
+
         out.push('\n');
     }
+
     if !directives.is_empty() && profile != Profile::Compact {
         out.push('\n');
     }
+
     out.push_str(&to_text(v, profile));
     out
 }

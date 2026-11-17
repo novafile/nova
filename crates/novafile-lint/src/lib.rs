@@ -86,6 +86,7 @@ impl Config {
                 _ => return Err(format!("unknown @x-lint setting {part:?} (case=…, allow=…)")),
             }
         }
+
         Ok(self)
     }
 }
@@ -106,6 +107,7 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
     if doc.is_template() {
         return Ok(Vec::new());
     }
+
     let mut config = config.clone();
     if let Some(arg) = doc.directive("x-lint") {
         config = config.with_directive(arg).map_err(|m| novafile_text::ParseError {
@@ -115,6 +117,7 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
             message: m,
         })?;
     }
+
     let value = doc.body.to_value().map_err(|m| novafile_text::ParseError {
         line: 1,
         col: 1,
@@ -145,6 +148,7 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
                 });
             }
         };
+
         if config.on("compat-loss") {
             for (p, msg) in warnings {
                 let path = Path::parse(p.trim_start_matches('.')).unwrap_or_default();
@@ -159,9 +163,11 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
                 });
             }
         }
+
         // Key names belong to the external contract.
         config.allow.push("key-case".into());
     }
+
     keys(src, &spans, &value, &config, has_schema, &mut out);
     scalars(src, &spans, &value, &config, has_schema, &mut out);
     out.sort_by_key(|f| (f.start, f.rule));
@@ -179,6 +185,7 @@ fn keys(_src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schema:
             by_parent.entry(parent).or_default().push((s, k.clone()));
         }
     }
+
     let _ = value;
     for entries in by_parent.values() {
         let names: Vec<&str> = entries.iter().map(|(_, k)| k.as_str()).collect();
@@ -202,6 +209,7 @@ fn keys(_src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schema:
                 }
             }
         }
+
         for (s, k) in entries {
             let (a, b) = s.key.unwrap();
             if config.on("quoted-key") && !is_ident(k) {
@@ -220,9 +228,11 @@ fn keys(_src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schema:
                 });
                 continue;
             }
+
             if has_schema || !config.on("key-case") || config.case.matches(k) {
                 continue;
             }
+
             let want = config.case.convert(k);
             let collides = names.contains(&want.as_str());
             out.push(Finding {
@@ -311,6 +321,7 @@ pub fn lint_schema(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_
         let i = src[after..].find(needle).map_or(0, |i| after + i);
         (i, i + needle.len())
     };
+
     for (name, def) in &schema.defs {
         let def_at = line_of(&format!(" {name}"), 0).0;
         match def {
@@ -330,6 +341,7 @@ pub fn lint_schema(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_
                         }
                     }
                 }
+
                 let with_ids = r.fields.iter().filter(|f| f.id.is_some()).count();
                 if config.on("partial-ids") && with_ids > 0 && with_ids < r.fields.len() {
                     let (a, b) = line_of(&format!("record {name}"), 0);
@@ -364,6 +376,7 @@ pub fn lint_schema(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_
             _ => {}
         }
     }
+
     out.sort_by_key(|f| (f.start, f.rule));
     Ok(out)
 }
@@ -381,5 +394,6 @@ pub fn apply_fixes(src: &str, findings: &[Finding]) -> String {
             last = f.start;
         }
     }
+
     out
 }

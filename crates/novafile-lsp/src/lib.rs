@@ -19,6 +19,7 @@ use lsp_types::{
     HoverContents, HoverParams, HoverProviderCapability, InitializeParams, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
     PublishDiagnosticsParams, Range, ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
 };
+
 use novafile_schema::{Def, Schema, SchemaRef, TypeKind};
 use novafile_text::spans::{SpanMap, line_col_utf16, offset_of_utf16};
 use novafile_text::{Path, Segment};
@@ -52,6 +53,7 @@ pub fn run(conn: Connection) -> Result<(), Error> {
         }),
         ..Default::default()
     };
+
     let init = conn.initialize(serde_json::to_value(caps)?)?;
     let params: InitializeParams = serde_json::from_value(init)?;
     #[allow(deprecated)]
@@ -66,9 +68,11 @@ pub fn run(conn: Connection) -> Result<(), Error> {
         disk_schemas: Vec::new(),
         conn: &conn,
     };
+
     if let Some(root) = root {
         server.scan_schemas(&root);
     }
+
     server.main_loop()
 }
 
@@ -96,6 +100,7 @@ fn kind_of(uri: &Url, text: &str) -> Kind {
     if has_ext(uri.path(), "novs") {
         return Kind::Schema;
     }
+
     let first = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).unwrap_or("");
     if first.starts_with("@patch") || has_ext(uri.path(), "patch") {
         Kind::Patch
@@ -152,6 +157,7 @@ fn parse_data(text: &str) -> Result<Option<Parsed>, novafile_text::ParseError> {
     if doc.is_template() {
         return Ok(None);
     }
+
     let value = doc.body.to_value().map_err(|m| novafile_text::ParseError {
         line: 1,
         col: 1,
@@ -168,6 +174,7 @@ impl Server<'_> {
             if depth > 8 {
                 return;
             }
+
             let Ok(rd) = std::fs::read_dir(dir) else { return };
             for e in rd.flatten() {
                 let p = e.path();
@@ -176,6 +183,7 @@ impl Server<'_> {
                 if name.starts_with('.') || name == "target" || name == "node_modules" {
                     continue;
                 }
+
                 if p.is_dir() {
                     walk(&p, depth + 1, out);
                 } else if name.ends_with(".novs") {
@@ -183,6 +191,7 @@ impl Server<'_> {
                 }
             }
         }
+
         let mut files = Vec::new();
         walk(root, 0, &mut files);
         for f in files {
@@ -206,6 +215,7 @@ impl Server<'_> {
                 all.push(s.clone());
             }
         }
+
         all
     }
 
@@ -267,6 +277,7 @@ impl Server<'_> {
                                             }
                                             None => line_range(text, 1),
                                         };
+
                                         let fp = s.fingerprint();
                                         out.push(diag(r, DiagnosticSeverity::ERROR, "nova::invalid", format!("{}: {} ({fp})", i.path, i.message)));
                                     }
@@ -277,6 +288,7 @@ impl Server<'_> {
                 }
             },
         }
+
         out
     }
 
@@ -288,6 +300,7 @@ impl Server<'_> {
             Kind::Document => novafile_lint::lint_document(text, &config).unwrap_or_default(),
             Kind::Patch => vec![],
         };
+
         findings
             .into_iter()
             .map(|f| {
@@ -296,6 +309,7 @@ impl Server<'_> {
                 } else {
                     DiagnosticSeverity::HINT
                 };
+
                 diag(range(text, f.start, f.end), sev, &format!("nova::lint::{}", f.rule), f.message)
             })
             .collect()
@@ -310,6 +324,7 @@ impl Server<'_> {
             diagnostics,
             version: None,
         };
+
         self.conn
             .sender
             .send(Message::Notification(Notification::new(PublishDiagnostics::METHOD.into(), params)))?;
@@ -321,6 +336,7 @@ impl Server<'_> {
         for u in uris {
             self.publish(&u)?;
         }
+
         Ok(())
     }
 
@@ -331,17 +347,20 @@ impl Server<'_> {
                     if self.conn.handle_shutdown(&req)? {
                         return Ok(());
                     }
+
                     let id = req.id.clone();
                     let resp = match self.request(req) {
                         Ok(v) => Response::new_ok(id, v),
                         Err((code, m)) => Response::new_err(id, code, m),
                     };
+
                     self.conn.sender.send(Message::Response(resp))?;
                 }
                 Message::Notification(n) => self.notification(n)?,
                 Message::Response(_) => {}
             }
         }
+
         Ok(())
     }
 
@@ -378,12 +397,14 @@ impl Server<'_> {
                     diagnostics: vec![],
                     version: None,
                 };
+
                 self.conn
                     .sender
                     .send(Message::Notification(Notification::new(PublishDiagnostics::METHOD.into(), params)))?;
             }
             _ => {}
         }
+
         Ok(())
     }
 
@@ -391,6 +412,7 @@ impl Server<'_> {
         fn json<T: serde::Serialize>(v: T) -> Result<serde_json::Value, (i32, String)> {
             serde_json::to_value(v).map_err(|e| (lsp_server::ErrorCode::InternalError as i32, e.to_string()))
         }
+
         let bad = |e: serde_json::Error| (lsp_server::ErrorCode::InvalidParams as i32, e.to_string());
         match req.method.as_str() {
             HoverRequest::METHOD => {
@@ -421,6 +443,7 @@ impl Server<'_> {
         if kind_of(uri, text) != Kind::Document {
             return None;
         }
+
         Some((text.as_str(), parse_data(text).ok()??))
     }
 
@@ -433,6 +456,7 @@ impl Server<'_> {
         if shown.chars().count() > 80 {
             shown = shown.chars().take(77).collect::<String>() + "…";
         }
+
         let mut md = format!("**`{}`** · {}\n\n```nova\n{shown}\n```", span.path, v.kind());
         if let Some(s) = self.schema_for(&p)
             && let Some((ty, field)) = s.type_at(&span.path)
@@ -442,28 +466,35 @@ impl Server<'_> {
             if *under != ty {
                 let _ = write!(md, " = `{under}`");
             }
+
             if let Some(f) = field {
                 let mut notes = Vec::new();
                 if f.optional {
                     notes.push("optional".to_string());
                 }
+
                 if let Some(d) = &f.default {
                     notes.push(format!("default `{}`", novafile_text::flow_string(d)));
                 }
+
                 if f.key {
                     notes.push("`@key`".into());
                 }
+
                 if let Some(id) = f.id {
                     notes.push(format!("`@id({id})`"));
                 }
+
                 if f.deprecated {
                     notes.push("**deprecated**".into());
                 }
+
                 if !notes.is_empty() {
                     let _ = write!(md, "\n\n{}", notes.join(" · "));
                 }
             }
         }
+
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -483,11 +514,13 @@ impl Server<'_> {
         if kind_of(uri, text) != Kind::Document {
             return None;
         }
+
         // Document-preserving: comments, blank lines and spellings survive.
         let formatted = novafile_text::format_preserving(text, novafile_text::Profile::Human).ok()?;
         if formatted == *text {
             return Some(vec![]);
         }
+
         Some(vec![TextEdit {
             range: range(text, 0, text.len()),
             new_text: formatted,
@@ -499,6 +532,7 @@ impl Server<'_> {
         if kind_of(uri, text) != Kind::Document {
             return None;
         }
+
         let lines: Vec<&str> = text.split('\n').collect();
         let line = *lines.get(pos.line as usize)?;
         let before: String = line
@@ -520,6 +554,7 @@ impl Server<'_> {
             Some(rest) => (rest, indent + 2),
             None => (content, indent),
         };
+
         let record = enclosing_record(&blanked, &p.spans, pos.line as usize, indent)?;
 
         if let Some((key, partial)) = content.split_once(": ").or_else(|| content.strip_suffix(':').map(|k| (k, ""))) {
@@ -536,6 +571,7 @@ impl Server<'_> {
                             None => (v.name.clone(), v.name.clone()),
                             Some(t) => (format!("!{}({t})", v.name), format!("!{}()", v.name)),
                         };
+
                         items.push(CompletionItem {
                             label,
                             insert_text: Some(insert),
@@ -555,6 +591,7 @@ impl Server<'_> {
                 }
                 _ => return None,
             }
+
             return Some(
                 items
                     .into_iter()
@@ -570,6 +607,7 @@ impl Server<'_> {
             Ok(Value::Record(r)) => r.keys().cloned().collect(),
             _ => vec![],
         };
+
         Some(
             rd.fields
                 .iter()
@@ -608,11 +646,13 @@ fn enclosing_record(text: &str, spans: &SpanMap, line: usize, indent: usize) -> 
         if t.is_empty() || t.starts_with('#') || t.starts_with('@') {
             continue;
         }
+
         let ind = l.len() - t.len();
         let (content_ind, content) = match t.strip_prefix("- ") {
             Some(rest) => (ind + 2, rest),
             None => (ind, t),
         };
+
         let key_off = line_offset(j) + content_ind;
         if content_ind == indent && !content.starts_with("- ") {
             // A sibling field: its parent is the record.
@@ -621,14 +661,17 @@ fn enclosing_record(text: &str, spans: &SpanMap, line: usize, indent: usize) -> 
             p.0.pop();
             return Some(p);
         }
+
         if content_ind < indent {
             // The parent line `key:` opens the record.
             if content.trim_end().ends_with(':') {
                 return spans.at(key_off).map(|s| s.path.clone());
             }
+
             return None;
         }
     }
+
     (indent == 0).then(Path::root)
 }
 
@@ -656,12 +699,14 @@ fn children_of(text: &str, p: &Parsed, parent: &Path) -> Vec<DocumentSymbol> {
                 Segment::Index(i) => format!("[{i}]"),
                 other => format!("{other:?}"),
             };
+
             if let Value::Record(r) = v
                 && let Some(id) = ["id", "name", "key"].iter().find_map(|k| r.get(k))
                 && !id.is_container()
             {
                 name = format!("{name} {}", novafile_text::flow_string(id));
             }
+
             let full = range(text, s.start, s.end);
             let sel = s.key.map_or(full, |(a, b)| range(text, a, b));
             let detail = if v.is_container() {
@@ -669,6 +714,7 @@ fn children_of(text: &str, p: &Parsed, parent: &Path) -> Vec<DocumentSymbol> {
             } else {
                 Some(novafile_text::flow_string(v).chars().take(40).collect())
             };
+
             let children = children_of(text, p, &s.path);
             Some(DocumentSymbol {
                 name,
