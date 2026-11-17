@@ -8,7 +8,7 @@
 - **Queries and conditional patches** for agents that read and change *parts* of a document.
 - **Templates** for composition, rendered to plain values before anything else sees them.
 
-📄 **[Read the specification →](https://github.com/novafile/spec/blob/main/SPEC.md)**
+🌐 **[novafile.dev](https://novafile.dev/)** · 📄 **[Read the specification →](https://github.com/novafile/spec/blob/main/SPEC.md)**
 
 This repository is the Rust reference implementation. The specification, design proposals and the cross-implementation conformance suite live in [novafile/spec](https://github.com/novafile/spec); editor support in [novafile/vscode-novafile](https://github.com/novafile/vscode-novafile) and [novafile/tree-sitter-nova](https://github.com/novafile/tree-sitter-nova). The format is called NOVA (files `.nova`, schemas `.novs`); the Rust packages are published as `novafile-*`, and the command-line tool is `nvf`.
 

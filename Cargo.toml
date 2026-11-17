@@ -9,6 +9,7 @@ license = "EUPL-1.2 OR MPL-2.0"
 rust-version = "1.90"
 authors = ["Markus Mayer"]
 repository = "https://github.com/novafile/nova"
+homepage = "https://novafile.dev/"
 readme = "README.md"
 keywords = ["nova", "serialization", "configuration", "schema", "llm"]
 categories = ["encoding", "parser-implementations", "config"]

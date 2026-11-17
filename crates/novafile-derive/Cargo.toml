@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
 readme.workspace = true
 keywords = ["nova", "schema", "derive", "proc-macro"]
 categories = ["development-tools::procedural-macro-helpers", "encoding"]
