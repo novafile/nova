@@ -323,7 +323,7 @@ impl Duration {
             }
             if rem > 0 || (h == 0 && m == 0) {
                 out.push_str(&format!("{}", rem / ns));
-                if rem % ns != 0 {
+                if !rem.is_multiple_of(ns) {
                     out.push_str(&format!(".{}", format!("{:09}", rem % ns).trim_end_matches('0')));
                 }
                 out.push('S');
