@@ -1,0 +1,20 @@
+[package]
+name = "nova-cli"
+description = "The `nova` command-line tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nova"
+path = "src/main.rs"
+
+[dependencies]
+nova-value.workspace = true
+nova-binary.workspace = true
+nova-text.workspace = true
+nova-schema.workspace = true
+nova-patch.workspace = true
+nova-template.workspace = true
+nova-json.workspace = true
+clap.workspace = true

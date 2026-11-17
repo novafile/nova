@@ -1,0 +1,627 @@
+//! NOVA binary value encoding (spec §5.1–5.3) and revisions.
+
+use crate::{Decimal, Duration, Rational, Record, Timestamp, Value};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+
+pub(crate) mod tag {
+    pub const NULL: u8 = 0x00;
+    pub const FALSE: u8 = 0x01;
+    pub const TRUE: u8 = 0x02;
+    pub const INT: u8 = 0x03;
+    pub const FLOAT: u8 = 0x04;
+    pub const DECIMAL: u8 = 0x05;
+    pub const STRING: u8 = 0x06;
+    pub const BYTES: u8 = 0x07;
+    pub const TIMESTAMP: u8 = 0x08;
+    pub const DURATION: u8 = 0x09;
+    pub const LIST: u8 = 0x0A;
+    pub const TUPLE: u8 = 0x0B;
+    pub const SET: u8 = 0x0C;
+    pub const RECORD: u8 = 0x0D;
+    pub const MAP: u8 = 0x0E;
+    pub const UNIT_VARIANT: u8 = 0x0F;
+    pub const VARIANT: u8 = 0x10;
+    pub const RATIONAL: u8 = 0x11;
+}
+
+const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EncodeOptions {
+    /// Sort records/sets/maps canonically. Implies `dedupe_strings = false`.
+    pub canonical: bool,
+    /// Replace repeated strings with back-references (spec §5.3).
+    pub dedupe_strings: bool,
+}
+
+fn put_varint(out: &mut Vec<u8>, mut v: u128) {
+    loop {
+        let byte = (v & 0x7F) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+fn varint_len(mut v: u128) -> usize {
+    let mut n = 1;
+    while v >= 0x80 {
+        v >>= 7;
+        n += 1;
+    }
+    n
+}
+
+fn zigzag(v: i128) -> u128 {
+    ((v << 1) ^ (v >> 127)) as u128
+}
+
+fn unzigzag(v: u128) -> i128 {
+    ((v >> 1) as i128) ^ -((v & 1) as i128)
+}
+
+struct Encoder {
+    opts: EncodeOptions,
+    table: HashMap<String, usize>,
+    next_index: usize,
+}
+
+impl Encoder {
+    fn string(&mut self, out: &mut Vec<u8>, s: &str) {
+        if self.opts.dedupe_strings && !self.opts.canonical {
+            if let Some(&idx) = self.table.get(s) {
+                let r = (idx as u128) << 1 | 1;
+                let lit = (s.len() as u128) << 1;
+                if varint_len(r) < varint_len(lit) + s.len() {
+                    put_varint(out, r);
+                    return;
+                }
+            }
+        }
+        put_varint(out, (s.len() as u128) << 1);
+        out.extend_from_slice(s.as_bytes());
+        // Every literal string enters the table; decoders mirror this.
+        self.table.insert(s.to_owned(), self.next_index);
+        self.next_index += 1;
+    }
+
+    fn sorted_children<'a, I: Iterator<Item = &'a Value>>(&mut self, items: I) -> Vec<Vec<u8>> {
+        let mut parts: Vec<Vec<u8>> = items.map(canonical_bytes).collect();
+        parts.sort();
+        parts
+    }
+
+    fn value(&mut self, out: &mut Vec<u8>, v: &Value) {
+        match v {
+            Value::Null => out.push(tag::NULL),
+            Value::Bool(false) => out.push(tag::FALSE),
+            Value::Bool(true) => out.push(tag::TRUE),
+            Value::Int(i) => {
+                out.push(tag::INT);
+                put_varint(out, zigzag(*i));
+            }
+            Value::Float(f) => {
+                out.push(tag::FLOAT);
+                let bits = if f.is_nan() { CANONICAL_NAN } else { f.to_bits() };
+                out.extend_from_slice(&bits.to_be_bytes());
+            }
+            Value::Decimal(d) => {
+                out.push(tag::DECIMAL);
+                put_varint(out, zigzag(d.coefficient()));
+                put_varint(out, zigzag(d.exponent() as i128));
+            }
+            Value::Rational(r) => {
+                out.push(tag::RATIONAL);
+                put_varint(out, zigzag(r.numerator()));
+                put_varint(out, r.denominator() as u128);
+            }
+            Value::String(s) => {
+                out.push(tag::STRING);
+                self.string(out, s);
+            }
+            Value::Bytes(b) => {
+                out.push(tag::BYTES);
+                put_varint(out, b.len() as u128);
+                out.extend_from_slice(b);
+            }
+            Value::Timestamp(t) => {
+                out.push(tag::TIMESTAMP);
+                put_varint(out, zigzag(t.unix_seconds() as i128));
+                put_varint(out, t.subsec_nanos() as u128);
+            }
+            Value::Duration(d) => {
+                out.push(tag::DURATION);
+                put_varint(out, zigzag(d.as_nanos()));
+            }
+            Value::List(items) | Value::Tuple(items) => {
+                out.push(if matches!(v, Value::List(_)) { tag::LIST } else { tag::TUPLE });
+                put_varint(out, items.len() as u128);
+                items.iter().for_each(|i| self.value(out, i));
+            }
+            Value::Set(items) => {
+                out.push(tag::SET);
+                put_varint(out, items.len() as u128);
+                if self.opts.canonical {
+                    for p in self.sorted_children(items.iter()) {
+                        out.extend_from_slice(&p);
+                    }
+                } else {
+                    items.iter().for_each(|i| self.value(out, i));
+                }
+            }
+            Value::Record(r) => {
+                out.push(tag::RECORD);
+                put_varint(out, r.len() as u128);
+                if self.opts.canonical {
+                    let mut entries: Vec<_> = r.iter().collect();
+                    entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+                    for (k, v) in entries {
+                        self.string(out, k);
+                        self.value(out, v);
+                    }
+                } else {
+                    for (k, v) in r.iter() {
+                        self.string(out, k);
+                        self.value(out, v);
+                    }
+                }
+            }
+            Value::Map(entries) => {
+                out.push(tag::MAP);
+                put_varint(out, entries.len() as u128);
+                if self.opts.canonical {
+                    let mut parts: Vec<(Vec<u8>, Vec<u8>)> = entries.iter().map(|(k, v)| (canonical_bytes(k), canonical_bytes(v))).collect();
+                    parts.sort();
+                    for (k, v) in parts {
+                        out.extend_from_slice(&k);
+                        out.extend_from_slice(&v);
+                    }
+                } else {
+                    for (k, v) in entries {
+                        self.value(out, k);
+                        self.value(out, v);
+                    }
+                }
+            }
+            Value::Variant(name, None) => {
+                out.push(tag::UNIT_VARIANT);
+                self.string(out, name);
+            }
+            Value::Variant(name, Some(p)) => {
+                out.push(tag::VARIANT);
+                self.string(out, name);
+                self.value(out, p);
+            }
+        }
+    }
+}
+
+/// Encode a value with the given options.
+pub fn encode(v: &Value, opts: EncodeOptions) -> Vec<u8> {
+    let mut enc = Encoder {
+        opts,
+        table: HashMap::new(),
+        next_index: 0,
+    };
+    let mut out = Vec::new();
+    enc.value(&mut out, v);
+    out
+}
+
+/// The canonical encoding (spec §5.2): the basis of equality, ordering and revisions.
+pub fn canonical_bytes(v: &Value) -> Vec<u8> {
+    encode(
+        v,
+        EncodeOptions {
+            canonical: true,
+            dedupe_strings: false,
+        },
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub max_depth: usize,
+    pub max_strings: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            max_depth: 128,
+            max_strings: 1 << 20,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodeError {
+    pub offset: usize,
+    pub message: String,
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "byte {}: {}", self.offset, self.message)
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
+struct Decoder<'a> {
+    buf: &'a [u8],
+    pos: usize,
+    depth: usize,
+    limits: Limits,
+    strings: Vec<String>,
+}
+
+impl<'a> Decoder<'a> {
+    fn err<T>(&self, msg: impl Into<String>) -> Result<T, DecodeError> {
+        Err(DecodeError {
+            offset: self.pos,
+            message: msg.into(),
+        })
+    }
+
+    fn byte(&mut self) -> Result<u8, DecodeError> {
+        let b = *self.buf.get(self.pos).ok_or(DecodeError {
+            offset: self.pos,
+            message: "unexpected end of input".into(),
+        })?;
+        self.pos += 1;
+        Ok(b)
+    }
+
+    fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
+        if self.buf.len() - self.pos < n {
+            return self.err("length exceeds input");
+        }
+        let s = &self.buf[self.pos..self.pos + n];
+        self.pos += n;
+        Ok(s)
+    }
+
+    fn varint(&mut self) -> Result<u128, DecodeError> {
+        let mut v: u128 = 0;
+        let mut shift = 0;
+        loop {
+            let b = self.byte()?;
+            if shift >= 126 && (b & 0x7F) > 0x03 {
+                return self.err("varint overflow");
+            }
+            v |= ((b & 0x7F) as u128) << shift;
+            if b & 0x80 == 0 {
+                if b == 0 && shift > 0 {
+                    return self.err("non-minimal varint");
+                }
+                return Ok(v);
+            }
+            shift += 7;
+        }
+    }
+
+    fn count(&mut self) -> Result<usize, DecodeError> {
+        let n = self.varint()?;
+        if n > (self.buf.len() - self.pos) as u128 {
+            return self.err("element count exceeds remaining input");
+        }
+        Ok(n as usize)
+    }
+
+    fn string(&mut self) -> Result<String, DecodeError> {
+        let h = self.varint()?;
+        if h & 1 == 1 {
+            let idx = (h >> 1) as usize;
+            return match self.strings.get(idx) {
+                Some(s) => Ok(s.clone()),
+                None => self.err(format!("string back-reference {idx} out of range")),
+            };
+        }
+        let len = h >> 1;
+        if len > (self.buf.len() - self.pos) as u128 {
+            return self.err("string length exceeds input");
+        }
+        let start = self.pos;
+        let bytes = self.take(len as usize)?;
+        let s = std::str::from_utf8(bytes)
+            .map_err(|_| DecodeError {
+                offset: start,
+                message: "invalid UTF-8".into(),
+            })?
+            .to_owned();
+        if self.strings.len() >= self.limits.max_strings {
+            return self.err("string table limit exceeded");
+        }
+        self.strings.push(s.clone());
+        Ok(s)
+    }
+
+    fn value(&mut self) -> Result<Value, DecodeError> {
+        let start = self.pos;
+        let t = self.byte()?;
+        if self.depth >= self.limits.max_depth && matches!(t, tag::LIST..=tag::MAP | tag::VARIANT) {
+            return self.err("nesting depth limit exceeded");
+        }
+        Ok(match t {
+            tag::NULL => Value::Null,
+            tag::FALSE => Value::Bool(false),
+            tag::TRUE => Value::Bool(true),
+            tag::INT => Value::Int(unzigzag(self.varint()?)),
+            tag::FLOAT => {
+                let b = self.take(8)?;
+                Value::Float(f64::from_bits(u64::from_be_bytes(b.try_into().unwrap())))
+            }
+            tag::DECIMAL => {
+                let c = unzigzag(self.varint()?);
+                let e = unzigzag(self.varint()?);
+                if e < i32::MIN as i128 || e > i32::MAX as i128 {
+                    return self.err("decimal exponent out of range");
+                }
+                let d = Decimal::new(c, e as i32);
+                if d.coefficient() != c || d.exponent() as i128 != e {
+                    return self.err("decimal is not normalized");
+                }
+                Value::Decimal(d)
+            }
+            tag::RATIONAL => {
+                let n = unzigzag(self.varint()?);
+                let d = self.varint()?;
+                if d == 0 || d > i128::MAX as u128 {
+                    return self.err("invalid rational denominator");
+                }
+                match Rational::new(n, d as i128) {
+                    Ok(r) if r.numerator() == n && r.denominator() as u128 == d => Value::Rational(r),
+                    Ok(_) => return self.err("rational is not normalized"),
+                    Err(e) => return self.err(e),
+                }
+            }
+            tag::STRING => Value::String(self.string()?),
+            tag::BYTES => {
+                let n = self.count()?;
+                Value::Bytes(self.take(n)?.to_vec())
+            }
+            tag::TIMESTAMP => {
+                let s = unzigzag(self.varint()?);
+                let n = self.varint()?;
+                if s < i64::MIN as i128 || s > i64::MAX as i128 || n > u32::MAX as u128 {
+                    return self.err("timestamp out of range");
+                }
+                match Timestamp::new(s as i64, n as u32) {
+                    Ok(t) => Value::Timestamp(t),
+                    Err(e) => return self.err(e),
+                }
+            }
+            tag::DURATION => match Duration::from_nanos(unzigzag(self.varint()?)) {
+                Ok(d) => Value::Duration(d),
+                Err(e) => return self.err(e),
+            },
+            tag::LIST | tag::TUPLE | tag::SET => {
+                let n = self.count()?;
+                self.depth += 1;
+                let mut items = Vec::with_capacity(n);
+                let mut seen = HashSet::new();
+                for _ in 0..n {
+                    let v = self.value()?;
+                    if t == tag::SET && !seen.insert(canonical_bytes(&v)) {
+                        return Err(DecodeError {
+                            offset: start,
+                            message: "duplicate set element".into(),
+                        });
+                    }
+                    items.push(v);
+                }
+                self.depth -= 1;
+                match t {
+                    tag::LIST => Value::List(items),
+                    tag::TUPLE => Value::Tuple(items),
+                    _ => Value::Set(items),
+                }
+            }
+            tag::RECORD => {
+                let n = self.count()?;
+                self.depth += 1;
+                let mut r = Record::new();
+                for _ in 0..n {
+                    let k = self.string()?;
+                    let v = self.value()?;
+                    if let Err(e) = r.insert(k, v) {
+                        return Err(DecodeError {
+                            offset: start,
+                            message: e.to_string(),
+                        });
+                    }
+                }
+                self.depth -= 1;
+                Value::Record(r)
+            }
+            tag::MAP => {
+                let n = self.count()?;
+                self.depth += 1;
+                let mut entries = Vec::with_capacity(n);
+                let mut seen = HashSet::new();
+                for _ in 0..n {
+                    let k = self.value()?;
+                    if !seen.insert(canonical_bytes(&k)) {
+                        return Err(DecodeError {
+                            offset: start,
+                            message: "duplicate map key".into(),
+                        });
+                    }
+                    let v = self.value()?;
+                    entries.push((k, v));
+                }
+                self.depth -= 1;
+                Value::Map(entries)
+            }
+            tag::UNIT_VARIANT => Value::Variant(self.string()?, None),
+            tag::VARIANT => {
+                let name = self.string()?;
+                self.depth += 1;
+                let p = self.value()?;
+                self.depth -= 1;
+                Value::Variant(name, Some(Box::new(p)))
+            }
+            other => {
+                return Err(DecodeError {
+                    offset: start,
+                    message: format!("unknown type tag 0x{other:02X}"),
+                })
+            }
+        })
+    }
+}
+
+/// Decode one value from the start of `buf`; returns the value and bytes consumed.
+pub fn decode_prefix(buf: &[u8], limits: Limits) -> Result<(Value, usize), DecodeError> {
+    let mut d = Decoder {
+        buf,
+        pos: 0,
+        depth: 0,
+        limits,
+        strings: Vec::new(),
+    };
+    let v = d.value()?;
+    Ok((v, d.pos))
+}
+
+/// Decode exactly one value occupying all of `buf`.
+pub fn decode(buf: &[u8]) -> Result<Value, DecodeError> {
+    let (v, n) = decode_prefix(buf, Limits::default())?;
+    if n != buf.len() {
+        return Err(DecodeError {
+            offset: n,
+            message: "trailing bytes after value".into(),
+        });
+    }
+    Ok(v)
+}
+
+/// A content revision: SHA-256 of the canonical encoding (spec §2.13).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Revision(pub [u8; 32]);
+
+impl Revision {
+    pub fn hex(&self) -> String {
+        self.0.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Does `text` (`sha256:<hex>`, possibly abbreviated to ≥ 8 hex digits)
+    /// identify this revision?
+    pub fn matches(&self, text: &str) -> bool {
+        let h = text.strip_prefix("sha256:").unwrap_or(text).to_ascii_lowercase();
+        h.len() >= 8 && h.len() <= 64 && h.bytes().all(|c| c.is_ascii_hexdigit()) && self.hex().starts_with(&h)
+    }
+}
+
+impl fmt::Display for Revision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "sha256:{}", self.hex())
+    }
+}
+
+impl fmt::Debug for Revision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+pub fn revision(v: &Value) -> Revision {
+    Revision(Sha256::digest(canonical_bytes(v)).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(entries: Vec<(&str, Value)>) -> Value {
+        Value::Record(Record::from_entries(entries.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()).unwrap())
+    }
+
+    fn sample() -> Value {
+        rec(vec![
+            ("name", "auth".into()),
+            ("port", Value::Int(8080)),
+            ("ratio", Value::Float(0.5)),
+            ("price", Value::Decimal(Decimal::parse("12.50").unwrap())),
+            ("pi", Value::Rational(Rational::parse("22/7").unwrap())),
+            ("at", Value::Timestamp(Timestamp::parse("2026-11-17T16:00:00Z").unwrap())),
+            ("ttl", Value::Duration(Duration::parse("1h").unwrap())),
+            ("blob", Value::Bytes(vec![0, 1, 2])),
+            ("tags", Value::set(vec!["b".into(), "a".into()]).unwrap()),
+            ("pair", Value::Tuple(vec![Value::Int(1), Value::Null])),
+            ("m", Value::map(vec![(Value::Int(2), "two".into()), (Value::Int(1), "one".into())]).unwrap()),
+            ("state", Value::Variant("failed".into(), Some(Box::new("boom".into())))),
+            ("mode", Value::Variant("on".into(), None)),
+            ("big", Value::Int(-(1i128 << 100))),
+            (
+                "list",
+                Value::List(vec![rec(vec![("name", "auth".into())]), rec(vec![("name", "auth".into())])]),
+            ),
+        ])
+    }
+
+    #[test]
+    fn round_trip_all_modes() {
+        let v = sample();
+        for opts in [
+            EncodeOptions::default(),
+            EncodeOptions {
+                canonical: true,
+                dedupe_strings: false,
+            },
+            EncodeOptions {
+                canonical: false,
+                dedupe_strings: true,
+            },
+        ] {
+            let bytes = encode(&v, opts);
+            assert_eq!(decode(&bytes).unwrap(), v);
+        }
+        let plain = encode(&v, EncodeOptions::default()).len();
+        let dedup = encode(
+            &v,
+            EncodeOptions {
+                canonical: false,
+                dedupe_strings: true,
+            },
+        )
+        .len();
+        assert!(dedup < plain);
+    }
+
+    #[test]
+    fn equality_ignores_record_order() {
+        let a = rec(vec![("a", Value::Int(1)), ("b", Value::Int(2))]);
+        let b = rec(vec![("b", Value::Int(2)), ("a", Value::Int(1))]);
+        assert_eq!(a, b);
+        assert_eq!(revision(&a), revision(&b));
+        assert_ne!(Value::List(vec![]), Value::Tuple(vec![]));
+        assert_ne!(Value::Int(1), Value::Float(1.0));
+        assert_ne!(Value::Float(0.0), Value::Float(-0.0));
+        assert_eq!(Value::Float(f64::NAN), Value::Float(-f64::NAN));
+    }
+
+    #[test]
+    fn rejects_bad_input() {
+        assert!(decode(&[tag::RECORD, 2, 2, b'a', tag::NULL, 2, b'a', tag::NULL]).is_err());
+        assert!(decode(&[tag::INT, 0x80, 0x00]).is_err());
+        assert!(decode(&[tag::LIST, 0x7F]).is_err());
+        assert!(decode(&[0x42]).is_err());
+        assert!(decode(&[tag::NULL, tag::NULL]).is_err());
+    }
+
+    #[test]
+    fn revision_prefix() {
+        let r = revision(&sample());
+        let s = r.to_string();
+        assert!(r.matches(&s));
+        assert!(r.matches(&s[..15]));
+        assert!(!r.matches("sha256:abc"));
+    }
+}

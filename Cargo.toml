@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.75"
+
+[workspace.dependencies]
+nova-value = { path = "crates/nova-value" }
+nova-binary = { path = "crates/nova-binary" }
+nova-text = { path = "crates/nova-text" }
+nova-schema = { path = "crates/nova-schema" }
+nova-patch = { path = "crates/nova-patch" }
+nova-template = { path = "crates/nova-template" }
+nova-json = { path = "crates/nova-json" }
+sha2 = "0.10"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
