@@ -170,7 +170,9 @@ impl Schema {
                     ty
                 }
                 (Segment::Field(_) | Segment::Key(_), TypeKind::Map(_, v), _) => (**v).clone(),
-                (Segment::Index(_) | Segment::Match(..) | Segment::Key(_) | Segment::All, TypeKind::List(e) | TypeKind::Set(e), _) => (**e).clone(),
+                (Segment::Index(_) | Segment::Match(..) | Segment::Key(_) | Segment::All | Segment::Filter(..), TypeKind::List(e) | TypeKind::Set(e), _) => {
+                    (**e).clone()
+                }
                 (Segment::Index(i), TypeKind::Tuple(ts), _) => ts.get(usize::try_from(*i).ok()?)?.clone(),
                 (_, TypeKind::Any, _) => TypeRef::new(TypeKind::Any),
                 _ => return None,

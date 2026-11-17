@@ -664,6 +664,8 @@ path       = "" | "." | first ( "." name | "." projection | "[" selector "]" )*
 first      = name | "[" selector "]"
 name       = identifier | quoted-string
 selector   = "*" | int | identifier "=" flow-value | flow-value
+           | "?" path cmp flow-value                    ; filter
+cmp        = "=" | "!=" | "<" | "<=" | ">" | ">="
 projection = "{" name ("," name)* "}"
 ```
 
@@ -679,9 +681,21 @@ projection = "{" name ("," name)* "}"
 | | list | The unique element equal to `v`. |
 | | record (`v` is a string) | That field. |
 | `[*]` | list, tuple, set, record, map | Every element or value. Queries only. |
+| `[?p op v]` | list, tuple, set, map (values) | Every element for which the value at the relative singular path `p` compares as stated with `v`. Queries only. Consecutive filters combine with AND. |
 | `.{a,b}` | record, or list of records | Only these fields (missing fields are omitted). Last segment only; queries only. |
 
-The root path is written `.` or as the empty string. A path without `[*]` and without a projection is **singular**: it addresses at most one location.
+The root path is written `.` or as the empty string. A path without `[*]`, filters or a projection is **singular**: it addresses at most one location.
+
+**Filter comparisons.**
+
+- Numbers (`int`, `float`, `decimal`, `rational`) compare by numeric value across kinds, so `[?replicas=3.0]` matches `3`.
+- Strings compare by code point.
+- Timestamps and durations compare chronologically. A string operand is parsed as the other side's kind: `[?at>"2026-01-01T00:00:00Z"]`.
+- Booleans order `false < true`.
+- Other values support only `=` and `!=`, which use value equality (§2.12); ordering comparisons on them are false.
+- An element where `p` does not resolve never matches, for any operator.
+
+Filters are the only comparison the path language has. There are still no functions, arithmetic or recursion.
 
 ### 7.2 Path errors
 
@@ -715,6 +729,15 @@ The body is the selected value: with `[*]` it is a list of the results, and with
 ```
 
 Responses MUST be valid NOVA documents. Hosts SHOULD offer queries so that agents never need to load whole documents into context.
+
+*Command line (non-normative).* `nova get FILE PATH` answers queries. FILE may be `-` for stdin; JSON and JSON Lines input are detected automatically. Output options:
+
+- `-r` prints raw strings, one line per result for `[*]` and filters, like `jq -r`;
+- `--to json` / `--to json-compact` prints JSON;
+- `--bare` omits the header;
+- `-e` exits with status 1 on `null`, `false` or an empty result.
+
+Example: `curl … | nova get - 'items[?price<10].name' -r`.
 
 ### 7.4 Patch documents
 

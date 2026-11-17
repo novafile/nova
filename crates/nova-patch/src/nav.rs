@@ -53,7 +53,7 @@ pub fn get_mut<'v>(root: &'v mut Value, path: &Path) -> Result<&'v mut Value, Pa
             }
             (Segment::Key(_), Value::Set(_)) => return Err(ty("map (set elements cannot be modified in place)")),
             (Segment::Key(_), _) => return Err(ty("map")),
-            (Segment::All | Segment::Project(_), _) => return Err(PathError::NotSingular(path.clone())),
+            (Segment::All | Segment::Filter(..) | Segment::Project(_), _) => return Err(PathError::NotSingular(path.clone())),
         };
     }
     Ok(cur)

@@ -116,6 +116,8 @@ cd examples
 nova fmt infrastructure.nova --to compact
 nova validate infrastructure.nova --schema infrastructure.novs --resolve
 nova get infrastructure.nova 'services[*].{id,replicas}'
+nova get infrastructure.nova 'services[?replicas>3].id' -r     # jq-style filter, raw output
+curl -s https://api.example.com/items | nova get - 'items[?price<10].{name,price}' --to json
 nova patch infrastructure.nova scale-api.patch --schema infrastructure.novs
 nova diff before.nova after.nova
 nova render service.tpl.nova --set env=production --set 'services=[auth, api]' --set metrics=true --schema infrastructure.novs

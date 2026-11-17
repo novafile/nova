@@ -6,6 +6,7 @@
 //! first    = name | "[" selector "]"
 //! name     = ident | quoted-string
 //! selector = "*" | int | ident "=" flow-value | flow-value
+//!          | "?" path ("=" | "!=" | "<" | "<=" | ">" | ">=") flow-value
 //! projection = "{" name ("," name)* "}"      (last segment only)
 //! ```
 
@@ -26,12 +27,82 @@ pub enum Segment {
     Key(Value),
     /// `[*]` — every element (queries only).
     All,
+    /// `[?path op value]` — every element for which the comparison holds (queries only).
+    Filter(Path, CmpOp, Value),
     /// `.{a,b}` — keep only these fields (queries only, last segment).
     Project(Vec<String>),
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Path(pub Vec<Segment>);
+
+/// Comparison operator in a filter selector (spec §7.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CmpOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl CmpOp {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            CmpOp::Eq => "=",
+            CmpOp::Ne => "!=",
+            CmpOp::Lt => "<",
+            CmpOp::Le => "<=",
+            CmpOp::Gt => ">",
+            CmpOp::Ge => ">=",
+        }
+    }
+
+    /// Does `left op right` hold? Numbers compare by numeric value across
+    /// int, float, decimal and rational; strings by code point; timestamps
+    /// and durations chronologically (a string operand is parsed as the
+    /// other side's kind). Values that cannot be ordered only support `=`
+    /// and `!=`; ordering comparisons on them are false.
+    pub fn holds(self, left: &Value, right: &Value) -> bool {
+        use std::cmp::Ordering;
+        let ord: Option<Ordering> = compare(left, right);
+        match self {
+            CmpOp::Eq => ord.map(|o| o == Ordering::Equal).unwrap_or(left == right),
+            CmpOp::Ne => !ord.map(|o| o == Ordering::Equal).unwrap_or(left == right),
+            CmpOp::Lt => ord == Some(Ordering::Less),
+            CmpOp::Le => matches!(ord, Some(Ordering::Less | Ordering::Equal)),
+            CmpOp::Gt => ord == Some(Ordering::Greater),
+            CmpOp::Ge => matches!(ord, Some(Ordering::Greater | Ordering::Equal)),
+        }
+    }
+}
+
+fn numeric(v: &Value) -> Option<f64> {
+    match v {
+        Value::Int(i) => Some(*i as f64),
+        Value::Float(f) => Some(*f),
+        Value::Decimal(d) => Some(d.to_f64()),
+        Value::Rational(r) => Some(r.to_f64()),
+        _ => None,
+    }
+}
+
+fn compare(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+    use nova_value::{Duration, Timestamp};
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Some(x.cmp(y)),
+        (Value::String(x), Value::String(y)) => Some(x.cmp(y)),
+        (Value::Bool(x), Value::Bool(y)) => Some(x.cmp(y)),
+        (Value::Timestamp(x), Value::Timestamp(y)) => Some(x.cmp(y)),
+        (Value::Timestamp(x), Value::String(s)) => Timestamp::parse(s).ok().map(|y| x.cmp(&y)),
+        (Value::String(s), Value::Timestamp(y)) => Timestamp::parse(s).ok().map(|x| x.cmp(y)),
+        (Value::Duration(x), Value::Duration(y)) => Some(x.cmp(y)),
+        (Value::Duration(x), Value::String(s)) => Duration::parse(s).ok().map(|y| x.cmp(&y)),
+        (Value::String(s), Value::Duration(y)) => Duration::parse(s).ok().map(|x| x.cmp(y)),
+        _ => numeric(a)?.partial_cmp(&numeric(b)?),
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PathError {
@@ -73,7 +144,7 @@ impl Path {
 
     /// True if the path addresses exactly one location (no `[*]`, no projection).
     pub fn is_singular(&self) -> bool {
-        !self.0.iter().any(|s| matches!(s, Segment::All | Segment::Project(_)))
+        !self.0.iter().any(|s| matches!(s, Segment::All | Segment::Filter(..) | Segment::Project(_)))
     }
 
     pub fn join(&self, other: &Path) -> Path {
@@ -171,7 +242,7 @@ impl Path {
             let here = || Path(self.0[..i].to_vec());
             let upto = || Path(self.0[..=i].to_vec());
             cur = match seg {
-                Segment::All | Segment::Project(_) => return Err(PathError::NotSingular(self.clone())),
+                Segment::All | Segment::Filter(..) | Segment::Project(_) => return Err(PathError::NotSingular(self.clone())),
                 _ => step(cur, seg, &here, &upto)?,
             };
         }
@@ -230,7 +301,7 @@ pub fn step<'v>(cur: &'v Value, seg: &Segment, here: &dyn Fn() -> Path, upto: &d
             Value::Record(r) => k.as_str().and_then(|k| r.get(k)).ok_or_else(|| PathError::NotFound(upto())),
             _ => Err(ty("map")),
         },
-        Segment::All | Segment::Project(_) => Err(PathError::NotSingular(upto())),
+        Segment::All | Segment::Filter(..) | Segment::Project(_) => Err(PathError::NotSingular(upto())),
     }
 }
 
@@ -279,6 +350,43 @@ fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
     if b.first() == Some(&b'*') {
         return Ok((Segment::All, close(1)?));
     }
+    // ?path op value
+    if b.first() == Some(&b'?') {
+        let mut j = 1;
+        while b.get(j) == Some(&b' ') {
+            j += 1;
+        }
+        let (lhs, n) = Path::parse_prefix(&s[j..])?;
+        if lhs.is_root() || !lhs.is_singular() {
+            return Err("a filter needs a field path, e.g. [?replicas>3]".into());
+        }
+        j += n;
+        while b.get(j) == Some(&b' ') {
+            j += 1;
+        }
+        let rest = &s[j..];
+        let (op, len) = [
+            ("!=", CmpOp::Ne),
+            ("<=", CmpOp::Le),
+            (">=", CmpOp::Ge),
+            ("==", CmpOp::Eq),
+            ("=", CmpOp::Eq),
+            ("<", CmpOp::Lt),
+            (">", CmpOp::Gt),
+        ]
+        .into_iter()
+        .find(|(t, _)| rest.starts_with(t))
+        .map(|(t, o)| (o, t.len()))
+        .ok_or("expected a comparison operator (= != < <= > >=) in filter")?;
+        j += len;
+        while b.get(j) == Some(&b' ') {
+            j += 1;
+        }
+        let mut p = Parser::new(&s[j..], false);
+        let v = p.parse_flow_value().map_err(|e| e.message)?;
+        let end = close(j + p.pos)?;
+        return Ok((Segment::Filter(lhs, op, v), end));
+    }
     // ident '=' value
     if b.first().is_some_and(|&c| is_ident_start(c)) {
         let n = b.iter().take_while(|&&c| is_ident_char(c)).count();
@@ -326,6 +434,7 @@ impl fmt::Display for Path {
                 Segment::Match(k, v) => write!(f, "[{}={}]", key_text(k), flow_string(v))?,
                 Segment::Key(v) => write!(f, "[{}]", flow_string(v))?,
                 Segment::All => f.write_str("[*]")?,
+                Segment::Filter(p, op, v) => write!(f, "[?{p}{}{}]", op.symbol(), flow_string(v))?,
                 Segment::Project(fs) => write!(f, ".{{{}}}", fs.iter().map(|s| key_text(s)).collect::<Vec<_>>().join(","))?,
             }
         }

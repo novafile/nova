@@ -17,7 +17,7 @@ mod writer;
 
 pub use ast::Document;
 pub use parser::{ParseError, Parser};
-pub use path::{Path, PathError, Segment};
+pub use path::{CmpOp, Path, PathError, Segment};
 pub use writer::{canonicalize, document_to_text, flow_string, key_text, quote, to_text, Profile};
 
 use nova_value::Value;

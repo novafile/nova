@@ -34,6 +34,16 @@ enum Format {
     BinaryCanonical,
 }
 
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum InputFormat {
+    /// Binary frames by magic, `.json`/`.jsonl` by extension, otherwise JSON if it parses, else NOVA text.
+    Auto,
+    Nova,
+    Json,
+    Jsonl,
+    Binary,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Reformat a NOVA text document.
@@ -50,6 +60,9 @@ enum Cmd {
         file: PathBuf,
         #[arg(long, value_enum)]
         to: Format,
+        /// Input format (detected by default).
+        #[arg(long, value_enum, default_value = "auto")]
+        from: InputFormat,
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Fail instead of warning when the conversion loses type information.
@@ -67,11 +80,28 @@ enum Cmd {
         resolve: bool,
     },
     /// Answer a query such as `services[id=api].{replicas,port}`.
+    ///
+    /// Paths: `a.b`, `[0]`, `[-1]`, `[id=api]` (unique match), `[*]` (all),
+    /// `[?replicas>3]` (filter; also = != < <= >=, chainable), `.{a,b}` (projection).
+    /// Use `-` as FILE to read stdin; JSON and JSON Lines are detected.
     Get {
         file: PathBuf,
         path: String,
         #[arg(long, value_enum, default_value = "compact")]
         to: Format,
+        /// Input format (detected by default).
+        #[arg(long, value_enum, default_value = "auto")]
+        from: InputFormat,
+        /// Raw output: strings without quotes, and one line per result when the
+        /// path selects many (`[*]`, filters), like `jq -r`.
+        #[arg(short, long)]
+        raw: bool,
+        /// Omit the `@revision`/`@scope` header.
+        #[arg(long)]
+        bare: bool,
+        /// Exit with status 1 if the result is null, false, or an empty list.
+        #[arg(short, long)]
+        exit_status: bool,
     },
     /// Apply a patch atomically.
     Patch {
@@ -164,9 +194,24 @@ struct Loaded {
 }
 
 fn load(p: &Path) -> R<Loaded> {
+    load_as(p, InputFormat::Auto)
+}
+
+fn json_loaded(value: Value) -> Loaded {
+    Loaded { directives: vec![], value }
+}
+
+fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
     let bytes = read_bytes(p)?;
     let ctx = |e: String| format!("{}: {e}", p.display());
-    if bytes.starts_with(MAGIC) {
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let from = match from {
+        InputFormat::Auto if bytes.starts_with(MAGIC) => InputFormat::Binary,
+        InputFormat::Auto if ext == "jsonl" || ext == "ndjson" => InputFormat::Jsonl,
+        InputFormat::Auto if ext == "json" => InputFormat::Json,
+        f => f,
+    };
+    if from == InputFormat::Binary {
         let (f, n) = decode_frame(&bytes).map_err(|e| ctx(e.to_string()))?;
         if n != bytes.len() {
             return Err(ctx("trailing bytes after the first frame".into()).into());
@@ -175,18 +220,25 @@ fn load(p: &Path) -> R<Loaded> {
         return Ok(Loaded { directives, value: f.value });
     }
     let text = String::from_utf8(bytes).map_err(|_| ctx("not UTF-8".into()))?;
-    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if ext == "jsonl" || ext == "ndjson" {
-        return Ok(Loaded {
-            directives: vec![],
-            value: Value::List(nova_json::from_jsonl_str(&text).map_err(ctx)?),
-        });
-    }
-    if ext == "json" {
-        return Ok(Loaded {
-            directives: vec![],
-            value: nova_json::from_json_str(&text).map_err(ctx)?,
-        });
+    match from {
+        InputFormat::Jsonl => return Ok(json_loaded(Value::List(nova_json::from_jsonl_str(&text).map_err(ctx)?))),
+        InputFormat::Json => return Ok(json_loaded(nova_json::from_json_str(&text).map_err(ctx)?)),
+        InputFormat::Auto => {
+            // Sniff JSON (e.g. on stdin): a whole JSON value, or JSON Lines.
+            let t = text.trim_start();
+            if t.starts_with('{') || t.starts_with('[') || t.starts_with('"') {
+                if let Ok(v) = nova_json::from_json_str(&text) {
+                    return Ok(json_loaded(v));
+                }
+                let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+                if lines.len() > 1 && lines.iter().all(|l| l.trim_start().starts_with('{') || l.trim_start().starts_with('[')) {
+                    if let Ok(v) = nova_json::from_jsonl_str(&text) {
+                        return Ok(json_loaded(Value::List(v)));
+                    }
+                }
+            }
+        }
+        _ => {}
     }
     let doc = parse_document(&text).map_err(|e| e.to_diagnostic(&name_of(p), &text))?;
     if doc.is_template() {
@@ -297,8 +349,14 @@ fn run(cli: Cli) -> R<ExitCode> {
             let bytes = render_as(&l, to, false)?;
             out(&bytes, write.then_some(file.as_path()))?;
         }
-        Cmd::Convert { file, to, output, strict } => {
-            let l = load(&file)?;
+        Cmd::Convert {
+            file,
+            to,
+            from,
+            output,
+            strict,
+        } => {
+            let l = load_as(&file, from)?;
             out(&render_as(&l, to, strict)?, output.as_deref())?;
         }
         Cmd::Hash { file } => println!("{}", revision(&load(&file)?.value)),
@@ -348,15 +406,56 @@ fn run(cli: Cli) -> R<ExitCode> {
                 }
             }
         }
-        Cmd::Get { file, path, to } => {
-            let l = load(&file)?;
+        Cmd::Get {
+            file,
+            path,
+            to,
+            from,
+            raw,
+            bare,
+            exit_status,
+        } => {
+            let l = load_as(&file, from)?;
             let r = nova_patch::get(&l.value, &path)?;
-            let p = match to {
-                Format::Nova => Profile::Human,
-                Format::Canonical => Profile::Canonical,
-                _ => Profile::Compact,
+            let multi = !nova_text::Path::parse(path.trim().trim_start_matches("@get").trim_start_matches("@select"))
+                .map(|p| p.is_singular())
+                .unwrap_or(true);
+            let json = matches!(to, Format::Json | Format::JsonCompact);
+            let one_line = |v: &Value| -> String {
+                match v {
+                    Value::String(s) if raw => s.clone(),
+                    _ if json => nova_json::to_json_string(v, false).0,
+                    _ => nova_text::flow_string(v),
+                }
             };
-            print!("{}", r.to_text(p));
+            if raw {
+                // jq -r style: one line per result.
+                match (&r.value, multi) {
+                    (Value::List(items), true) => items.iter().for_each(|v| println!("{}", one_line(v))),
+                    (v, _) => println!("{}", one_line(v)),
+                }
+            } else if json {
+                let (s, warnings) = nova_json::to_json_string(&r.value, matches!(to, Format::Json));
+                for w in warnings {
+                    eprintln!("warning: {w}");
+                }
+                println!("{s}");
+            } else {
+                let p = match to {
+                    Format::Nova => Profile::Human,
+                    Format::Canonical => Profile::Canonical,
+                    _ => Profile::Compact,
+                };
+                if bare {
+                    print!("{}", nova_text::to_text(&r.value, p));
+                } else {
+                    print!("{}", r.to_text(p));
+                }
+            }
+            let empty = matches!(&r.value, Value::Null | Value::Bool(false)) || matches!(&r.value, Value::List(l) if l.is_empty());
+            if exit_status && empty {
+                return Ok(ExitCode::from(1));
+            }
         }
         Cmd::Patch { file, patch, schema, write } => {
             let l = load(&file)?;

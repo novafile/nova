@@ -108,3 +108,30 @@ fn keyed_diff_when_order_allows() {
     assert!(text.contains("+ services: {id: metrics"), "{text}");
     assert_eq!(apply_unchecked(&a, &parse_patch(&text).unwrap()).unwrap().value, b);
 }
+
+#[test]
+fn filters() {
+    let doc = parse(DOC).unwrap();
+    let ids = |p: &str| match nova_patch::select(&doc, &nova_text::Path::parse(p).unwrap()).unwrap() {
+        Value::List(l) => l.into_iter().map(|v| nova_text::flow_string(&v)).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(ids("services[?replicas>3].id"), ["api"]);
+    assert_eq!(ids("services[?replicas>=3].id"), ["auth", "api"]);
+    assert_eq!(ids("services[?id!=auth].id"), ["api"]);
+    assert_eq!(ids("services[?port<5000][?enabled=true].id"), ["api"]);
+    assert_eq!(ids("services[?replicas=3.0].id"), ["auth"]); // numbers compare by value
+    assert_eq!(ids("services[?tags[0]=public].id"), ["api"]); // nested paths; missing fields never match
+    assert_eq!(ids("services[?replicas>100]"), Vec::<String>::new());
+    let ts = parse("e: [{at: @timestamp(\"2026-01-01T00:00:00Z\")}, {at: @timestamp(\"2024-01-01T00:00:00Z\")}]").unwrap();
+    let r = nova_patch::select(&ts, &nova_text::Path::parse("e[?at>=\"2025-01-01T00:00:00Z\"]").unwrap()).unwrap();
+    assert_eq!(r.as_list().unwrap().len(), 1);
+    // Filters are queries only: patches reject them.
+    assert!(parse_patch("@patch\n= services[?replicas>3].replicas: 1\n")
+        .unwrap_err()
+        .to_string()
+        .contains("may not use"));
+    // Round-trip through display.
+    let p = nova_text::Path::parse("services[?status.code>=500].id").unwrap();
+    assert_eq!(p.to_string(), "services[?status.code>=500].id");
+}

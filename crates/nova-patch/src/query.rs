@@ -16,6 +16,35 @@ fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value
     let here = || Path(full.0[..depth].to_vec());
     let upto = || Path(full.0[..=depth].to_vec());
     match seg {
+        Segment::Filter(..) => {
+            // Consecutive filters combine with AND.
+            let n = segs.iter().take_while(|s| matches!(s, Segment::Filter(..))).count();
+            let (filters, rest) = segs.split_at(n);
+            let elems: Vec<&Value> = match cur {
+                Value::List(l) | Value::Tuple(l) | Value::Set(l) => l.iter().collect(),
+                Value::Map(m) => m.iter().map(|(_, v)| v).collect(),
+                other => {
+                    return Err(PathError::Type {
+                        at: here(),
+                        expected: "list",
+                        found: other.kind(),
+                    })
+                }
+            };
+            let keep = |e: &&Value| {
+                filters.iter().all(|f| match f {
+                    Segment::Filter(lhs, op, want) => lhs.get(e).map(|got| op.holds(got, want)).unwrap_or(false),
+                    _ => unreachable!(),
+                })
+            };
+            Ok(Value::List(
+                elems
+                    .into_iter()
+                    .filter(keep)
+                    .map(|e| sel(e, rest, depth + n, full))
+                    .collect::<Result<_, _>>()?,
+            ))
+        }
         Segment::All => {
             let elems: Vec<&Value> = match cur {
                 Value::List(l) | Value::Tuple(l) | Value::Set(l) => l.iter().collect(),
