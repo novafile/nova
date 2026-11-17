@@ -15,5 +15,12 @@ categories.workspace = true
 [dependencies]
 novafile-value.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "frame"
+harness = false
+
 [lints]
 workspace = true
