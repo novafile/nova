@@ -6,6 +6,7 @@ use std::fmt;
 /// `2/4` and `1/2` are the same value. `n/1` is still a rational, distinct
 /// from the integer `n`, just as decimals are distinct from integers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "facet", derive(facet::Facet), facet(opaque, proxy = String))]
 pub struct Rational {
     num: i128,
     den: i128,

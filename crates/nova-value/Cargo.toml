@@ -7,8 +7,10 @@ license.workspace = true
 
 [features]
 serde = ["dep:serde"]
+facet = ["dep:facet"]
 
 [dependencies]
 sha2.workspace = true
 num-bigint = "0.4"
 serde = { workspace = true, optional = true }
+facet = { version = "=0.46.5", optional = true }

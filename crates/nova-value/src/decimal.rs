@@ -6,6 +6,7 @@ use std::fmt;
 /// trailing decimal zeros; zero is always `0 × 10^0`. Consequently
 /// `1.50` and `1.5` are the same value (spec §2.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "facet", derive(facet::Facet), facet(opaque, proxy = String))]
 pub struct Decimal {
     coeff: i128,
     exp: i32,
