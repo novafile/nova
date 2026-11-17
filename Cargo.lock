@@ -244,6 +244,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "detect-coding-agent"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97ac45f8db613a0dd189206604756712e17056fc87deb058423dba9eb5f04583"
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -699,6 +705,7 @@ name = "nova-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "detect-coding-agent",
  "miette",
  "nova-binary",
  "nova-formats",

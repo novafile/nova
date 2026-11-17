@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use nova_binary::{decode_frame, encode_frame, Frame, FrameOptions, MAGIC};
 use nova_schema::{check_versions, parse_schema, Schema};
 use nova_text::diagnostic::SourceDiagnostic;
@@ -12,9 +12,43 @@ use std::process::ExitCode;
 #[derive(Parser)]
 #[command(name = "nova", version, about = "NOVA: one semantic model, several representations")]
 struct Cli {
+    /// Agent mode: plain, narratable errors and agent hints. `auto` detects coding
+    /// agents (Claude Code, Codex, Copilot, Cursor, …); also settable via NOVA_AGENT.
+    #[arg(long, value_enum, global = true, env = "NOVA_AGENT", default_value = "auto")]
+    agent: AgentMode,
     #[command(subcommand)]
     cmd: Cmd,
 }
+
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum AgentMode {
+    Auto,
+    On,
+    Off,
+}
+
+const AGENT_GUIDE: &str = r#"NOVA for agents — read narrow, write small, never rewrite whole files.
+
+1. Read only what you need (compact output, with the document revision):
+     nova get FILE 'services[id=api].{replicas,port}'
+     nova get FILE 'services[?replicas>3].id' -r        # one value per line
+     nova get FILE 'services[*].{id,port}' --to json     # JSON if you prefer
+   Paths: a.b  [0]  [-1]  [id=api] (exactly one)  [*]  [?x>3] (filter; = != < <= > >=)  .{a,b}
+
+2. Change it with a conditional patch (atomic; comments and layout are preserved):
+     cat > change.patch <<'P'
+     @patch sha256:<first 8+ hex of the revision from step 1>
+     @scope services[id=api]
+     replicas: 5 -> 8
+     P
+     nova patch FILE change.patch --schema SCHEMA.novs -w
+   Ops:  path: old -> new   = path: v   + path: v (append/insert/add field)   - path[: old]   ? path[: v]
+   On "conflict" or "stale base": re-run step 1 and rebuild the patch; do not force.
+
+3. Validate:  nova validate FILE --schema SCHEMA.novs
+   Syntax:    key: value | - item | [a, b] | {k: v} | (tuple,) | !variant | @timestamp("…") | 22/7
+   Quote strings that contain ": " or " #", or that start with a reserved character.
+"#;
 
 #[derive(Clone, Copy, ValueEnum)]
 enum Format {
@@ -151,6 +185,8 @@ enum Cmd {
     },
     /// Compare sizes of every representation (bytes and estimated tokens).
     Stats { file: PathBuf },
+    /// Print a short guide for AI coding agents (read projections, write conditional patches).
+    Guide,
     /// Schema tools.
     Schema {
         #[command(subcommand)]
@@ -447,6 +483,7 @@ fn patch_error(e: &nova_patch::PatchError, file: &Path, src: &str) -> E {
 
 fn run(cli: Cli) -> R<ExitCode> {
     match cli.cmd {
+        Cmd::Guide => print!("{AGENT_GUIDE}"),
         Cmd::Fmt { file, to, write } => {
             // NOVA text keeps its comments, blank lines and spellings (spec §3).
             let profile = match to {
@@ -706,8 +743,37 @@ fn run(cli: Cli) -> R<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Is the CLI driven by a coding agent?
+fn agent_detected(mode: AgentMode) -> Option<String> {
+    match mode {
+        AgentMode::Off => None,
+        AgentMode::On => Some("agent mode".into()),
+        AgentMode::Auto => detect_coding_agent::detect().map(|a| a.name.to_string()),
+    }
+}
+
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    // Peek at the agent setting before clap prints help, so help can mention the guide.
+    let mode = std::env::args()
+        .skip_while(|a| a != "--agent")
+        .nth(1)
+        .or_else(|| std::env::var("NOVA_AGENT").ok())
+        .and_then(|v| AgentMode::from_str(&v, true).ok())
+        .unwrap_or(AgentMode::Auto);
+    let agent = agent_detected(mode);
+    let mut cmd = Cli::command();
+    if let Some(name) = &agent {
+        cmd = cmd.after_help(format!(
+            "Detected {name}: run `nova guide` for the agent workflow (read with `nova get`, write with `nova patch`)."
+        ));
+        // Plain, narratable diagnostics are easier for models to parse than box drawings.
+        let _ = miette::set_hook(Box::new(|_| Box::new(miette::NarratableReportHandler::new())));
+    }
+    let cli = match Cli::from_arg_matches(&cmd.get_matches()) {
+        Ok(c) => c,
+        Err(e) => e.exit(),
+    };
+    match run(cli) {
         Ok(c) => c,
         Err(E(report)) => {
             eprintln!("{report:?}");

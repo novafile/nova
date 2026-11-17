@@ -133,6 +133,10 @@ nova stats infrastructure.nova         # bytes and estimated tokens per represen
 nova schema check old.novs new.novs    # exits 1 on breaking changes
 ```
 
+## Coding agents
+
+When `nova` runs under a coding agent (detected with [`detect-coding-agent`](https://crates.io/crates/detect-coding-agent): Claude Code, Codex, Copilot, Cursor, Gemini CLI, …), errors are printed as plain, narratable text instead of box drawings, and `--help` points to `nova guide`, a one-screen workflow for reading projections and writing conditional patches. Override with `--agent on|off` or `NOVA_AGENT=on|off`.
+
 ## Editor support
 
 `nova-lsp` speaks the Language Server Protocol over stdio:

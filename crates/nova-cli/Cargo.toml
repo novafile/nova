@@ -21,3 +21,4 @@ nova-formats = { path = "../nova-formats" }
 nova-proto = { path = "../nova-proto" }
 clap.workspace = true
 miette = { workspace = true, features = ["fancy"] }
+detect-coding-agent = "0.2"
