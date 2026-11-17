@@ -39,6 +39,7 @@ lsp-server = "0.7"
 lsp-types = "0.95"
 miette = "7"
 num-bigint = "0.4"
+proc-macro-crate = "3"
 proc-macro2 = "1"
 prost-reflect = { version = "0.16.5", features = ["text-format"] }
 protox = "0.10.0"

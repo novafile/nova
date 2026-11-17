@@ -79,21 +79,25 @@ services:
 ## Serde
 
 ```rust
+use novafile::value::Timestamp;
+
 #[derive(Serialize, Deserialize)]
 enum Status { Active, Failed(String) }
 
 #[derive(Serialize, Deserialize)]
-struct Service { id: String, port: u16, deployed_at: novafile_value::Timestamp, status: Status }
+struct Service { id: String, port: u16, deployed_at: Timestamp, status: Status }
 
-let text = novafile_serde::to_string(&svc)?;      // status: !Failed(oom), deployed_at: @timestamp("…")
-let svc: Service = novafile_serde::from_str(&text)?;
-let bytes = novafile_serde::to_vec(&svc)?;         // binary frame
+let text = novafile::serde::to_string(&svc)?;      // status: !Failed(oom), deployed_at: @timestamp("…")
+let svc: Service = novafile::serde::from_str(&text)?;
+let bytes = novafile::serde::to_vec(&svc)?;         // binary frame
 ```
 
 Schemas can be derived from the same types:
 
 ```rust
-#[derive(Serialize, Deserialize, NovaSchema)]          // novafile-schema = { features = ["derive"] }
+use novafile::NovaSchema;                               // novafile = { features = ["derive"] }
+
+#[derive(Serialize, Deserialize, NovaSchema)]
 #[nova(name = "infrastructure", version = "1.0.0")]
 struct Infrastructure {
     #[nova(id = 1)] environment: String,
@@ -130,6 +134,7 @@ let schema = Infrastructure::novafile_schema();             // == the hand-writt
 | [`novafile-serde`](crates/novafile-serde) | Serde integration: `to_string`/`from_str`, `to_vec`/`from_slice`, `to_value`/`from_value` |
 | [`novafile-lint`](crates/novafile-lint) | Conventions and lints with fixes (`nvf lint`, also shown by the language server) |
 | [`novafile-conformance`](crates/novafile-conformance) | Generates and runs the [conformance suite](https://github.com/novafile/spec/tree/main/conformance) (unpublished) |
+| [`novafile-umbrella-tests`](crates/novafile-umbrella-tests) | Checks that the umbrella crate works on its own, e.g. `#[derive(NovaSchema)]` through `novafile` (unpublished) |
 | [`novafile-cli`](crates/novafile-cli) | The `nvf` command |
 | [`novafile-lsp`](crates/novafile-lsp) | Language server: diagnostics with workspace schemas, outline, hover, completion, formatting |
 

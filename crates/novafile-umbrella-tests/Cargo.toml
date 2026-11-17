@@ -1,0 +1,22 @@
+[package]
+name = "novafile-umbrella-tests"
+description = "Checks that the umbrella crate works on its own, e.g. `#[derive(NovaSchema)]` through `novafile`"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+# Depends on the umbrella crate only (under another name), never on `novafile-*` crates directly.
+[dev-dependencies]
+nova = { package = "novafile", path = "../novafile", features = ["derive"] }
+serde.workspace = true
+
+[lints]
+workspace = true

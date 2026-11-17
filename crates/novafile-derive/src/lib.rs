@@ -1,5 +1,7 @@
-//! `#[derive(NovaSchema)]` (spec §6, §11.3). Use it through `novafile-schema`
-//! with the `derive` feature: `use novafile_schema::NovaSchema;`.
+//! `#[derive(NovaSchema)]` (spec §6, §11.3). Use it through the `novafile` umbrella crate
+//! or `novafile-schema`, each with the `derive` feature: `use novafile::NovaSchema;` or
+//! `use novafile_schema::NovaSchema;`. The generated code finds whichever of the two the
+//! deriving crate depends on.
 //!
 //! Attributes — container: `#[nova(name = "…", version = "…", rename = "TypeName", open)]`;
 //! field: `#[nova(rename = "…", key, id = N, range = "1..65535", len = "..64, utf8",
@@ -18,6 +20,34 @@ use syn::{Attribute, Data, DeriveInput, Error, Fields, LitInt, LitStr, parse_mac
 pub fn derive_nova_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     expand(&input).unwrap_or_else(Error::into_compile_error).into()
+}
+
+/// The path generated code uses to reach `novafile-schema` from the crate deriving `NovaSchema`.
+///
+/// `::novafile_schema` when that crate depends on `novafile-schema` (under any name), or
+/// `::novafile::schema` when it only depends on the `novafile` umbrella crate. Falls back to
+/// `::novafile_schema` when neither is found in its manifest.
+fn schema_crate() -> Ts {
+    use proc_macro_crate::{FoundCrate, crate_name};
+
+    let path = |name: &str| syn::Ident::new(&name.replace('-', "_"), proc_macro2::Span::call_site());
+    match crate_name("novafile-schema") {
+        Ok(FoundCrate::Name(name)) => {
+            let name = path(&name);
+            quote!(::#name)
+        }
+
+        // novafile-schema's own tests and examples link the library under its crate name.
+        Ok(FoundCrate::Itself) | Err(_) => match crate_name("novafile") {
+            Ok(FoundCrate::Name(name)) => {
+                let name = path(&name);
+                quote!(::#name::schema)
+            }
+
+            Ok(FoundCrate::Itself) => quote!(::novafile::schema),
+            Err(_) => quote!(::novafile_schema),
+        },
+    }
 }
 
 /// Container-level settings, from `#[nova(...)]` and the relevant `#[serde(...)]` keys.
@@ -222,7 +252,7 @@ fn rename(name: &str, rule: Option<&str>, is_variant: bool) -> syn::Result<Strin
 }
 
 /// Code building a `Vec<FieldDef>` from named fields.
-fn record_fields(owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> syn::Result<Ts> {
+fn record_fields(krate: &Ts, owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> syn::Result<Ts> {
     let mut out = Vec::new();
     for f in &fields.named {
         let a = field_attrs(&f.attrs)?;
@@ -251,11 +281,11 @@ fn record_fields(owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> 
         let with = if attr_text.is_empty() {
             quote!()
         } else {
-            quote!(let ty = ::novafile_schema::derive::__with_attrs(ty, #attr_text, #at);)
+            quote!(let ty = #krate::derive::__with_attrs(ty, #attr_text, #at);)
         };
 
         let default = if let Some(d) = &a.default {
-            quote!(Some(::novafile_schema::derive::__default(#d, #at)))
+            quote!(Some(#krate::derive::__default(#d, #at)))
         } else {
             quote!(None)
         };
@@ -266,10 +296,10 @@ fn record_fields(owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> 
         let deprecated = a.deprecated;
         let id = if let Some(n) = a.id { quote!(Some(#n)) } else { quote!(None) };
         out.push(quote! {{
-            let ty = <#ty as ::novafile_schema::NovaSchema>::nova_type(generator);
+            let ty = <#ty as #krate::NovaSchema>::nova_type(generator);
             #with
-            let optional = !#has_default && (#serde_default || <#ty as ::novafile_schema::NovaSchema>::nova_field_optional());
-            fields.push(::novafile_schema::FieldDef {
+            let optional = !#has_default && (#serde_default || <#ty as #krate::NovaSchema>::nova_field_optional());
+            fields.push(#krate::FieldDef {
                 name: #name.to_owned(),
                 ty,
                 optional,
@@ -282,7 +312,7 @@ fn record_fields(owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> 
     }
 
     Ok(quote! {{
-        let mut fields: Vec<::novafile_schema::FieldDef> = Vec::new();
+        let mut fields: Vec<#krate::FieldDef> = Vec::new();
         #(#out)*
         fields
     }})
@@ -295,6 +325,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
         return Err(Error::new(input.generics.span(), "NovaSchema cannot be derived for generic types yet"));
     }
 
+    let krate = schema_crate();
     let ident = &input.ident;
     let c = container_attrs(&input.attrs)?;
     let def_name = c.rename.clone().unwrap_or_else(|| ident.to_string());
@@ -303,8 +334,8 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
     let body = match &input.data {
         Data::Struct(s) => match &s.fields {
             Fields::Named(named) => {
-                let fields = record_fields(&def_name, named, rule)?;
-                quote!(::novafile_schema::Def::Record(::novafile_schema::RecordDef { fields: #fields, open: #open }))
+                let fields = record_fields(&krate, &def_name, named, rule)?;
+                quote!(#krate::Def::Record(#krate::RecordDef { fields: #fields, open: #open }))
             }
             Fields::Unnamed(u) if u.unnamed.len() == 1 => {
                 // Newtype structs are transparent in serde: an alias of the inner type.
@@ -322,23 +353,23 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
                 let with = if attr_text.is_empty() {
                     quote!()
                 } else {
-                    quote!(let ty = ::novafile_schema::derive::__with_attrs(ty, #attr_text, #def_name);)
+                    quote!(let ty = #krate::derive::__with_attrs(ty, #attr_text, #def_name);)
                 };
 
                 quote!({
-                    let ty = <#ty as ::novafile_schema::NovaSchema>::nova_type(generator);
+                    let ty = <#ty as #krate::NovaSchema>::nova_type(generator);
                     #with
-                    ::novafile_schema::Def::Alias(ty)
+                    #krate::Def::Alias(ty)
                 })
             }
             Fields::Unnamed(u) => {
                 let tys = u.unnamed.iter().map(|f| &f.ty);
-                quote!(::novafile_schema::Def::Alias(::novafile_schema::TypeRef::new(
-                    ::novafile_schema::TypeKind::Tuple(vec![#(<#tys as ::novafile_schema::NovaSchema>::nova_type(generator)),*])
+                quote!(#krate::Def::Alias(#krate::TypeRef::new(
+                    #krate::TypeKind::Tuple(vec![#(<#tys as #krate::NovaSchema>::nova_type(generator)),*])
                 )))
             }
-            Fields::Unit => quote!(::novafile_schema::Def::Alias(::novafile_schema::TypeRef::new(
-                ::novafile_schema::TypeKind::Null
+            Fields::Unit => quote!(#krate::Def::Alias(#krate::TypeRef::new(
+                #krate::TypeKind::Null
             ))),
         },
         Data::Enum(e) => {
@@ -358,26 +389,26 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
                     Fields::Unit => quote!(None),
                     Fields::Unnamed(u) if u.unnamed.len() == 1 => {
                         let ty = &u.unnamed[0].ty;
-                        quote!(Some(<#ty as ::novafile_schema::NovaSchema>::nova_type(generator)))
+                        quote!(Some(<#ty as #krate::NovaSchema>::nova_type(generator)))
                     }
                     Fields::Unnamed(u) => {
                         let tys = u.unnamed.iter().map(|f| &f.ty);
-                        quote!(Some(::novafile_schema::TypeRef::new(::novafile_schema::TypeKind::Tuple(
-                            vec![#(<#tys as ::novafile_schema::NovaSchema>::nova_type(generator)),*]
+                        quote!(Some(#krate::TypeRef::new(#krate::TypeKind::Tuple(
+                            vec![#(<#tys as #krate::NovaSchema>::nova_type(generator)),*]
                         ))))
                     }
                     Fields::Named(named) => {
                         // Struct variants get a record definition of their own.
                         let rec = format!("{def_name}{}", v.ident);
-                        let fields = record_fields(&rec, named, None)?;
-                        quote!(Some(generator.named(#rec, |generator| ::novafile_schema::Def::Record(::novafile_schema::RecordDef { fields: #fields, open: false }))))
+                        let fields = record_fields(&krate, &rec, named, None)?;
+                        quote!(Some(generator.named(#rec, |generator| #krate::Def::Record(#krate::RecordDef { fields: #fields, open: false }))))
                     }
                 };
 
-                variants.push(quote!(::novafile_schema::VariantDef { name: #name.to_owned(), payload: #payload }));
+                variants.push(quote!(#krate::VariantDef { name: #name.to_owned(), payload: #payload }));
             }
 
-            quote!(::novafile_schema::Def::Enum(vec![#(#variants),*]))
+            quote!(#krate::Def::Enum(vec![#(#variants),*]))
         }
         Data::Union(u) => return Err(Error::new(u.union_token.span, "NovaSchema cannot be derived for unions")),
     };
@@ -393,8 +424,8 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
     };
 
     Ok(quote! {
-        impl ::novafile_schema::NovaSchema for #ident {
-            fn nova_type(generator: &mut ::novafile_schema::derive::SchemaGen) -> ::novafile_schema::TypeRef {
+        impl #krate::NovaSchema for #ident {
+            fn nova_type(generator: &mut #krate::derive::SchemaGen) -> #krate::TypeRef {
                 generator.named(#def_name, |generator| #body)
             }
 
