@@ -33,7 +33,7 @@ const AGENT_GUIDE: &str = r#"NOVA for agents — read narrow, write small, never
      nova get FILE 'services[id=api].{replicas,port}'
      nova get FILE 'services[?replicas>3].id' -r        # one value per line
      nova get FILE 'services[*].{id,port}' --to json     # JSON if you prefer
-   Paths: a.b  [0]  [-1]  [id=api] (exactly one)  [*]  [?x>3] (filter; = != < <= > >=)  .{a,b}
+   Paths: a.b  [0]  [-1]  [id=api] (exactly one)  [*]  [?x>3] (filter; = != < <= > >= in)  [?x] [?!x]  .{a,b}
 
 2. Change it with a conditional patch (atomic; comments and layout are preserved):
      cat > change.patch <<'P'

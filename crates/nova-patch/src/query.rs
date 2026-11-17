@@ -1,7 +1,7 @@
 //! Queries and projections (spec §7.3): `@get path`.
 
 use nova_text::path::step;
-use nova_text::{document_to_text, Path, PathError, Profile, Segment};
+use nova_text::{document_to_text, CmpOp, Path, PathError, Profile, Segment};
 use nova_value::{revision, Record, Revision, Value};
 
 /// Evaluate a path that may contain `[*]` and a final projection.
@@ -33,6 +33,7 @@ fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value
             };
             let keep = |e: &&Value| {
                 filters.iter().all(|f| match f {
+                    Segment::Filter(lhs, CmpOp::Absent, _) => lhs.get(e).is_err(),
                     Segment::Filter(lhs, op, want) => lhs.get(e).map(|got| op.holds(got, want)).unwrap_or(false),
                     _ => unreachable!(),
                 })

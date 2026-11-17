@@ -7,6 +7,7 @@
 //! name     = ident | quoted-string
 //! selector = "*" | int | ident "=" flow-value | flow-value
 //!          | "?" path ("=" | "!=" | "<" | "<=" | ">" | ">=") flow-value
+//!          | "?" path | "?!" path | "?" path "in" list
 //! projection = "{" name ("," name)* "}"      (last segment only)
 //! ```
 
@@ -45,6 +46,12 @@ pub enum CmpOp {
     Le,
     Gt,
     Ge,
+    /// `[?p]`: the path resolves.
+    Exists,
+    /// `[?!p]`: the path does not resolve.
+    Absent,
+    /// `[?p in [a, b]]`: the value equals (numerically, as `=`) one of the list's elements.
+    In,
 }
 
 impl CmpOp {
@@ -56,6 +63,8 @@ impl CmpOp {
             CmpOp::Le => "<=",
             CmpOp::Gt => ">",
             CmpOp::Ge => ">=",
+            CmpOp::Exists | CmpOp::Absent => "",
+            CmpOp::In => " in ",
         }
     }
 
@@ -74,6 +83,9 @@ impl CmpOp {
             CmpOp::Le => matches!(ord, Some(Ordering::Less | Ordering::Equal)),
             CmpOp::Gt => ord == Some(Ordering::Greater),
             CmpOp::Ge => matches!(ord, Some(Ordering::Greater | Ordering::Equal)),
+            CmpOp::Exists => true,
+            CmpOp::Absent => false,
+            CmpOp::In => matches!(right, Value::List(opts) if opts.iter().any(|o| CmpOp::Eq.holds(left, o))),
         }
     }
 }
@@ -340,9 +352,13 @@ fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
     if b.first() == Some(&b'*') {
         return Ok((Segment::All, close(1)?));
     }
-    // ?path op value
+    // ?path op value | ?path | ?!path | ?path in [..]
     if b.first() == Some(&b'?') {
         let mut j = 1;
+        let negated = b.get(j) == Some(&b'!');
+        if negated {
+            j += 1;
+        }
         while b.get(j) == Some(&b' ') {
             j += 1;
         }
@@ -355,6 +371,23 @@ fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
             j += 1;
         }
         let rest = &s[j..];
+        if rest.starts_with(']') {
+            let op = if negated { CmpOp::Absent } else { CmpOp::Exists };
+            return Ok((Segment::Filter(lhs, op, Value::Null), close(j)?));
+        }
+        if negated {
+            return Err("`[?!path]` tests absence and takes no comparison".into());
+        }
+        if let Some(r) = rest.strip_prefix("in").filter(|r| r.starts_with([' ', '['])) {
+            let k = j + 2 + (r.len() - r.trim_start().len());
+            let mut p = Parser::new(&s[k..], false);
+            let v = p.parse_flow_value().map_err(|e| e.message)?;
+            if !matches!(v, Value::List(_)) {
+                return Err("`in` needs a list, e.g. [?tier in [web, api]]".into());
+            }
+            let end = close(k + p.pos)?;
+            return Ok((Segment::Filter(lhs, CmpOp::In, v), end));
+        }
         let (op, len) = [
             ("!=", CmpOp::Ne),
             ("<=", CmpOp::Le),
@@ -367,7 +400,7 @@ fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
         .into_iter()
         .find(|(t, _)| rest.starts_with(t))
         .map(|(t, o)| (o, t.len()))
-        .ok_or("expected a comparison operator (= != < <= > >=) in filter")?;
+        .ok_or("expected a comparison operator (= != < <= > >= in) in filter")?;
         j += len;
         while b.get(j) == Some(&b' ') {
             j += 1;
@@ -424,6 +457,8 @@ impl fmt::Display for Path {
                 Segment::Match(k, v) => write!(f, "[{}={}]", key_text(k), flow_string(v))?,
                 Segment::Key(v) => write!(f, "[{}]", flow_string(v))?,
                 Segment::All => f.write_str("[*]")?,
+                Segment::Filter(p, CmpOp::Exists, _) => write!(f, "[?{p}]")?,
+                Segment::Filter(p, CmpOp::Absent, _) => write!(f, "[?!{p}]")?,
                 Segment::Filter(p, op, v) => write!(f, "[?{p}{}{}]", op.symbol(), flow_string(v))?,
                 Segment::Project(fs) => write!(f, ".{{{}}}", fs.iter().map(|s| key_text(s)).collect::<Vec<_>>().join(","))?,
             }

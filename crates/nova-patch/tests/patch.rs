@@ -228,3 +228,21 @@ fn patches_declare_language_version() {
     assert!(parse_patch("@nova 0.1\n@patch\n? environment\n").is_ok());
     assert!(parse_patch("@nova 3.0\n@patch\n").unwrap_err().to_string().contains("requires NOVA 3.0"));
 }
+
+#[test]
+fn existence_absence_and_in_filters() {
+    let doc = parse(DOC).unwrap();
+    let ids = |p: &str| match nova_patch::select(&doc, &nova_text::Path::parse(p).unwrap()).unwrap() {
+        Value::List(l) => l.into_iter().map(|v| nova_text::flow_string(&v)).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(ids("services[?tags].id"), ["api"]);
+    assert_eq!(ids("services[?!tags].id"), ["auth"]);
+    assert_eq!(ids("services[?id in [auth, nope]].id"), ["auth"]);
+    assert_eq!(ids("services[?replicas in [5.0, 7]].id"), ["api"]);
+    for p in ["services[?tags]", "services[?!tags]", "services[?id in [auth, api]]"] {
+        assert_eq!(nova_text::Path::parse(p).unwrap().to_string(), p);
+    }
+    assert!(nova_text::Path::parse("services[?!tags=1]").is_err());
+    assert!(nova_text::Path::parse("services[?id in auth]").is_err());
+}

@@ -733,6 +733,8 @@ first      = name | "[" selector "]"
 name       = identifier | quoted-string
 selector   = "*" | int | identifier "=" flow-value | flow-value
            | "?" path cmp flow-value                    ; filter
+           | "?" path | "?!" path                       ; exists / absent
+           | "?" path "in" list                         ; membership
 cmp        = "=" | "!=" | "<" | "<=" | ">" | ">="
 projection = "{" name ("," name)* "}"
 ```
@@ -749,7 +751,7 @@ projection = "{" name ("," name)* "}"
 | | list | The unique element equal to `v`. |
 | | record (`v` is a string) | That field. |
 | `[*]` | list, tuple, set, record, map | Every element or value. Queries only. |
-| `[?p op v]` | list, tuple, set, map (values) | Every element for which the value at the relative singular path `p` compares as stated with `v`. Queries only. Consecutive filters combine with AND. |
+| `[?p op v]`, `[?p]`, `[?!p]`, `[?p in [..]]` | list, tuple, set, map (values) | Every element for which the condition on the relative singular path `p` holds. Queries only. Consecutive filters combine with AND. |
 | `.{a,b}` | record, or list of records | Only these fields (missing fields are omitted). Last segment only; queries only. |
 
 The root path is written `.` or as the empty string. A path without `[*]`, filters or a projection is **singular**: it addresses at most one location.
@@ -761,7 +763,9 @@ The root path is written `.` or as the empty string. A path without `[*]`, filte
 - Timestamps and durations compare chronologically. A string operand is parsed as the other side's kind: `[?at>"2026-01-01T00:00:00Z"]`.
 - Booleans order `false < true`.
 - Other values support only `=` and `!=`, which use value equality (§2.12); ordering comparisons on them are false.
-- An element where `p` does not resolve never matches, for any operator.
+- `[?p]` keeps elements where `p` resolves, and `[?!p]` keeps those where it does not.
+- `[?p in [a, b]]` keeps elements whose value at `p` equals (as with `=`) one of the listed values.
+- Apart from `[?!p]`, an element where `p` does not resolve never matches. In particular, `[?p!=v]` does not select elements that lack `p`; combine it with `[?!p]` when that is wanted.
 
 Filters are the only comparison the path language has. There are still no functions, arithmetic or recursion.
 
