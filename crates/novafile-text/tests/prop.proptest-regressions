@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7dd100f53ad5a2ef0722479895d4b6568d08156fe333a46ab969ddb594f6ddfc # shrinks to v = List([Tuple([Decimal(Decimal { coeff: -1701411834604692317316873037158841058, exp: 2 })])])
+cc c53330f905fa9807aacd5e49c6e06326f575ad818fa58c7f40bcdcb9b8f3a736 # shrinks to v = String("\u{feff}")
+cc ebc0ede65d9cd5663c747fc260b191c49a0d528a679f950ab8785f03651c5064 # shrinks to v = Record(Record { entries: [("", String("-"))] })
