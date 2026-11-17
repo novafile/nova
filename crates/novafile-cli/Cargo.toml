@@ -1,10 +1,15 @@
 [package]
 name = "novafile-cli"
-description = "The `nova` command-line tool"
+description = "The `nvf` command-line tool: format, convert, validate, query and patch NOVA documents"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["nova", "cli", "configuration", "schema", "llm"]
+categories = ["command-line-utilities", "config", "encoding"]
 
 [[bin]]
 name = "nvf"

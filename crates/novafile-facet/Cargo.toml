@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["nova", "facet", "reflection", "serialization"]
+categories = ["encoding"]
 
 # facet moves quickly; the binding is written against this exact release.
 [dependencies]

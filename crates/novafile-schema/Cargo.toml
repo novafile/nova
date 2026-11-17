@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license = "(EUPL-1.2 OR MPL-2.0) AND Apache-2.0"  # meta/nova-schema.novs is Apache-2.0, the code EUPL-1.2 OR MPL-2.0
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 # `#[derive(NovaSchema)]` (crate `novafile-derive`).

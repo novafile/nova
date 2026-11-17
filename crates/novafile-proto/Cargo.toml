@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["nova", "protobuf", "proto3", "serialization"]
+categories = ["encoding"]
 
 [dependencies]
 novafile-value.workspace = true
