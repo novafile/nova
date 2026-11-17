@@ -114,6 +114,13 @@ impl fmt::Display for Patch {
     }
 }
 
+/// Parse a patch document.
+///
+/// # Errors
+///
+/// Returns [`PatchError::Syntax`] if `src` does not start with `@patch`, has an
+/// unknown or misplaced directive, or contains a malformed operation.
+#[expect(clippy::too_many_lines, reason = "one linear pass over directives and operations")]
 pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
     let mut p = Parser::new(src, false);
     let syn = |p: &Parser, pos: usize, m: String| {
@@ -143,8 +150,8 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
             if !patch.ops.is_empty() {
                 return Err(syn(&p, start, "directives must precede operations".into()));
             }
-            let d = d.split(" #").next().unwrap().trim();
-            let (name, arg) = d.split_once(' ').map(|(a, b)| (a, b.trim())).unwrap_or((d, ""));
+            let d = d.split_once(" #").map_or(d, |(a, _)| a).trim();
+            let (name, arg) = d.split_once(' ').map_or((d, ""), |(a, b)| (a, b.trim()));
             match name {
                 "patch" => {
                     seen_header = true;
@@ -185,8 +192,8 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
             _ => None,
         };
         p.skip_inline_ws();
-        let (path, n) = Path::parse_prefix(&src[p.pos..]).map_err(|m| syn(&p, p.pos, m))?;
-        if !path.is_singular() {
+        let (op_path, n) = Path::parse_prefix(&src[p.pos..]).map_err(|m| syn(&p, p.pos, m))?;
+        if !op_path.is_singular() {
             return Err(syn(&p, p.pos, "patch paths may not use `[*]` or projections".into()));
         }
         p.pos += n;
@@ -221,7 +228,7 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
             _ => unreachable!(),
         };
         p.end_line().map_err(from)?;
-        patch.ops.push(Op { path, kind, line });
+        patch.ops.push(Op { path: op_path, kind, line });
     }
     if !seen_header {
         return Err(PatchError::Syntax {
@@ -247,6 +254,12 @@ pub struct Applied {
 
 /// Apply a patch atomically. `validate` runs on the result before it is
 /// accepted (e.g. schema validation); any failure leaves `doc` untouched.
+///
+/// # Errors
+///
+/// Returns [`PatchError::StaleBase`] if `doc` is not at the patch's base revision,
+/// [`PatchError::Scope`] if the scope does not resolve, [`PatchError::Op`] if an
+/// operation fails, or [`PatchError::Invalid`] if `validate` rejects the result.
 pub fn apply(doc: &Value, patch: &Patch, validate: &dyn Fn(&Value) -> Result<(), Vec<String>>) -> Result<Applied, PatchError> {
     let base = revision(doc);
     if let Some(expected) = &patch.base
@@ -281,24 +294,25 @@ pub fn apply(doc: &Value, patch: &Patch, validate: &dyn Fn(&Value) -> Result<(),
 fn show(v: &Value) -> String {
     let s = flow_string(v);
     if s.len() > 60 {
-        format!("{}…", &s[..s.char_indices().nth(57).map(|(i, _)| i).unwrap_or(s.len())])
+        format!("{}…", &s[..s.char_indices().nth(57).map_or(s.len(), |(i, _)| i)])
     } else {
         s
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per operation kind; each is self-contained")]
 pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(), String> {
-    let e = |e: PathError| e.to_string();
+    let to_msg = |e: PathError| e.to_string();
     match kind {
         OpKind::Test(want) => {
-            let cur = path.get(root).map_err(e)?;
+            let cur = path.get(root).map_err(to_msg)?;
             match want {
                 Some(w) if cur != w => Err(format!("test failed: expected {}, found {}", show(w), show(cur))),
                 _ => Ok(()),
             }
         }
         OpKind::Replace { old, new } => {
-            let cur = get_mut(root, path).map_err(e)?;
+            let cur = get_mut(root, path).map_err(to_msg)?;
             if cur != old {
                 return Err(format!("conflict: expected {}, found {}", show(old), show(cur)));
             }
@@ -310,12 +324,9 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
                 *root = v.clone();
                 return Ok(());
             };
-            let target = get_mut(root, &parent).map_err(e)?;
+            let target = get_mut(root, &parent).map_err(to_msg)?;
             match (target, last) {
-                (Value::Record(r), Segment::Field(k)) => {
-                    r.set(k.clone(), v.clone());
-                }
-                (Value::Record(r), Segment::Key(Value::String(k))) => {
+                (Value::Record(r), Segment::Field(k) | Segment::Key(Value::String(k))) => {
                     r.set(k.clone(), v.clone());
                 }
                 (Value::Map(m), seg @ (Segment::Field(_) | Segment::Key(_) | Segment::Index(_))) => {
@@ -325,7 +336,7 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
                         None => m.push((k, v.clone())),
                     }
                 }
-                (t, _) => *get_mut(t, &Path(vec![last.clone()])).map_err(e)? = v.clone(),
+                (t, _) => *get_mut(t, &Path(vec![last.clone()])).map_err(to_msg)? = v.clone(),
             }
             Ok(())
         }
@@ -335,7 +346,7 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
                 && let Ok(Value::List(l)) = get_mut(root, &parent)
             {
                 let len = l.len();
-                let idx = if *i == len as i64 {
+                let idx = if usize::try_from(*i) == Ok(len) {
                     len
                 } else {
                     resolve_index(*i, len).ok_or(format!("index {i} is out of bounds for insert (len {len})"))?
@@ -361,12 +372,12 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
                 }
             }
             let (parent, last) = path.parent().ok_or("cannot add at the document root")?;
-            let target = get_mut(root, &parent).map_err(e)?;
+            let target = get_mut(root, &parent).map_err(to_msg)?;
             match (target, last) {
                 (Value::Record(r), Segment::Field(k)) => r.insert(k.clone(), v.clone()).map_err(|e| e.to_string()),
                 (Value::List(l), Segment::Index(i)) => {
                     let len = l.len();
-                    let idx = if *i == len as i64 {
+                    let idx = if usize::try_from(*i) == Ok(len) {
                         len
                     } else {
                         resolve_index(*i, len).ok_or(format!("index {i} is out of bounds for insert (len {len})"))?
@@ -383,13 +394,13 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
         }
         OpKind::Remove(want) => {
             if let Some(w) = want {
-                let cur = path.get(root).map_err(e)?;
+                let cur = path.get(root).map_err(to_msg)?;
                 if cur != w {
                     return Err(format!("conflict: expected {}, found {}", show(w), show(cur)));
                 }
             }
             let (parent, last) = path.parent().ok_or("cannot remove the document root")?;
-            let target = get_mut(root, &parent).map_err(e)?;
+            let target = get_mut(root, &parent).map_err(to_msg)?;
             let nf = || PathError::NotFound(path.clone()).to_string();
             match (target, last) {
                 (Value::Record(r), Segment::Field(k)) => r.remove(k).map(|_| ()).ok_or_else(nf),
@@ -442,7 +453,7 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
 fn seg_key(seg: &Segment) -> Value {
     match seg {
         Segment::Field(s) => Value::String(s.clone()),
-        Segment::Index(i) => Value::Int(*i as i128),
+        Segment::Index(i) => Value::Int(i128::from(*i)),
         Segment::Key(k) => k.clone(),
         _ => unreachable!(),
     }

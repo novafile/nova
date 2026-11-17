@@ -13,6 +13,8 @@
 //! - [`cbor`]: a self-contained RFC 8949 codec, including core deterministic
 //!   encoding (§4.2.1).
 
+use std::fmt::Write as _;
+
 pub mod cbor;
 pub mod toml;
 pub mod yaml;
@@ -60,7 +62,7 @@ impl Reporter {
     /// Run `f` with `[i]` appended to the current path.
     pub(crate) fn index<T>(&mut self, i: usize, f: impl FnOnce(&mut Self) -> T) -> T {
         let n = self.path.len();
-        self.path.push_str(&format!("[{i}]"));
+        let _ = write!(self.path, "[{i}]");
         let r = f(self);
         self.path.truncate(n);
         r

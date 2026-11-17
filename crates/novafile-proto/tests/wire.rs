@@ -2,7 +2,7 @@
 
 use novafile_proto::{decode, encode, proto_file};
 use novafile_schema::{Schema, parse_schema};
-use novafile_value::Value;
+use novafile_value::{Record, Value};
 
 fn schema(src: &str) -> Schema {
     parse_schema(src).unwrap_or_else(|e| panic!("{e:?}"))
@@ -118,6 +118,7 @@ impl Lcg {
 }
 
 #[test]
+#[expect(clippy::cast_possible_truncation, reason = "random values are deliberately cut to indices and bytes")]
 fn truncations_and_mutations_never_panic() {
     let s = schema(RICH);
     let v = value(
@@ -159,7 +160,7 @@ wait: @duration("1s")
     let mut rng = Lcg(42);
     for _ in 0..5000 {
         let mut b = bytes.clone();
-        for _ in 0..(1 + rng.next() % 4) {
+        for _ in 0..=(rng.next() % 4) {
             let i = (rng.next() as usize) % b.len();
             b[i] = rng.next() as u8;
         }
@@ -180,6 +181,7 @@ record Node:
 ";
 
 #[test]
+#[expect(clippy::cast_possible_truncation, reason = "varint bytes keep the low 7 bits")]
 fn recursion_depth_is_bounded() {
     let s = schema(LINKED);
     // 100 nodes are fine both ways.
@@ -333,7 +335,7 @@ fn nulls_and_optional_collections() {
     assert_eq!(decode(&encode(&v, &s).unwrap(), &s).unwrap(), value(&s, "a: x\nd: y\n"));
     // null on a non-nullable field is rejected.
     let err = encode(&novafile_text::parse("a: x\nd: null\n").unwrap(), &s).unwrap_err();
-    assert!(err.contains("d"), "{err}");
+    assert!(err.contains('d'), "{err}");
 }
 
 fn rect(x: i128, y: i128) -> Value {
@@ -381,7 +383,7 @@ fn schema_errors_name_the_field() {
         let s = schema(&format!("@root R\n\n{body}"));
         let err = proto_file(&s).unwrap_err();
         assert!(err.contains(expected), "{body}\n=> {err}");
-        assert!(encode(&Value::Record(Default::default()), &s).is_err());
+        assert!(encode(&Value::Record(Record::default()), &s).is_err());
         assert!(decode(&[], &s).is_err());
     }
     // Unreachable definitions are not checked.

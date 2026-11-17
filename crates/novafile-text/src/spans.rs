@@ -23,6 +23,7 @@ pub enum SpanKind {
 
 impl SpanKind {
     /// Constructs that occupy whole lines.
+    #[must_use]
     pub fn is_block(self) -> bool {
         matches!(self, SpanKind::Root | SpanKind::BlockEntry | SpanKind::BlockItem | SpanKind::TableRow)
     }
@@ -45,6 +46,7 @@ pub struct Span {
 impl Span {
     /// Where the value itself starts: after `key:` or `- `, or on the next
     /// content line when the value is an indented block.
+    #[must_use]
     pub fn value_start(&self, src: &str) -> usize {
         let b = src.as_bytes();
         let mut i = match (self.kind, self.key) {
@@ -78,8 +80,9 @@ impl Span {
     }
 
     /// Column (in bytes) of the span's first character.
+    #[must_use]
     pub fn column(&self, src: &str) -> usize {
-        self.start - src[..self.start].rfind('\n').map(|i| i + 1).unwrap_or(0)
+        self.start - src[..self.start].rfind('\n').map_or(0, |i| i + 1)
     }
 }
 
@@ -91,6 +94,7 @@ pub struct SpanMap {
 }
 
 impl SpanMap {
+    #[must_use]
     pub fn new(mut spans: Vec<Span>) -> Self {
         spans.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
         SpanMap { spans, comments: Vec::new() }
@@ -108,18 +112,21 @@ impl SpanMap {
     }
 
     /// The span of exactly this path.
+    #[must_use]
     pub fn get(&self, path: &Path) -> Option<&Span> {
         self.spans.iter().find(|s| s.path == *path)
     }
 
     /// The span of this path, or of its longest recorded prefix (useful when
     /// an error refers to a missing field).
+    #[must_use]
     pub fn closest(&self, path: &Path) -> Option<&Span> {
         let concrete: Vec<Segment> = path.0.clone();
         (0..=concrete.len()).rev().find_map(|n| self.get(&Path(concrete[..n].to_vec())))
     }
 
     /// The innermost span containing `offset`.
+    #[must_use]
     pub fn at(&self, offset: usize) -> Option<&Span> {
         self.spans
             .iter()
@@ -129,16 +136,19 @@ impl SpanMap {
 }
 
 /// Convert a byte offset into a zero-based (line, UTF-16 column) position, as used by LSP.
+#[must_use]
 pub fn line_col_utf16(src: &str, offset: usize) -> (u32, u32) {
     let offset = offset.min(src.len());
     let before = &src[..offset];
     let line = before.matches('\n').count();
-    let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
     let col = src[line_start..offset].encode_utf16().count();
-    (line as u32, col as u32)
+    // Saturate: LSP positions are u32; such huge documents are not addressable anyway.
+    (u32::try_from(line).unwrap_or(u32::MAX), u32::try_from(col).unwrap_or(u32::MAX))
 }
 
 /// Convert a zero-based (line, UTF-16 column) position into a byte offset.
+#[must_use]
 pub fn offset_of_utf16(src: &str, line: u32, col: u32) -> usize {
     let mut start = 0;
     for _ in 0..line {
@@ -152,7 +162,9 @@ pub fn offset_of_utf16(src: &str, line: u32, col: u32) -> usize {
         if c == '\n' || units >= col {
             return start + i;
         }
-        units += c.len_utf16() as u32;
+        #[expect(clippy::cast_possible_truncation, reason = "a char is 1 or 2 UTF-16 units")]
+        let n = c.len_utf16() as u32;
+        units += n;
     }
     src.len()
 }

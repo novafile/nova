@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use novafile_template::{FsLoader, Limits, Options, render};
 use novafile_value::{Record, Value};
 
@@ -46,7 +48,7 @@ labels:
 fn renders() {
     let v = render(TPL, &args("env: production\nservices: [auth, api]\nmetrics: true\n"), &Options::default()).unwrap();
     let expected = novafile_text::parse(
-        r#"
+        r"
 environment: production
 region: production-eu-central-1
 services:
@@ -68,7 +70,7 @@ services:
 labels:
   app-auth: auth
   app-api: api
-"#,
+",
     )
     .unwrap();
     assert_eq!(v, expected, "{}", novafile_text::to_text(&v, novafile_text::Profile::Human));
@@ -122,10 +124,11 @@ fn eval_errors() {
 fn output_budget_stops_exponential_reuse() {
     let mut src = String::from("@template\n@let a0 = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]\n");
     for i in 1..8 {
-        src.push_str(&format!(
-            "@let a{i} = [$a{p}, $a{p}, $a{p}, $a{p}, $a{p}, $a{p}, $a{p}, $a{p}, $a{p}, $a{p}]\n",
+        let _ = writeln!(
+            src,
+            "@let a{i} = [$a{p}, $a{p}, $a{p}, $a{p}, $a{p}, $a{p}, $a{p}, $a{p}, $a{p}, $a{p}]",
             p = i - 1
-        ));
+        );
     }
     src.push_str("x: $a7\n");
     let opts = Options {

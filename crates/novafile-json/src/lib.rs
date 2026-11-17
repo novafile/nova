@@ -2,6 +2,8 @@
 //! duplicate keys are rejected). NOVA → JSON is lossless only for the JSON
 //! subset; every lossy mapping is reported as a [`Warning`].
 
+use std::fmt::Write as _;
+
 use base64::Engine;
 use novafile_value::{Record, Value};
 
@@ -24,7 +26,7 @@ struct P<'a> {
     depth: usize,
 }
 
-impl<'a> P<'a> {
+impl P<'_> {
     fn err<T>(&self, m: &str) -> Result<T, String> {
         Err(format!("JSON byte {}: {m}", self.i))
     }
@@ -226,6 +228,11 @@ impl<'a> P<'a> {
 
 /// Parse JSON text into a NOVA value. Numbers without fraction or exponent
 /// become `int` (exact); others become `float`. Duplicate keys are errors.
+///
+/// # Errors
+///
+/// Returns a message with the byte offset if the text is not valid JSON,
+/// nests too deeply, repeats an object key, or has trailing content.
 pub fn from_json_str(s: &str) -> Result<Value, String> {
     let s = s.strip_prefix('\u{feff}').unwrap_or(s);
     let mut p = P {
@@ -243,6 +250,11 @@ pub fn from_json_str(s: &str) -> Result<Value, String> {
 }
 
 /// Parse JSON Lines: one value per non-empty line.
+///
+/// # Errors
+///
+/// Returns the first line that fails [`from_json_str`], prefixed with its
+/// 1-based line number.
 pub fn from_jsonl_str(s: &str) -> Result<Vec<Value>, String> {
     s.lines()
         .enumerate()
@@ -260,7 +272,9 @@ fn quote(s: &str, out: &mut String) {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
             c => out.push(c),
         }
     }
@@ -269,6 +283,7 @@ fn quote(s: &str, out: &mut String) {
 
 /// Serialize to JSON text (pretty with 2-space indentation, or compact),
 /// reporting every lossy mapping.
+#[must_use]
 pub fn to_json_string(v: &Value, pretty: bool) -> (String, Vec<Warning>) {
     let mut out = String::new();
     let mut w = Vec::new();
@@ -283,15 +298,16 @@ fn nl(out: &mut String, indent: Option<usize>) {
     }
 }
 
-fn write(v: &Value, out: &mut String, path: &mut String, w: &mut Vec<Warning>, indent: Option<usize>) {
+#[expect(clippy::too_many_lines, reason = "flat dispatcher over every Value variant")]
+fn write(value: &Value, out: &mut String, path: &mut String, warnings: &mut Vec<Warning>, indent: Option<usize>) {
     let mut warn = |m: &str| {
-        w.push(Warning {
+        warnings.push(Warning {
             path: path.clone(),
             message: m.to_owned(),
-        })
+        });
     };
     let inner = indent.map(|n| n + 2);
-    match v {
+    match value {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(&b.to_string()),
         Value::Int(i) => {
@@ -300,7 +316,9 @@ fn write(v: &Value, out: &mut String, path: &mut String, w: &mut Vec<Warning>, i
             }
             out.push_str(&i.to_string());
         }
-        Value::Float(f) if f.is_finite() => out.push_str(&format!("{f:?}")),
+        Value::Float(f) if f.is_finite() => {
+            let _ = write!(out, "{f:?}");
+        }
         Value::Float(f) => {
             warn("non-finite float written as a string");
             quote(&f.to_string(), out);
@@ -327,7 +345,7 @@ fn write(v: &Value, out: &mut String, path: &mut String, w: &mut Vec<Warning>, i
             quote(&d.to_string(), out);
         }
         Value::List(l) | Value::Tuple(l) | Value::Set(l) => {
-            match v {
+            match value {
                 Value::Tuple(_) => warn("tuple written as an array"),
                 Value::Set(_) => warn("set written as an array"),
                 _ => {}
@@ -338,10 +356,10 @@ fn write(v: &Value, out: &mut String, path: &mut String, w: &mut Vec<Warning>, i
                     out.push(',');
                 }
                 nl(out, inner);
-                let n = path.len();
-                path.push_str(&format!("[{i}]"));
-                write(e, out, path, w, inner);
-                path.truncate(n);
+                let mark = path.len();
+                let _ = write!(path, "[{i}]");
+                write(e, out, path, warnings, inner);
+                path.truncate(mark);
             }
             if !l.is_empty() {
                 nl(out, indent);
@@ -357,11 +375,11 @@ fn write(v: &Value, out: &mut String, path: &mut String, w: &mut Vec<Warning>, i
                 nl(out, inner);
                 quote(k, out);
                 out.push_str(if indent.is_some() { ": " } else { ":" });
-                let n = path.len();
+                let mark = path.len();
                 path.push('.');
                 path.push_str(k);
-                write(e, out, path, w, inner);
-                path.truncate(n);
+                write(e, out, path, warnings, inner);
+                path.truncate(mark);
             }
             if !r.is_empty() {
                 nl(out, indent);
@@ -371,7 +389,7 @@ fn write(v: &Value, out: &mut String, path: &mut String, w: &mut Vec<Warning>, i
         Value::Map(m) => {
             warn("map written as an array of [key, value] pairs");
             let pairs = Value::List(m.iter().map(|(k, v)| Value::List(vec![k.clone(), v.clone()])).collect());
-            write(&pairs, out, path, w, indent);
+            write(&pairs, out, path, warnings, indent);
         }
         Value::Variant(t, None) => {
             warn("unit variant written as a string");
@@ -381,7 +399,7 @@ fn write(v: &Value, out: &mut String, path: &mut String, w: &mut Vec<Warning>, i
             warn("variant written as a single-key object");
             let mut r = Record::new();
             r.insert(t.clone(), (**p).clone()).unwrap();
-            write(&Value::Record(r), out, path, w, indent);
+            write(&Value::Record(r), out, path, warnings, indent);
         }
     }
 }
@@ -396,7 +414,7 @@ mod tests {
         let v = from_json_str(src).unwrap();
         let r = v.as_record().unwrap();
         assert_eq!(r.get("a"), Some(&Value::Int(1)));
-        assert_eq!(r.get("big"), Some(&Value::Int(123456789012345678901234567890)));
+        assert_eq!(r.get("big"), Some(&Value::Int(123_456_789_012_345_678_901_234_567_890)));
         assert!(matches!(r.get("c").unwrap().as_record().unwrap().get("d"), Some(Value::Float(_))));
         for pretty in [false, true] {
             let (j, w) = to_json_string(&v, pretty);

@@ -13,6 +13,7 @@ pub struct Decimal {
 }
 
 impl Decimal {
+    #[must_use]
     pub fn new(mut coeff: i128, mut exp: i32) -> Self {
         if coeff == 0 {
             return Decimal { coeff: 0, exp: 0 };
@@ -24,19 +25,27 @@ impl Decimal {
         Decimal { coeff, exp }
     }
 
+    #[must_use]
     pub fn coefficient(&self) -> i128 {
         self.coeff
     }
 
+    #[must_use]
     pub fn exponent(&self) -> i32 {
         self.exp
     }
 
+    #[must_use]
     pub fn from_int(i: i128) -> Self {
         Decimal::new(i, 0)
     }
 
     /// Parse the decimal lexical form: `-?D+(.D+)?([eE][+-]?D+)?`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `s` does not match that form, has more than 38
+    /// significant digits, or its exponent does not fit in `i32`.
     pub fn parse(s: &str) -> Result<Self, String> {
         let err = || format!("invalid decimal literal {s:?}");
         let b = s.as_bytes();
@@ -51,7 +60,7 @@ impl Decimal {
         let push = |c: u8, coeff: &mut i128| -> Result<(), String> {
             *coeff = coeff
                 .checked_mul(10)
-                .and_then(|v| v.checked_add((c - b'0') as i128))
+                .and_then(|v| v.checked_add(i128::from(c - b'0')))
                 .ok_or_else(|| format!("decimal {s:?} exceeds 38 significant digits"))?;
             Ok(())
         };
@@ -91,8 +100,8 @@ impl Decimal {
             };
             let start = i;
             while i < b.len() && b[i].is_ascii_digit() {
-                e = e * 10 + (b[i] - b'0') as i64;
-                if e > i32::MAX as i64 {
+                e = e * 10 + i64::from(b[i] - b'0');
+                if e > i64::from(i32::MAX) {
                     return Err(err());
                 }
                 i += 1;
@@ -107,18 +116,17 @@ impl Decimal {
         if i != b.len() {
             return Err(err());
         }
-        let exp = e - frac;
-        if exp < i32::MIN as i64 || exp > i32::MAX as i64 {
-            return Err(err());
-        }
-        Ok(Decimal::new(if neg { -coeff } else { coeff }, exp as i32))
+        let exp = i32::try_from(e - frac).map_err(|_| err())?;
+        Ok(Decimal::new(if neg { -coeff } else { coeff }, exp))
     }
 
+    #[must_use]
     pub fn to_f64(&self) -> f64 {
         format!("{}e{}", self.coeff, self.exp).parse().unwrap_or(f64::NAN)
     }
 
     /// Exact conversion to an integer if the value is integral and fits.
+    #[must_use]
     pub fn to_i128(&self) -> Option<i128> {
         if self.exp < 0 {
             return None;
@@ -133,11 +141,17 @@ impl Decimal {
 
 impl fmt::Display for Decimal {
     /// Canonical decimal text (spec §4.6).
+    #[expect(
+        clippy::cast_possible_wrap,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "at most 40 digits; each usize cast is guarded by a range check to a small non-negative value"
+    )]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let neg = self.coeff < 0;
         let digits = self.coeff.unsigned_abs().to_string();
         let sign = if neg { "-" } else { "" };
-        let exp = self.exp as i64;
+        let exp = i64::from(self.exp);
         let n = digits.len() as i64;
         if (0..=6).contains(&exp) {
             write!(f, "{sign}{digits}{}", "0".repeat(exp as usize))

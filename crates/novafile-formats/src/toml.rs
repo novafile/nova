@@ -40,6 +40,11 @@ use novafile_value::{Record, Timestamp, Value};
 use crate::{Reporter, Warning};
 
 /// Parse a TOML document into a record.
+///
+/// # Errors
+///
+/// Returns a message if the TOML is malformed or holds a date-time NOVA
+/// cannot represent.
 pub fn from_str(s: &str) -> Result<Value, String> {
     let t: Table = s.parse().map_err(|e: ::toml::de::Error| format!("TOML: {}", e.message()))?;
     table(t)
@@ -87,7 +92,10 @@ fn datetime(d: &Datetime) -> Result<Value, String> {
 }
 
 /// Serialize a record to a TOML document, reporting every lossy mapping.
-/// Errors on a non-record root, on `null` and on integers beyond i64.
+///
+/// # Errors
+///
+/// Fails on a non-record root, on `null` and on integers beyond i64.
 pub fn to_string(v: &Value) -> Result<(String, Vec<Warning>), String> {
     let Value::Record(r) = v else {
         return Err(format!("TOML: the root must be a record, not a {}", v.kind()));

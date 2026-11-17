@@ -2,7 +2,7 @@
 
 use crate::shape::{Classified, Message, Plan, Scalar, Shape, Single, WireType, classify_field, classify_payload, field_number};
 use crate::wire::{put_len, put_tag, put_varint, zigzag32, zigzag64};
-use crate::{Fail, MAX_DEPTH};
+use crate::{Fail, MAX_DEPTH, index};
 use novafile_schema::Schema;
 use novafile_text::Segment;
 use novafile_value::Value;
@@ -52,6 +52,7 @@ impl<'s> Encoder<'s> {
                     .enumerate()
                     .find(|(_, d)| d.name == *tag)
                     .ok_or_else(|| Fail::new(format!("unknown variant {tag:?} of {name}")))?;
+                #[expect(clippy::cast_possible_truncation, reason = "a schema cannot hold 2^32 variants")]
                 let number = i as u32 + 1;
                 match (classify_payload(self.schema, name, vd)?, payload) {
                     (Single::Message(Message::Empty), None) => {
@@ -65,7 +66,7 @@ impl<'s> Encoder<'s> {
             }
             (Message::Timestamp, Value::Timestamp(t)) => {
                 put_tag(buf, 1, WireType::Varint);
-                put_varint(buf, t.unix_seconds() as u64);
+                put_varint(buf, t.unix_seconds().cast_unsigned());
                 put_tag(buf, 2, WireType::Varint);
                 put_varint(buf, u64::from(t.subsec_nanos()));
                 Ok(())
@@ -77,9 +78,9 @@ impl<'s> Encoder<'s> {
                 let secs = i64::try_from(n / NANOS_PER_SEC).map_err(|_| Fail::new("duration exceeds the google.protobuf.Duration range"))?;
                 let nanos = (n % NANOS_PER_SEC) as i64;
                 put_tag(buf, 1, WireType::Varint);
-                put_varint(buf, secs as u64);
+                put_varint(buf, secs.cast_unsigned());
                 put_tag(buf, 2, WireType::Varint);
-                put_varint(buf, nanos as u64);
+                put_varint(buf, nanos.cast_unsigned());
                 Ok(())
             }
             (m, v) => Err(mismatch(&Single::Message(m).proto_name(), v)),
@@ -104,14 +105,14 @@ impl<'s> Encoder<'s> {
                         }
                         let mut packed = Vec::new();
                         for (i, item) in items.iter().enumerate() {
-                            scalar(&mut packed, item, s).map_err(|e| e.at(Segment::Index(i as i64)))?;
+                            scalar(&mut packed, item, s).map_err(|e| e.at(index(i)))?;
                         }
                         put_tag(buf, number, WireType::Len);
                         put_len(buf, &packed);
                     }
                     _ => {
                         for (i, item) in items.iter().enumerate() {
-                            self.single(buf, number, item, elem, depth).map_err(|e| e.at(Segment::Index(i as i64)))?;
+                            self.single(buf, number, item, elem, depth).map_err(|e| e.at(index(i)))?;
                         }
                     }
                 }

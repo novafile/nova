@@ -26,6 +26,8 @@ pub mod magic {
 // unchanged when both ends are NOVA. They are only ever filled and drained
 // within a single (de)serialize call on the current thread.
 thread_local! {
+    // Outer `None`: not capturing; `Some(None)`: capturing, nothing captured yet.
+    #[expect(clippy::option_option, reason = "outer level marks an active capture, inner level its result")]
     static CAPTURE: RefCell<Option<Option<Value>>> = const { RefCell::new(None) };
     static INJECT: RefCell<Option<Value>> = const { RefCell::new(None) };
 }
@@ -36,6 +38,7 @@ pub fn __capture_begin() {
 }
 
 #[doc(hidden)]
+#[must_use]
 pub fn __capture_take() -> Option<Value> {
     CAPTURE.with(|c| c.borrow_mut().take().flatten())
 }
@@ -83,12 +86,12 @@ macro_rules! text_type {
 text_type!(Timestamp, magic::TIMESTAMP, "an RFC 3339 timestamp", Timestamp::parse);
 text_type!(Duration, magic::DURATION, "a duration such as 1h30m", Duration::parse);
 text_type!(Decimal, magic::DECIMAL, "a decimal number", Decimal::parse);
-text_type!(Rational, magic::RATIONAL, "a rational such as 22/7", |s| match s.contains('/') {
-    true => Rational::parse(s),
-    false => s
-        .parse::<i128>()
+text_type!(Rational, magic::RATIONAL, "a rational such as 22/7", |s| if s.contains('/') {
+    Rational::parse(s)
+} else {
+    s.parse::<i128>()
         .map_err(|_| format!("invalid rational {s:?}"))
-        .and_then(|n| Rational::new(n, 1)),
+        .and_then(|n| Rational::new(n, 1))
 });
 
 // ---------------------------------------------------------------------------
@@ -202,10 +205,10 @@ impl<'de> Visitor<'de> for ValueVisitor {
         Ok(Value::Bool(b))
     }
     fn visit_i64<E>(self, i: i64) -> Result<Value, E> {
-        Ok(Value::Int(i as i128))
+        Ok(Value::Int(i128::from(i)))
     }
     fn visit_u64<E>(self, i: u64) -> Result<Value, E> {
-        Ok(Value::Int(i as i128))
+        Ok(Value::Int(i128::from(i)))
     }
     fn visit_i128<E>(self, i: i128) -> Result<Value, E> {
         Ok(Value::Int(i))

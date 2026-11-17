@@ -20,6 +20,10 @@ enum Status {
 }
 
 #[derive(Facet, Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[expect(
+    clippy::unsafe_derive_deserialize,
+    reason = "the unsafe code is in the Facet derive's vtable, which is sound for any field values"
+)]
 struct Service {
     id: String,
     port: u16,
@@ -37,6 +41,10 @@ struct Service {
 }
 
 #[derive(Facet, Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[expect(
+    clippy::unsafe_derive_deserialize,
+    reason = "the unsafe code is in the Facet derive's vtable, which is sound for any field values"
+)]
 struct Infra {
     environment: String,
     deployed_at: Timestamp,
@@ -158,20 +166,12 @@ fn uses_rich_nova_kinds() {
 
 #[test]
 fn agrees_with_nova_serde() {
-    let s = sample();
-    let via_facet = novafile_facet::to_value(&s).unwrap();
-    let via_serde = novafile_serde::to_value(&s).unwrap();
-    assert_eq!(via_facet, via_serde);
-    assert_eq!(novafile_facet::to_string(&s).unwrap(), novafile_serde::to_string(&s).unwrap());
-    // Each binding reads what the other wrote.
-    assert_eq!(novafile_facet::from_value::<Infra>(via_serde).unwrap(), s);
-    assert_eq!(novafile_serde::from_value::<Infra>(via_facet).unwrap(), s);
-
     #[derive(Facet, Serialize, Debug)]
     struct Shapes {
         unit: Unit,
         newtype: Meters,
         tuple: Pair,
+        #[expect(clippy::option_option, reason = "exercises a nested option on purpose")]
         opt: Option<Option<u8>>,
         nested: Vec<Vec<i64>>,
         float: f32,
@@ -187,6 +187,14 @@ fn agrees_with_nova_serde() {
     struct Meters(f64);
     #[derive(Facet, Serialize, Debug)]
     struct Pair(u8, String);
+    let s = sample();
+    let via_facet = novafile_facet::to_value(&s).unwrap();
+    let via_serde = novafile_serde::to_value(&s).unwrap();
+    assert_eq!(via_facet, via_serde);
+    assert_eq!(novafile_facet::to_string(&s).unwrap(), novafile_serde::to_string(&s).unwrap());
+    // Each binding reads what the other wrote.
+    assert_eq!(novafile_facet::from_value::<Infra>(via_serde).unwrap(), s);
+    assert_eq!(novafile_serde::from_value::<Infra>(via_facet).unwrap(), s);
     let v = Shapes {
         unit: Unit,
         newtype: Meters(1.5),
@@ -296,6 +304,11 @@ fn numeric_keys_accept_their_string_form() {
 
 #[test]
 fn collections_and_wrappers() {
+    #[derive(Facet, Debug)]
+    struct Borrowed<'a> {
+        #[allow(dead_code)]
+        s: &'a str,
+    }
     #[derive(Facet, Debug, PartialEq)]
     struct C {
         bytes: Vec<u8>,
@@ -328,11 +341,6 @@ fn collections_and_wrappers() {
     let c2: C = from_str("bytes: [1, 2]\nfixed: [3, 4]\nset: [1]\nboxed: 1\nshared: x\ncow: y\n").unwrap();
     assert_eq!((c2.bytes, c2.fixed), (vec![1, 2], [3, 4]));
     // A borrowed target cannot be built from an owned value.
-    #[derive(Facet, Debug)]
-    struct Borrowed<'a> {
-        #[allow(dead_code)]
-        s: &'a str,
-    }
     let e = from_value::<Borrowed<'static>>(flow("{s: x}")).unwrap_err();
     assert!(e.to_string().contains("borrowed"), "{e}");
 }
@@ -402,6 +410,13 @@ fn attributes() {
 #[test]
 fn catch_all_and_numeric_enums() {
     #[derive(Facet, Debug, PartialEq)]
+    #[facet(is_numeric)]
+    #[repr(u8)]
+    enum Code {
+        Ok = 0,
+        NotFound = 4,
+    }
+    #[derive(Facet, Debug, PartialEq)]
     #[repr(u8)]
     enum Level {
         Low,
@@ -413,14 +428,6 @@ fn catch_all_and_numeric_enums() {
         from_value::<Vec<Level>>(flow("[Low, !High, Medium]")).unwrap(),
         [Level::Low, Level::High, Level::Unknown]
     );
-
-    #[derive(Facet, Debug, PartialEq)]
-    #[facet(is_numeric)]
-    #[repr(u8)]
-    enum Code {
-        Ok = 0,
-        NotFound = 4,
-    }
     assert_eq!(to_value(&[Code::Ok, Code::NotFound]).unwrap(), flow("[0, 4]"));
     assert_eq!(from_value::<Vec<Code>>(flow("[4, 0]")).unwrap(), [Code::NotFound, Code::Ok]);
 }

@@ -116,15 +116,15 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
         .filter(|r| structural.len() == 1 && c.names.contains_key(r));
     if let Some(r) = root_ref {
         let n = c.names[&r].clone();
-        c.root_name = n.clone();
+        c.root_name.clone_from(&n);
         schema.root = Some(n);
     } else if !structural.is_empty() || matches!(json, Json::Bool(true)) {
         let title = root_obj
             .get("title")
             .and_then(Json::as_str)
             .filter(|t| novafile_schema::SchemaRef::parse(t).is_err());
-        let n = c.fresh(&title.map(sanitize_def_name).unwrap_or_else(|| "Root".into()));
-        c.root_name = n.clone();
+        let n = c.fresh(&title.map_or_else(|| "Root".into(), sanitize_def_name));
+        c.root_name.clone_from(&n);
         schema.root = Some(n.clone());
         let d = c.def_of(&Json::Object(root_obj.clone()), "#", &n);
         c.defs.push((n, d));
@@ -1172,6 +1172,7 @@ fn int_bound(o: &Obj, incl: &str, excl: &str, lower: bool) -> Option<i128> {
                 let f = n.as_f64()?;
                 // Fractional bounds round inwards; whole ones step past when exclusive.
                 let step = exclusive && f.fract() == 0.0;
+                #[expect(clippy::cast_possible_truncation, reason = "float-to-int `as` saturates, clamping out-of-range bounds")]
                 Some(if lower {
                     f.ceil() as i128 + i128::from(step)
                 } else {
@@ -1232,7 +1233,7 @@ fn resolve_defaults(schema: &mut Schema, warnings: &mut Vec<String>) {
                     f.optional = false;
                 }
                 Err(issues) => {
-                    let why = issues.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("; ");
+                    let why = issues.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; ");
                     warnings.push(format!(
                         "{name}.{}: default {} dropped: {why}",
                         f.name,

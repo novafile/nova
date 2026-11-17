@@ -1,7 +1,9 @@
+use std::fmt::Write as _;
+
 use novafile_text::{Path, Profile, parse, parse_document, parse_flow, split_stream, to_text};
 use novafile_value::{Decimal, Duration, Record, Timestamp, Value};
 
-const HUMAN: &str = r#"# NOVA human syntax
+const HUMAN: &str = r"# NOVA human syntax
 @schema infrastructure@1.0.0
 
 environment: production
@@ -20,7 +22,7 @@ services:
     port: 3000
     replicas: 5
     enabled: true
-"#;
+";
 
 const COMPACT: &str = r#"@schema infrastructure@1.0.0
 environment: production
@@ -63,7 +65,7 @@ fn zoo() -> Value {
     rec(vec![
         ("null", Value::Null),
         ("t", Value::Bool(true)),
-        ("big", Value::Int(170141183460469231731687303715884105727)),
+        ("big", Value::Int(170_141_183_460_469_231_731_687_303_715_884_105_727)),
         ("neg", Value::Int(-42)),
         ("f", Value::Float(1.5)),
         ("f2", Value::Float(1e300)),
@@ -173,6 +175,7 @@ fn errors() {
         ("a: $x\n", "template"),
         ("@unknown x\na: 1\n", "unknown directive"),
         ("t[2]{a,b}:\n  1,2\n", "only 1"),
+        ("t[18446744073709551615]{a}:\n  1\n", "only 1"),
         ("t[1]{a,b}:\n  1,2,3\n", "3 cells"),
         ("a: [1, 2\n", "expected"),
         ("a: \"unterminated\n", "control character"),
@@ -236,7 +239,7 @@ fn paths() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "prints a sample document for manual inspection"]
 fn show() {
     println!("{}", to_text(&zoo(), Profile::Human));
 }
@@ -324,14 +327,17 @@ fn large_inputs_parse_in_linear_time() {
     // Regression test for quadratic list-item counting and duplicate-key checks:
     // with those bugs these took minutes; now they take well under a second.
     let start = std::time::Instant::now();
-    let wide: String = (0..30_000).map(|i| format!("key_{i}: {i}\n")).collect();
+    let wide = (0..30_000).fold(String::new(), |mut s, i| {
+        let _ = writeln!(s, "key_{i}: {i}");
+        s
+    });
     let long: String = std::iter::once("items:\n".to_string())
         .chain((0..30_000).map(|i| format!("  - id: x{i}\n    n: {i}\n")))
         .collect();
     let flow = format!("{{{}}}\n", (0..30_000).map(|i| format!("k{i}: {i}")).collect::<Vec<_>>().join(", "));
     for src in [&wide, &long, &flow] {
         let v = parse(src).unwrap();
-        novafile_value::revision(&v);
+        let _ = novafile_value::revision(&v);
         novafile_text::format_preserving(src, Profile::Human).unwrap();
     }
     assert!(start.elapsed() < std::time::Duration::from_secs(20), "took {:?}", start.elapsed());

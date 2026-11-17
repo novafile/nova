@@ -26,6 +26,7 @@ impl std::fmt::Display for DuplicateKey {
 
 impl std::error::Error for DuplicateKey {}
 
+#[expect(clippy::missing_fields_in_debug, reason = "`index` is a lookup cache derived from `entries`")]
 impl std::fmt::Debug for Record {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Record").field("entries", &self.entries).finish()
@@ -33,10 +34,12 @@ impl std::fmt::Debug for Record {
 }
 
 impl Record {
+    #[must_use]
     pub fn new() -> Self {
         Record::default()
     }
 
+    #[must_use]
     pub fn with_capacity(n: usize) -> Self {
         Record {
             entries: Vec::with_capacity(n),
@@ -44,6 +47,11 @@ impl Record {
         }
     }
 
+    /// Build a record from entries in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DuplicateKey`] for the first key that appears twice.
     pub fn from_entries(entries: Vec<(String, Value)>) -> Result<Self, DuplicateKey> {
         let mut r = Record::with_capacity(entries.len());
         for (k, v) in entries {
@@ -52,10 +60,12 @@ impl Record {
         Ok(r)
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -72,20 +82,18 @@ impl Record {
     }
 
     fn push(&mut self, key: String, value: Value) {
-        match &mut self.index {
-            Some(ix) => {
-                ix.insert(key.clone(), self.entries.len());
-                self.entries.push((key, value));
-            }
-            None => {
-                self.entries.push((key, value));
-                if self.entries.len() > INDEX_THRESHOLD {
-                    self.reindex();
-                }
+        if let Some(ix) = &mut self.index {
+            ix.insert(key.clone(), self.entries.len());
+            self.entries.push((key, value));
+        } else {
+            self.entries.push((key, value));
+            if self.entries.len() > INDEX_THRESHOLD {
+                self.reindex();
             }
         }
     }
 
+    #[must_use]
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.position(key).map(|i| &self.entries[i].1)
     }
@@ -94,11 +102,16 @@ impl Record {
         self.position(key).map(move |i| &mut self.entries[i].1)
     }
 
+    #[must_use]
     pub fn contains_key(&self, key: &str) -> bool {
         self.position(key).is_some()
     }
 
     /// Insert a new key; fails if the key already exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DuplicateKey`] if `key` is already present.
     pub fn insert(&mut self, key: impl Into<String>, value: Value) -> Result<(), DuplicateKey> {
         let key = key.into();
         if self.contains_key(&key) {
@@ -111,12 +124,11 @@ impl Record {
     /// Insert or replace; returns the previous value.
     pub fn set(&mut self, key: impl Into<String>, value: Value) -> Option<Value> {
         let key = key.into();
-        match self.position(&key) {
-            Some(i) => Some(std::mem::replace(&mut self.entries[i].1, value)),
-            None => {
-                self.push(key, value);
-                None
-            }
+        if let Some(i) = self.position(&key) {
+            Some(std::mem::replace(&mut self.entries[i].1, value))
+        } else {
+            self.push(key, value);
+            None
         }
     }
 
@@ -148,6 +160,7 @@ impl Record {
         }
     }
 
+    #[must_use]
     pub fn into_entries(self) -> Vec<(String, Value)> {
         self.entries
     }

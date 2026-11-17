@@ -26,17 +26,27 @@ pub use writer::{Profile, canonicalize, document_to_text, flow_string, key_text,
 use novafile_value::Value;
 
 /// Directives allowed in data and template documents (spec §4.2).
+#[must_use]
 pub fn is_data_directive(name: &str) -> bool {
     matches!(name, "nova" | "schema" | "revision" | "scope" | "envelope" | "mode" | "compat")
 }
 
 /// Parse a data or template document.
+///
+/// # Errors
+///
+/// Returns a [`ParseError`] if `src` is not well-formed NOVA.
 pub fn parse_document(src: &str) -> Result<Document, ParseError> {
     Parser::new(src, false).parse_document(&is_data_directive)
 }
 
 /// Parse a data document and return its value. Template documents are
 /// rejected; render them with `novafile-template` instead.
+///
+/// # Errors
+///
+/// Returns a [`ParseError`] if `src` is malformed, is a `@template`
+/// document, or contains template constructs.
 pub fn parse(src: &str) -> Result<Value, ParseError> {
     let doc = parse_document(src)?;
     if doc.is_template() {
@@ -56,6 +66,10 @@ pub fn parse(src: &str) -> Result<Value, ParseError> {
 }
 
 /// Parse a data document and also return the source span of every value.
+///
+/// # Errors
+///
+/// Returns a [`ParseError`] if `src` is not well-formed NOVA.
 pub fn parse_with_spans(src: &str) -> Result<(Document, spans::SpanMap), ParseError> {
     let mut p = Parser::new(src, false).with_spans();
     let doc = p.parse_document(&is_data_directive)?;
@@ -65,6 +79,10 @@ pub fn parse_with_spans(src: &str) -> Result<(Document, spans::SpanMap), ParseEr
 }
 
 /// Parse a single flow value occupying all of `src` (surrounding whitespace allowed).
+///
+/// # Errors
+///
+/// Returns a [`ParseError`] if `src` is not a single well-formed flow value.
 pub fn parse_flow(src: &str) -> Result<Value, ParseError> {
     let mut p = Parser::new(src, false);
     p.skip_ws_multi();
@@ -77,6 +95,7 @@ pub fn parse_flow(src: &str) -> Result<Value, ParseError> {
 }
 
 /// Split a text stream into documents separated by `---` lines (spec §4.11).
+#[must_use]
 pub fn split_stream(src: &str) -> Vec<&str> {
     let mut docs = Vec::new();
     let mut start = 0;

@@ -351,13 +351,13 @@ impl<'s> Plan<'s> {
                 }
                 Some(Def::Enum(vs)) => {
                     let mut names = HashMap::new();
-                    for v in vs.iter() {
+                    for v in vs {
                         if let Some(other) = names.insert(ident(&v.name), &v.name) {
                             return Err(format!("{name}.{}: Protobuf name collides with variant {other}", v.name));
                         }
                     }
                     if vs.iter().any(|v| v.payload.is_some()) {
-                        for v in vs.iter() {
+                        for v in vs {
                             visit(classify_payload(schema, name, v)?, &mut queue, &mut imports);
                         }
                     }
@@ -403,12 +403,13 @@ fn root_message(schema: &Schema) -> Result<Message<'_>, String> {
 }
 
 /// Messages, enums and enum values share the package namespace; reject
-/// collisions (possible after `-` → `_` and SCREAMING_SNAKE conversion).
+/// collisions (possible after `-` → `_` and `SCREAMING_SNAKE` conversion).
 fn check_package_names(defs: &[(&str, &Def)]) -> Result<(), String> {
     let mut seen: HashMap<String, String> = HashMap::new();
-    let mut claim = |proto: String, what: String| match seen.get(&proto) {
-        Some(other) => Err(format!("{what}: Protobuf name {proto} collides with {other}")),
-        None => {
+    let mut claim = |proto: String, what: String| {
+        if let Some(other) = seen.get(&proto) {
+            Err(format!("{what}: Protobuf name {proto} collides with {other}"))
+        } else {
             seen.insert(proto, what);
             Ok(())
         }

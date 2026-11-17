@@ -16,11 +16,13 @@ impl Error {
         }
     }
 
+    #[must_use]
     pub fn message(&self) -> &str {
         &self.message
     }
 
     /// The path as NOVA path syntax, e.g. `services[1].port`.
+    #[must_use]
     pub fn path(&self) -> String {
         let mut s = String::new();
         for seg in &self.path {

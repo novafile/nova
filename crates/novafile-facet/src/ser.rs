@@ -117,7 +117,7 @@ fn nova_kind(p: Peek<'_, '_>) -> Result<Option<Value>, Error> {
     } else if let Ok(r) = p.get::<Rational>() {
         Value::Rational(*r)
     } else if let Ok(d) = p.get::<std::time::Duration>() {
-        Value::Duration(Duration::from_nanos(d.as_nanos() as i128).map_err(Error::new)?)
+        Value::Duration(Duration::from_nanos(d.as_nanos().cast_signed()).map_err(Error::new)?)
     } else {
         return Ok(None);
     }))

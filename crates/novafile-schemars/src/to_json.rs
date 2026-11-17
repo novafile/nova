@@ -19,6 +19,7 @@ const NON_FINITE: &str = "^(NaN|-?inf)$";
 /// and a named schema gets `$id: urn:nova:name@version` and a matching
 /// `title`. Constraints JSON Schema cannot check are kept as `x-nova-*`
 /// annotations so that [`crate::from_json_schema`] restores them.
+#[must_use]
 pub fn to_json_schema(schema: &Schema) -> Json {
     let mut root = Map::new();
     root.insert("$schema".into(), DRAFT_2020_12.into());
@@ -189,7 +190,9 @@ fn int_json(i: i128) -> Json {
     } else if let Ok(v) = u64::try_from(i) {
         v.into()
     } else {
-        (i as f64).into()
+        #[expect(clippy::cast_precision_loss, reason = "beyond 64 bits JSON has only binary64 numbers")]
+        let f = i as f64;
+        f.into()
     }
 }
 
@@ -264,9 +267,8 @@ fn target(schema: &Schema, t: &TypeRef) -> Target {
         (TypeKind::Decimal | TypeKind::Rational, _) => Target::ExactNumber,
         (TypeKind::String, _) => Target::Text(true),
         (TypeKind::Bytes, _) => Target::Text(false),
-        (TypeKind::List(_) | TypeKind::Set(_), _) => Target::Items,
         (TypeKind::Map(k, _), _) if matches!(schema.deref(k).0.kind, TypeKind::String) => Target::ItemsOrProperties,
-        (TypeKind::Map(..), _) => Target::Items,
+        (TypeKind::List(_) | TypeKind::Set(_) | TypeKind::Map(..), _) => Target::Items,
         (_, Some(Def::Record(_))) => Target::Properties,
         _ => Target::Other,
     }
@@ -277,31 +279,31 @@ fn constrain(schema: &Schema, t: &TypeRef, s: &mut Json) {
     if *c == Constraints::default() {
         return;
     }
-    let Json::Object(o) = s else { return };
+    let Json::Object(obj) = s else { return };
     let target = target(schema, t);
     if let Some((lo, hi)) = &c.range {
         match target {
             Target::Int(bounds) => {
                 if let Some(lo) = lo.as_ref().and_then(|n| int_bound(n, true)) {
                     let lo = bounds.map_or(lo, |(klo, _)| lo.max(klo));
-                    o.insert("minimum".into(), int_json(lo));
+                    obj.insert("minimum".into(), int_json(lo));
                 }
                 if let Some(hi) = hi.as_ref().and_then(|n| int_bound(n, false)) {
                     let hi = bounds.map_or(hi, |(_, khi)| hi.min(khi));
-                    o.insert("maximum".into(), int_json(hi));
+                    obj.insert("maximum".into(), int_json(hi));
                 }
             }
             Target::Float => {
                 if let Some(lo) = lo {
-                    o.insert("minimum".into(), num_json(lo));
+                    obj.insert("minimum".into(), num_json(lo));
                 }
                 if let Some(hi) = hi {
-                    o.insert("maximum".into(), num_json(hi));
+                    obj.insert("maximum".into(), num_json(hi));
                 }
             }
             _ => {
-                let b = |n: &Option<Num>| n.as_ref().map(|n| n.to_string()).unwrap_or_default();
-                o.insert("x-nova-range".into(), format!("{}..{}", b(lo), b(hi)).into());
+                let bound = |n: &Option<Num>| n.as_ref().map(std::string::ToString::to_string).unwrap_or_default();
+                obj.insert("x-nova-range".into(), format!("{}..{}", bound(lo), bound(hi)).into());
             }
         }
     }
@@ -314,31 +316,29 @@ fn constrain(schema: &Schema, t: &TypeRef, s: &mut Json) {
             Target::ItemsOrProperties => &[("minProperties", "maxProperties"), ("minItems", "maxItems")],
             _ => &[],
         };
-        match keys {
-            [_, ..] => {
-                for (min, max) in keys {
-                    if let Some(lo) = lo {
-                        o.insert((*min).into(), lo.into());
-                    }
-                    if let Some(hi) = hi {
-                        o.insert((*max).into(), hi.into());
-                    }
+        if let [_, ..] = keys {
+            for (min, max) in keys {
+                if let Some(lo) = lo {
+                    obj.insert((*min).into(), lo.into());
+                }
+                if let Some(hi) = hi {
+                    obj.insert((*max).into(), hi.into());
                 }
             }
-            [] => {
-                let b = |n: Option<u64>| n.map(|n| n.to_string()).unwrap_or_default();
-                let unit = if c.len_unit == LenUnit::Scalars {
-                    String::new()
-                } else {
-                    format!(", {}", c.len_unit.name())
-                };
-                o.insert("x-nova-len".into(), format!("{}..{}{unit}", b(lo), b(hi)).into());
-            }
+        } else {
+            let bound = |n: Option<u64>| n.map(|n| n.to_string()).unwrap_or_default();
+            let unit = if c.len_unit == LenUnit::Scalars {
+                String::new()
+            } else {
+                format!(", {}", c.len_unit.name())
+            };
+            obj.insert("x-nova-len".into(), format!("{}..{}{unit}", bound(lo), bound(hi)).into());
         }
     }
 }
 
 /// The tightest integer bound implied by an exact numeric bound.
+#[expect(clippy::cast_possible_truncation, reason = "float-to-int `as` saturates, clamping out-of-range bounds")]
 fn int_bound(n: &Num, lower: bool) -> Option<i128> {
     match &n.0 {
         Value::Int(i) => Some(*i),
@@ -359,7 +359,7 @@ fn int_bound(n: &Num, lower: bool) -> Option<i128> {
 fn num_json(n: &Num) -> Json {
     match &n.0 {
         Value::Int(i) => int_json(*i),
-        Value::Decimal(d) => d.to_i128().map(int_json).unwrap_or_else(|| d.to_f64().into()),
+        Value::Decimal(d) => d.to_i128().map_or_else(|| d.to_f64().into(), int_json),
         Value::Rational(r) => r.to_f64().into(),
         Value::Float(f) => (*f).into(),
         _ => Json::Null,

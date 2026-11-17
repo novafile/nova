@@ -38,23 +38,27 @@ impl SourceDiagnostic {
         }
     }
 
+    #[must_use]
     pub fn with_label(mut self, offset: usize, len: usize, label: impl Into<String>) -> Self {
         self.labels.push((offset, len, label.into()));
         self
     }
 
+    #[must_use]
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
         self
     }
 
     /// Label the token starting at `offset`.
+    #[must_use]
     pub fn with_point(self, offset: usize, label: impl Into<String>) -> Self {
         let len = token_len(self.src.inner(), offset);
         self.with_label(offset, len, label)
     }
 
     /// Label a 1-based line/column position (e.g. from a patch or schema error).
+    #[must_use]
     pub fn with_line_col(self, line: usize, col: usize, label: impl Into<String>) -> Self {
         let off = offset_of(self.src.inner(), line, col);
         self.with_point(off, label)
@@ -91,7 +95,7 @@ fn token_len(src: &str, offset: usize) -> usize {
     let rest = src.get(offset..).unwrap_or("");
     let n = rest.find(|c: char| c.is_whitespace() || ",[]{}()".contains(c)).unwrap_or(rest.len());
     let n = if n == 0 {
-        rest.chars().next().map(|c| if c == '\n' { 0 } else { c.len_utf8() }).unwrap_or(0)
+        rest.chars().next().map_or(0, |c| if c == '\n' { 0 } else { c.len_utf8() })
     } else {
         n
     };
@@ -107,7 +111,7 @@ fn offset_of(src: &str, line: usize, col: usize) -> usize {
         }
     }
     let line_text = &src[start..];
-    start + line_text.char_indices().nth(col.saturating_sub(1)).map(|(i, _)| i).unwrap_or(line_text.len())
+    start + line_text.char_indices().nth(col.saturating_sub(1)).map_or(line_text.len(), |(i, _)| i)
 }
 
 impl fmt::Display for SourceDiagnostic {
@@ -148,6 +152,7 @@ impl Diagnostic for SourceDiagnostic {
 impl ParseError {
     /// Attach source code. Messages of the form `problem; advice` are split
     /// into the message and a help line.
+    #[must_use]
     pub fn to_diagnostic(&self, name: &str, src: &str) -> SourceDiagnostic {
         let (msg, help) = match self.message.split_once("; ") {
             Some((m, h)) => (m.to_owned(), Some(h.to_owned())),

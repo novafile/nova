@@ -1,6 +1,6 @@
 //! Schema language parser (spec §6.1).
 
-use crate::model::*;
+use crate::model::{Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
 use novafile_text::Parser;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -217,6 +217,12 @@ impl<'a> TyParser<'a> {
     }
 }
 
+/// Parse a standalone type expression such as `list<int> @len(..8)`.
+///
+/// # Errors
+///
+/// Fails if `s` is not a valid type expression, carries a field-only
+/// attribute, or has trailing input.
 pub fn parse_type(s: &str) -> Result<TypeRef, String> {
     let mut p = TyParser::new(s);
     let mut t = p.ty()?;
@@ -247,6 +253,14 @@ fn strip_comment(line: &str) -> &str {
     line
 }
 
+/// Parse NOVA schema text (spec §6).
+///
+/// # Errors
+///
+/// Fails, with the offending line, on any syntax error, duplicate or invalid
+/// name, duplicate field id, unknown reference, alias cycle or invalid
+/// default.
+#[expect(clippy::too_many_lines, reason = "one linear pass over the schema's line-oriented grammar")]
 pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
     let mut schema = Schema::default();
     let lines: Vec<&str> = src.lines().collect();
@@ -346,7 +360,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
             }
             push_def(&mut schema, name, Def::Record(RecordDef { fields, open })).map_err(|m| err(start, m))?;
         } else {
-            return Err(err(i, format!("expected `record`, `enum`, `type`, `@schema` or `@root`, found {:?}", raw)));
+            return Err(err(i, format!("expected `record`, `enum`, `type`, `@schema` or `@root`, found {raw:?}")));
         }
     }
     check_refs(&schema).map_err(|m| SchemaError { line: 0, message: m })?;

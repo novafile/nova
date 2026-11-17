@@ -1,6 +1,6 @@
 //! Recursive-descent parser for NOVA text (spec §4) and templates (spec §9).
 
-use crate::ast::*;
+use crate::ast::{Cond, Directive, Document, Entry, ForHead, Import, Item, Key, Let, Node, Param, Part, TemplateHeader};
 use crate::path::{Path, Segment, is_ident_char, is_ident_start};
 use crate::spans::{Span, SpanKind};
 use base64::Engine;
@@ -162,6 +162,7 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    #[must_use]
     pub fn new(src: &'a str, template: bool) -> Self {
         Parser {
             src,
@@ -178,6 +179,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Record the source span of every value (see [`crate::spans`]).
+    #[must_use]
     pub fn with_spans(mut self) -> Self {
         self.spans = Some(Vec::new());
         self
@@ -191,7 +193,7 @@ impl<'a> Parser<'a> {
     /// sorted and de-duplicated.
     pub fn take_comments(&mut self) -> Vec<(usize, usize)> {
         let mut c = std::mem::take(&mut self.comments);
-        c.sort();
+        c.sort_unstable();
         c.dedup();
         c
     }
@@ -232,7 +234,7 @@ impl<'a> Parser<'a> {
         let pos = pos.min(self.src.len());
         let before = &self.src[..pos];
         let line = before.matches('\n').count() + 1;
-        let col = before.rsplit('\n').next().map(|l| l.chars().count()).unwrap_or(0) + 1;
+        let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
         ParseError {
             line,
             col,
@@ -257,16 +259,18 @@ impl<'a> Parser<'a> {
         self.src[self.pos..].starts_with(s)
     }
 
+    #[must_use]
     pub fn peek_byte(&self) -> Option<u8> {
         self.peek()
     }
 
+    #[must_use]
     pub fn at_eof(&self) -> bool {
         self.pos >= self.b.len()
     }
 
     fn at_eol(&self) -> bool {
-        matches!(self.peek(), None | Some(b'\n') | Some(b'\r'))
+        matches!(self.peek(), None | Some(b'\n' | b'\r'))
     }
 
     fn at_eol_or_comment(&self) -> bool {
@@ -291,6 +295,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Consume optional trailing whitespace/comment and the line break.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParseError`] if anything other than whitespace or a comment
+    /// precedes the line break.
     pub fn end_line(&mut self) -> R<()> {
         self.skip_inline_ws();
         if self.peek() == Some(b'#') {
@@ -375,9 +384,8 @@ impl<'a> Parser<'a> {
         let mut buf = String::new();
         loop {
             let rest = &self.src[self.pos..];
-            let c = match rest.chars().next() {
-                None => return Err(self.error_at(start, "unterminated string")),
-                Some(c) => c,
+            let Some(c) = rest.chars().next() else {
+                return Err(self.error_at(start, "unterminated string"));
             };
             match c {
                 '"' => {
@@ -479,6 +487,11 @@ impl<'a> Parser<'a> {
         char::from_u32(hi).ok_or_else(|| self.error_at(self.pos, "invalid \\u escape"))
     }
 
+    /// Parse a quoted string literal (no interpolation) at the cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParseError`] if the cursor is not at a well-formed string literal.
     pub fn parse_quoted_literal(&mut self) -> R<String> {
         match self.parse_quoted_parts(false)?.pop() {
             Some(Part::Text(s)) => Ok(s),
@@ -502,12 +515,22 @@ impl<'a> Parser<'a> {
     // ------------------------------------------------------------------
 
     /// Parse a flow value and convert it to a value (no template constructs).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParseError`] if the flow value is malformed or contains a
+    /// template construct.
     pub fn parse_flow_value(&mut self) -> R<Value> {
         let start = self.pos;
         let n = self.parse_flow()?;
         n.to_value().map_err(|m| self.error_at(start, m))
     }
 
+    /// Parse a flow value (possibly containing template constructs) at the cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParseError`] if the value is malformed or nested too deeply.
     pub fn parse_flow(&mut self) -> R<Node> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
@@ -537,7 +560,7 @@ impl<'a> Parser<'a> {
                 p.pos += 1;
                 p.flow_tuple()
             }),
-            Some(b'@') => self.bracketed(|p| p.typed()),
+            Some(b'@') => self.bracketed(Parser::typed),
             Some(b'!') => self.variant_flow(),
             Some(b'$') => self.reference(),
             _ => self.word(),
@@ -556,11 +579,11 @@ impl<'a> Parser<'a> {
         self.bracket_depth -= 1;
         let node = r?;
         if outer {
-            let ls = self.src[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let ls = self.src[..start].rfind('\n').map_or(0, |i| i + 1);
             let base = self.src[ls..].bytes().take_while(|&c| c == b' ').count();
             let mut off = self.src[start..self.pos].find('\n').map(|i| start + i + 1);
             while let Some(line) = off.filter(|&o| o < self.pos) {
-                let end = self.src[line..].find('\n').map(|i| line + i).unwrap_or(self.src.len());
+                let end = self.src[line..].find('\n').map_or(self.src.len(), |i| line + i);
                 let text = &self.src[line..end];
                 let ind = text.bytes().take_while(|&c| c == b' ').count();
                 let first = text.trim_start().as_bytes().first().copied();
@@ -604,8 +627,9 @@ impl<'a> Parser<'a> {
                 self.pos += 3;
                 items.push(Item::Spread(self.parse_flow()?));
             } else {
+                #[expect(clippy::cast_possible_wrap, reason = "in-memory indices/lengths are at most isize::MAX, which fits in i64")]
                 let (i, start) = (items.len() as i64, self.pos);
-                let n = self.spanned(SpanKind::FlowItem, Segment::Index(i), start, None, |p| p.parse_flow())?;
+                let n = self.spanned(SpanKind::FlowItem, Segment::Index(i), start, None, Parser::parse_flow)?;
                 items.push(Item::Node(n));
             }
             self.skip_ws_multi();
@@ -659,7 +683,7 @@ impl<'a> Parser<'a> {
                 self.skip_ws_multi();
                 self.expect(b':', "`:` after key")?;
                 self.skip_ws_multi();
-                let v = self.spanned(SpanKind::FlowEntry, seg_of(&k), kpos, Some((kpos, kend)), |p| p.parse_flow())?;
+                let v = self.spanned(SpanKind::FlowEntry, seg_of(&k), kpos, Some((kpos, kend)), Parser::parse_flow)?;
                 self.push_entry(&mut entries, &mut seen, k, v, kpos)?;
             }
             self.skip_ws_multi();
@@ -694,8 +718,9 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 break;
             }
+            #[expect(clippy::cast_possible_wrap, reason = "in-memory indices/lengths are at most isize::MAX, which fits in i64")]
             let (i, start) = (items.len() as i64, self.pos);
-            items.push(self.spanned(SpanKind::FlowItem, Segment::Index(i), start, None, |p| p.parse_flow())?);
+            items.push(self.spanned(SpanKind::FlowItem, Segment::Index(i), start, None, Parser::parse_flow)?);
             self.skip_ws_multi();
             match self.peek() {
                 Some(b',') => {
@@ -843,7 +868,7 @@ impl<'a> Parser<'a> {
             _ => return false,
         }
         if b.get(p) == Some(&b'[') && b.get(p + 1).is_some_and(u8::is_ascii_digit) {
-            while !matches!(b.get(p), None | Some(b'\n') | Some(b'}')) {
+            while !matches!(b.get(p), None | Some(b'\n' | b'}')) {
                 p += 1;
             }
             if b.get(p) == Some(&b'}') {
@@ -1078,7 +1103,7 @@ impl<'a> Parser<'a> {
 
     fn plain_scalar(&mut self) -> R<Node> {
         let start = self.pos;
-        let line_end = self.src[start..].find('\n').map(|i| start + i).unwrap_or(self.src.len());
+        let line_end = self.src[start..].find('\n').map_or(self.src.len(), |i| start + i);
         let line = &self.src[start..line_end];
         // A comment starts at `#` preceded by whitespace.
         let mut cut = line.len();
@@ -1131,7 +1156,7 @@ impl<'a> Parser<'a> {
         let indent = parent + 2;
         let mut lines: Vec<&str> = Vec::new();
         while !self.at_eof() {
-            let end = self.src[self.pos..].find('\n').map(|i| self.pos + i).unwrap_or(self.src.len());
+            let end = self.src[self.pos..].find('\n').map_or(self.src.len(), |i| self.pos + i);
             let raw = self.src[self.pos..end].strip_suffix('\r').unwrap_or(&self.src[self.pos..end]);
             let spaces = raw.bytes().take_while(|&c| c == b' ').count();
             if spaces == raw.len() {
@@ -1233,7 +1258,8 @@ impl<'a> Parser<'a> {
     }
 
     fn table_rows(&mut self, indent: usize, n: usize, fields: &[String]) -> R<Node> {
-        let mut rows = Vec::with_capacity(n);
+        // `n` is untrusted; each row takes at least one source byte, so cap the hint.
+        let mut rows = Vec::with_capacity(n.min(self.src.len()));
         for r in 0..n {
             self.skip_blank_lines();
             match self.line_indent()? {
@@ -1241,6 +1267,10 @@ impl<'a> Parser<'a> {
                 _ => return self.err(format!("table declares {n} rows but only {r} were found (rows are indented {indent} spaces)")),
             }
             let row_start = self.pos;
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "`r` counts rows already parsed from the source, so it is far below i64::MAX"
+            )]
             self.cur.push(Segment::Index(r as i64));
             let mut cells: Vec<Option<Node>> = Vec::new();
             loop {
@@ -1258,7 +1288,13 @@ impl<'a> Parser<'a> {
                 }
                 let field = fields.get(cells.len()).cloned().unwrap_or_default();
                 let start = self.pos;
-                cells.push(Some(self.spanned(SpanKind::TableCell, Segment::Field(field), start, None, |p| p.parse_flow())?));
+                cells.push(Some(self.spanned(
+                    SpanKind::TableCell,
+                    Segment::Field(field),
+                    start,
+                    None,
+                    Parser::parse_flow,
+                )?));
                 self.skip_inline_ws();
                 match self.peek() {
                     Some(b',') => self.pos += 1,
@@ -1470,7 +1506,7 @@ impl<'a> Parser<'a> {
 
     fn rest_of_line_arg(&mut self) -> String {
         let start = self.pos;
-        let end = self.src[start..].find('\n').map(|i| start + i).unwrap_or(self.src.len());
+        let end = self.src[start..].find('\n').map_or(self.src.len(), |i| start + i);
         let line = &self.src[start..end];
         let lb = line.as_bytes();
         let mut cut = line.len();
@@ -1487,6 +1523,13 @@ impl<'a> Parser<'a> {
         line[..cut].trim().to_owned()
     }
 
+    /// Parse a whole document; `allowed` decides which `@directives` are accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParseError`] if the document is malformed or uses a directive
+    /// `allowed` rejects.
+    #[expect(clippy::too_many_lines, reason = "linear directive/body dispatch; splitting would obscure it")]
     pub fn parse_document(&mut self, allowed: &dyn Fn(&str) -> bool) -> R<Document> {
         if self.starts_with("\u{feff}") {
             self.pos += 3;
@@ -1538,7 +1581,7 @@ impl<'a> Parser<'a> {
                             }
                             self.expect(b':', "`:` after parameter name")?;
                             let s = self.pos;
-                            let end = self.src[s..].find('\n').map(|i| s + i).unwrap_or(self.src.len());
+                            let end = self.src[s..].find('\n').map_or(self.src.len(), |i| s + i);
                             let line = &self.src[s..end];
                             let ty_end = line.find(" =").or_else(|| line.find(" #")).unwrap_or(line.len());
                             let ty = line[..ty_end].trim().to_owned();

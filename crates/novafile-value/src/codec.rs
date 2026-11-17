@@ -4,6 +4,7 @@ use crate::{Decimal, Duration, Rational, Record, Timestamp, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::fmt::Write as _;
 
 pub(crate) mod tag {
     pub const NULL: u8 = 0x00;
@@ -57,12 +58,11 @@ fn table_shape(items: &[Value]) -> Option<Vec<&str>> {
         }
         let mut last: Option<usize> = None;
         for k in r.keys() {
-            let idx = match fields.iter().position(|f| f == k) {
-                Some(i) => i,
-                None => {
-                    fields.push(k);
-                    fields.len() - 1
-                }
+            let idx = if let Some(i) = fields.iter().position(|f| f == k) {
+                i
+            } else {
+                fields.push(k);
+                fields.len() - 1
             };
             // A record whose key order disagrees with the shared order would be reordered.
             if last.is_some_and(|l| idx < l) {
@@ -96,12 +96,13 @@ fn varint_len(mut v: u128) -> usize {
     n
 }
 
+// Zigzag maps by bit reinterpretation: every i128 has exactly one u128 image.
 fn zigzag(v: i128) -> u128 {
-    ((v << 1) ^ (v >> 127)) as u128
+    ((v << 1) ^ (v >> 127)).cast_unsigned()
 }
 
 fn unzigzag(v: u128) -> i128 {
-    ((v >> 1) as i128) ^ -((v & 1) as i128)
+    (v >> 1).cast_signed() ^ -(v & 1).cast_signed()
 }
 
 struct Encoder {
@@ -133,12 +134,13 @@ impl Encoder {
         self.next_index += 1;
     }
 
-    fn sorted_children<'a, I: Iterator<Item = &'a Value>>(&mut self, items: I) -> Vec<Vec<u8>> {
+    fn sorted_children<'a, I: Iterator<Item = &'a Value>>(items: I) -> Vec<Vec<u8>> {
         let mut parts: Vec<Vec<u8>> = items.map(canonical_bytes).collect();
         parts.sort();
         parts
     }
 
+    #[expect(clippy::too_many_lines, reason = "flat dispatcher over every Value variant")]
     fn value(&mut self, out: &mut Vec<u8>, v: &Value) {
         match v {
             Value::Null => out.push(tag::NULL),
@@ -156,12 +158,12 @@ impl Encoder {
             Value::Decimal(d) => {
                 out.push(tag::DECIMAL);
                 put_varint(out, zigzag(d.coefficient()));
-                put_varint(out, zigzag(d.exponent() as i128));
+                put_varint(out, zigzag(i128::from(d.exponent())));
             }
             Value::Rational(r) => {
                 out.push(tag::RATIONAL);
                 put_varint(out, zigzag(r.numerator()));
-                put_varint(out, r.denominator() as u128);
+                put_varint(out, r.denominator().unsigned_abs());
             }
             Value::String(s) => {
                 out.push(tag::STRING);
@@ -174,8 +176,8 @@ impl Encoder {
             }
             Value::Timestamp(t) => {
                 out.push(tag::TIMESTAMP);
-                put_varint(out, zigzag(t.unix_seconds() as i128));
-                put_varint(out, t.subsec_nanos() as u128);
+                put_varint(out, zigzag(i128::from(t.unix_seconds())));
+                put_varint(out, u128::from(t.subsec_nanos()));
             }
             Value::Duration(d) => {
                 out.push(tag::DURATION);
@@ -190,7 +192,7 @@ impl Encoder {
                     self.string(out, f);
                 }
                 let dense = items.iter().all(|r| matches!(r, Value::Record(r) if r.len() == fields.len()));
-                out.push(if dense { 0 } else { 1 });
+                out.push(u8::from(!dense));
                 for row in items {
                     let Value::Record(r) = row else { unreachable!() };
                     if !dense {
@@ -212,17 +214,21 @@ impl Encoder {
             Value::List(items) | Value::Tuple(items) => {
                 out.push(if matches!(v, Value::List(_)) { tag::LIST } else { tag::TUPLE });
                 put_varint(out, items.len() as u128);
-                items.iter().for_each(|i| self.value(out, i));
+                for i in items {
+                    self.value(out, i);
+                }
             }
             Value::Set(items) => {
                 out.push(tag::SET);
                 put_varint(out, items.len() as u128);
                 if self.opts.canonical {
-                    for p in self.sorted_children(items.iter()) {
+                    for p in Self::sorted_children(items.iter()) {
                         out.extend_from_slice(&p);
                     }
                 } else {
-                    items.iter().for_each(|i| self.value(out, i));
+                    for i in items {
+                        self.value(out, i);
+                    }
                 }
             }
             Value::Record(r) => {
@@ -273,6 +279,7 @@ impl Encoder {
 }
 
 /// Encode a value with the given options.
+#[must_use]
 pub fn encode(v: &Value, opts: EncodeOptions) -> Vec<u8> {
     let mut enc = Encoder {
         opts,
@@ -285,6 +292,7 @@ pub fn encode(v: &Value, opts: EncodeOptions) -> Vec<u8> {
 }
 
 /// The canonical encoding (spec §5.2): the basis of equality, ordering and revisions.
+#[must_use]
 pub fn canonical_bytes(v: &Value) -> Vec<u8> {
     encode(
         v,
@@ -367,7 +375,7 @@ impl<'a> Decoder<'a> {
             if shift >= 126 && (b & 0x7F) > 0x03 {
                 return self.err("varint overflow");
             }
-            v |= ((b & 0x7F) as u128) << shift;
+            v |= u128::from(b & 0x7F) << shift;
             if b & 0x80 == 0 {
                 if b == 0 && shift > 0 {
                     return self.err("non-minimal varint");
@@ -414,13 +422,14 @@ impl<'a> Decoder<'a> {
         Ok(s)
     }
 
+    #[expect(clippy::too_many_lines, reason = "flat dispatcher over every wire tag")]
     fn value(&mut self) -> Result<Value, DecodeError> {
         let start = self.pos;
-        let t = self.byte()?;
-        if self.depth >= self.limits.max_depth && matches!(t, tag::LIST..=tag::MAP | tag::VARIANT) {
+        let kind = self.byte()?;
+        if self.depth >= self.limits.max_depth && matches!(kind, tag::LIST..=tag::MAP | tag::VARIANT) {
             return self.err("nesting depth limit exceeded");
         }
-        Ok(match t {
+        Ok(match kind {
             tag::NULL => Value::Null,
             tag::FALSE => Value::Bool(false),
             tag::TRUE => Value::Bool(true),
@@ -430,25 +439,24 @@ impl<'a> Decoder<'a> {
                 Value::Float(f64::from_bits(u64::from_be_bytes(b.try_into().unwrap())))
             }
             tag::DECIMAL => {
-                let c = unzigzag(self.varint()?);
-                let e = unzigzag(self.varint()?);
-                if e < i32::MIN as i128 || e > i32::MAX as i128 {
+                let coeff = unzigzag(self.varint()?);
+                let Ok(exp) = i32::try_from(unzigzag(self.varint()?)) else {
                     return self.err("decimal exponent out of range");
-                }
-                let d = Decimal::new(c, e as i32);
-                if d.coefficient() != c || d.exponent() as i128 != e {
+                };
+                let d = Decimal::new(coeff, exp);
+                if d.coefficient() != coeff || d.exponent() != exp {
                     return self.err("decimal is not normalized");
                 }
                 Value::Decimal(d)
             }
             tag::RATIONAL => {
-                let n = unzigzag(self.varint()?);
-                let d = self.varint()?;
-                if d == 0 || d > i128::MAX as u128 {
-                    return self.err("invalid rational denominator");
-                }
-                match Rational::new(n, d as i128) {
-                    Ok(r) if r.numerator() == n && r.denominator() as u128 == d => Value::Rational(r),
+                let num = unzigzag(self.varint()?);
+                let den = match i128::try_from(self.varint()?) {
+                    Ok(den) if den != 0 => den,
+                    _ => return self.err("invalid rational denominator"),
+                };
+                match Rational::new(num, den) {
+                    Ok(r) if r.numerator() == num && r.denominator() == den => Value::Rational(r),
                     Ok(_) => return self.err("rational is not normalized"),
                     Err(e) => return self.err(e),
                 }
@@ -459,12 +467,12 @@ impl<'a> Decoder<'a> {
                 Value::Bytes(self.take(n)?.to_vec())
             }
             tag::TIMESTAMP => {
-                let s = unzigzag(self.varint()?);
-                let n = self.varint()?;
-                if s < i64::MIN as i128 || s > i64::MAX as i128 || n > u32::MAX as u128 {
+                let secs = i64::try_from(unzigzag(self.varint()?));
+                let nanos = u32::try_from(self.varint()?);
+                let (Ok(secs), Ok(nanos)) = (secs, nanos) else {
                     return self.err("timestamp out of range");
-                }
-                match Timestamp::new(s as i64, n as u32) {
+                };
+                match Timestamp::new(secs, nanos) {
                     Ok(t) => Value::Timestamp(t),
                     Err(e) => return self.err(e),
                 }
@@ -480,7 +488,7 @@ impl<'a> Decoder<'a> {
                 let mut seen = HashSet::new();
                 for _ in 0..n {
                     let v = self.value()?;
-                    if t == tag::SET && !seen.insert(canonical_bytes(&v)) {
+                    if kind == tag::SET && !seen.insert(canonical_bytes(&v)) {
                         return Err(DecodeError {
                             offset: start,
                             message: "duplicate set element".into(),
@@ -489,7 +497,7 @@ impl<'a> Decoder<'a> {
                     items.push(v);
                 }
                 self.depth -= 1;
-                match t {
+                match kind {
                     tag::LIST => Value::List(items),
                     tag::TUPLE => Value::Tuple(items),
                     _ => Value::Set(items),
@@ -593,6 +601,11 @@ impl<'a> Decoder<'a> {
 }
 
 /// Decode one value from the start of `buf`; returns the value and bytes consumed.
+///
+/// # Errors
+///
+/// Returns a [`DecodeError`] if the input is truncated or malformed, a value
+/// is out of range or not normalized, or a [`Limits`] bound is exceeded.
 pub fn decode_prefix(buf: &[u8], limits: Limits) -> Result<(Value, usize), DecodeError> {
     let mut d = Decoder {
         buf,
@@ -606,6 +619,11 @@ pub fn decode_prefix(buf: &[u8], limits: Limits) -> Result<(Value, usize), Decod
 }
 
 /// Decode exactly one value occupying all of `buf`.
+///
+/// # Errors
+///
+/// As [`decode_prefix`] with default limits; also fails if bytes remain after
+/// the value.
 pub fn decode(buf: &[u8]) -> Result<Value, DecodeError> {
     let (v, n) = decode_prefix(buf, Limits::default())?;
     if n != buf.len() {
@@ -622,12 +640,17 @@ pub fn decode(buf: &[u8]) -> Result<Value, DecodeError> {
 pub struct Revision(pub [u8; 32]);
 
 impl Revision {
+    #[must_use]
     pub fn hex(&self) -> String {
-        self.0.iter().map(|b| format!("{b:02x}")).collect()
+        self.0.iter().fold(String::with_capacity(64), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
     }
 
     /// Does `text` (`sha256:<hex>`, possibly abbreviated to ≥ 8 hex digits)
     /// identify this revision?
+    #[must_use]
     pub fn matches(&self, text: &str) -> bool {
         let h = text.strip_prefix("sha256:").unwrap_or(text).to_ascii_lowercase();
         h.len() >= 8 && h.len() <= 64 && h.bytes().all(|c| c.is_ascii_hexdigit()) && self.hex().starts_with(&h)
@@ -646,6 +669,7 @@ impl fmt::Debug for Revision {
     }
 }
 
+#[must_use]
 pub fn revision(v: &Value) -> Revision {
     Revision(Sha256::digest(canonical_bytes(v)).into())
 }

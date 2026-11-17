@@ -90,21 +90,39 @@ use facet::Facet;
 use novafile_value::Value;
 
 /// Convert any `Facet` type into a NOVA value.
+///
+/// # Errors
+///
+/// Fails if `v` holds something NOVA cannot represent: an unsupported type,
+/// a `u128` or `std::time::Duration` beyond NOVA's range, or colliding keys.
 pub fn to_value<'a, T: ?Sized + Facet<'a>>(v: &T) -> Result<Value, Error> {
     ser::value(facet_reflect::Peek::new(v))
 }
 
 /// Build a `Facet` type from a NOVA value.
+///
+/// # Errors
+///
+/// Fails if the value does not fit the shape of `T`: a wrong kind, an
+/// out-of-range number, an unknown variant, or a missing field.
 pub fn from_value<T: Facet<'static>>(v: Value) -> Result<T, Error> {
     de::build(v)
 }
 
 /// Serialize to human text.
+///
+/// # Errors
+///
+/// Fails if [`to_value`] does.
 pub fn to_string<'a, T: ?Sized + Facet<'a>>(v: &T) -> Result<String, Error> {
     to_string_with(v, Profile::Human)
 }
 
 /// Serialize to text in the given profile (human, compact, canonical).
+///
+/// # Errors
+///
+/// Fails if [`to_value`] does.
 pub fn to_string_with<'a, T: ?Sized + Facet<'a>>(v: &T, profile: Profile) -> Result<String, Error> {
     Ok(novafile_text::to_text(&to_value(v)?, profile))
 }
@@ -114,21 +132,34 @@ pub fn to_string_with<'a, T: ?Sized + Facet<'a>>(v: &T, profile: Profile) -> Res
 /// The Rust type acts as a schema: a string such as `2026-11-17T16:00:00Z`
 /// deserializes into a [`novafile_value::Timestamp`] field, a string naming a
 /// unit variant into an enum, and so on.
+///
+/// # Errors
+///
+/// Fails if `s` is not valid NOVA text or if [`from_value`] fails.
 pub fn from_str<T: Facet<'static>>(s: &str) -> Result<T, Error> {
     let v = novafile_text::parse(s).map_err(|e| Error::new(e.to_string()))?;
     from_value(v)
 }
 
 /// Deserialize after resolving the document against a NOVA schema (spec §6.3).
+///
+/// # Errors
+///
+/// Fails if `s` is not valid NOVA text, does not conform to `schema`
+/// (all issues are joined into one message), or if [`from_value`] fails.
 pub fn from_str_with_schema<T: Facet<'static>>(s: &str, schema: &novafile_schema::Schema) -> Result<T, Error> {
     let v = novafile_text::parse(s).map_err(|e| Error::new(e.to_string()))?;
     let v = schema
         .resolve(&v)
-        .map_err(|issues| Error::new(issues.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("; ")))?;
+        .map_err(|issues| Error::new(issues.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")))?;
     from_value(v)
 }
 
 /// Serialize to a binary frame (spec §5.4).
+///
+/// # Errors
+///
+/// Fails if [`to_value`] does.
 pub fn to_vec<'a, T: ?Sized + Facet<'a>>(v: &T) -> Result<Vec<u8>, Error> {
     let frame = novafile_binary::Frame {
         schema: None,
@@ -138,6 +169,11 @@ pub fn to_vec<'a, T: ?Sized + Facet<'a>>(v: &T) -> Result<Vec<u8>, Error> {
 }
 
 /// Deserialize from a binary frame.
+///
+/// # Errors
+///
+/// Fails if `b` is not a valid frame, has trailing bytes, or if
+/// [`from_value`] fails.
 pub fn from_slice<T: Facet<'static>>(b: &[u8]) -> Result<T, Error> {
     let (frame, n) = novafile_binary::decode_frame(b).map_err(|e| Error::new(e.to_string()))?;
     if n != b.len() {

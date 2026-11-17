@@ -16,3 +16,6 @@ novafile-text.workspace = true
 base64.workspace = true
 unicode-segmentation.workspace = true
 novafile-derive = { workspace = true, optional = true }
+
+[lints]
+workspace = true

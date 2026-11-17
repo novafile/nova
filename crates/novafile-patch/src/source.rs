@@ -27,6 +27,11 @@ pub struct SourceEdit {
 }
 
 /// Apply `patch` to the document text `src`.
+///
+/// # Errors
+///
+/// Returns a [`PatchError`] if `src` is malformed or a `@template` source, or if
+/// [`apply`] rejects the patch.
 pub fn apply_to_source(src: &str, patch: &Patch, validate: &dyn Fn(&Value) -> Result<(), Vec<String>>) -> Result<SourceEdit, PatchError> {
     let syntax = |e: novafile_text::ParseError| PatchError::Syntax {
         line: e.line,
@@ -48,12 +53,11 @@ pub fn apply_to_source(src: &str, patch: &Patch, validate: &dyn Fn(&Value) -> Re
         if apply_op(&mut next, &full, &op.kind).is_err() {
             break; // cannot happen: `apply` succeeded on the same sequence
         }
-        match edit(&text, &cur, &next, &full, &op.kind) {
-            Some(t) => text = t,
-            None => {
-                text = String::new();
-                break;
-            }
+        if let Some(t) = edit(&text, &cur, &next, &full, &op.kind) {
+            text = t;
+        } else {
+            text = String::new();
+            break;
         }
         cur = next;
     }
@@ -70,21 +74,20 @@ fn concretize(root: &Value, path: &Path) -> Option<Path> {
     let mut out = Vec::new();
     for seg in &path.0 {
         let (seg, next) = match (seg, cur) {
-            (Segment::Field(f), Value::Record(r)) => (Segment::Field(f.clone()), r.get(f)?),
-            (Segment::Key(Value::String(f)), Value::Record(r)) => (Segment::Field(f.clone()), r.get(f)?),
+            (Segment::Field(f) | Segment::Key(Value::String(f)), Value::Record(r)) => (Segment::Field(f.clone()), r.get(f)?),
             (Segment::Index(i), Value::List(l) | Value::Tuple(l)) => {
                 let i = resolve_index(*i, l.len())?;
-                (Segment::Index(i as i64), &l[i])
+                (Segment::Index(i64::try_from(i).ok()?), &l[i])
             }
             (Segment::Match(f, v), Value::List(l)) => {
                 let idx = match_indices(l, f, v);
                 (idx.len() == 1).then_some(())?;
-                (Segment::Index(idx[0] as i64), &l[idx[0]])
+                (Segment::Index(i64::try_from(idx[0]).ok()?), &l[idx[0]])
             }
             (Segment::Key(k), Value::List(l)) => {
                 let idx: Vec<usize> = l.iter().enumerate().filter(|(_, e)| *e == k).map(|(i, _)| i).collect();
                 (idx.len() == 1).then_some(())?;
-                (Segment::Index(idx[0] as i64), &l[idx[0]])
+                (Segment::Index(i64::try_from(idx[0]).ok()?), &l[idx[0]])
             }
             _ => return None, // maps, sets: their entries have no own spans
         };
@@ -95,11 +98,11 @@ fn concretize(root: &Value, path: &Path) -> Option<Path> {
 }
 
 fn line_start(t: &str, at: usize) -> usize {
-    t[..at].rfind('\n').map(|i| i + 1).unwrap_or(0)
+    t[..at].rfind('\n').map_or(0, |i| i + 1)
 }
 
 fn line_end(t: &str, at: usize) -> usize {
-    t[at..].find('\n').map(|i| at + i).unwrap_or(t.len())
+    t[at..].find('\n').map_or(t.len(), |i| at + i)
 }
 
 fn splice(t: &str, a: usize, b: usize, with: &str) -> String {
@@ -179,7 +182,7 @@ fn edit(text: &str, cur: &Value, next: &Value, path: &Path, kind: &OpKind) -> Op
             // Sets, maps, other containers: re-render the container.
             _ => replace_at(text, &spans, &cparent, cparent.get(next).ok()?),
         },
-        _ => None,
+        OpKind::Replace { .. } => None,
     }
 }
 
@@ -195,13 +198,12 @@ fn replace_at(text: &str, spans: &SpanMap, path: &Path, new: &Value) -> Option<S
             let same_line = !text[s.start..vs].contains('\n');
             let old_inline = same_line && !text[vs..s.end].contains('\n') && !text[vs..].starts_with('|');
             let used = vs - line_start(text, vs);
-            match (old_inline, inline_value(new, used)) {
-                (true, Some(inline)) => Some(splice(text, vs, s.end, &inline)),
-                _ => {
-                    let (parent, seg) = s.path.parent()?;
-                    let frag = render_fragment(Some(text), &parent, seg, new, col, true);
-                    Some(splice(text, s.start, line_end(text, s.end).min(text.len()), frag.trim_end_matches('\n')))
-                }
+            if let (true, Some(inline)) = (old_inline, inline_value(new, used)) {
+                Some(splice(text, vs, s.end, &inline))
+            } else {
+                let (parent, seg) = s.path.parent()?;
+                let frag = render_fragment(Some(text), &parent, seg, new, col, true);
+                Some(splice(text, s.start, line_end(text, s.end).min(text.len()), frag.trim_end_matches('\n')))
             }
         }
         SpanKind::TableRow | SpanKind::Root => None,
@@ -226,12 +228,13 @@ fn insert_item(text: &str, spans: &SpanMap, next: &Value, list: &Path, idx: usiz
     match kids.first() {
         Some(first) if first.kind == SpanKind::BlockItem => {
             let indent = first.column(text);
-            let frag = render_fragment(None, list, &Segment::Index(idx as i64), value, indent, false);
+            let seg = Segment::Index(i64::try_from(idx).ok()?);
+            let frag = render_fragment(None, list, &seg, value, indent, false);
             if idx >= kids.len() {
-                let last = kids.iter().max_by_key(|s| s.end)?;
-                Some(insert_after_line(text, last.end, &frag))
+                let last_kid = kids.iter().max_by_key(|s| s.end)?;
+                Some(insert_after_line(text, last_kid.end, &frag))
             } else {
-                let before = kids.iter().find(|s| s.path.0.last() == Some(&Segment::Index(idx as i64)))?;
+                let before = kids.iter().find(|s| s.path.0.last() == Some(&seg))?;
                 let at = block_start_with_comments(text, before);
                 Some(splice(text, at, at, &frag))
             }

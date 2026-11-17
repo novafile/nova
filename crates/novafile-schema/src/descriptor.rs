@@ -6,13 +6,19 @@
 //! into a schema by rendering its canonical text and parsing that, so
 //! descriptors are validated exactly like hand-written schemas.
 
-use crate::model::*;
+use crate::model::{Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
 use novafile_value::{Record, Value};
 
 /// Source of the meta-schema.
 pub const META_SCHEMA_SRC: &str = include_str!("../meta/nova-schema.novs");
 
 /// The meta-schema, which validates descriptors (including its own).
+///
+/// # Panics
+///
+/// Panics if the embedded meta-schema source fails to parse (a build defect
+/// that the test suite rules out).
+#[must_use]
 pub fn meta_schema() -> Schema {
     crate::parse_schema(META_SCHEMA_SRC).expect("the meta-schema is valid")
 }
@@ -80,10 +86,10 @@ fn type_value(t: &TypeRef) -> Value {
     if let Some((lo, hi)) = t.constraints.len {
         let mut l = Vec::new();
         if let Some(lo) = lo {
-            l.push(("min", Value::Int(lo as i128)));
+            l.push(("min", Value::Int(i128::from(lo))));
         }
         if let Some(hi) = hi {
-            l.push(("max", Value::Int(hi as i128)));
+            l.push(("max", Value::Int(i128::from(hi))));
         }
         if t.constraints.len_unit != LenUnit::Scalars {
             l.push(("unit", tag(t.constraints.len_unit.name())));
@@ -95,6 +101,7 @@ fn type_value(t: &TypeRef) -> Value {
 
 impl Schema {
     /// The descriptor of this schema (definitions in canonical, name order).
+    #[must_use]
     pub fn to_value(&self) -> Value {
         let mut top: Vec<(&str, Value)> = Vec::new();
         if let Some(n) = &self.name {
@@ -143,7 +150,7 @@ impl Schema {
                                     e.push(("key", Value::Bool(true)));
                                 }
                                 if let Some(id) = f.id {
-                                    e.push(("id", Value::Int(id as i128)));
+                                    e.push(("id", Value::Int(i128::from(id))));
                                 }
                                 if f.deprecated {
                                     e.push(("deprecated", Value::Bool(true)));
@@ -168,11 +175,17 @@ impl Schema {
 
     /// Rebuild a schema from its descriptor. The descriptor is first resolved
     /// against the meta-schema, then checked like schema text.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the descriptor does not conform to the meta-schema, has a
+    /// malformed definition, or describes an invalid schema (bad names,
+    /// references, ids, cycles or defaults).
     pub fn from_value(v: &Value) -> Result<Schema, String> {
-        let v = meta_schema().resolve(v).map_err(|i| {
+        let v = meta_schema().resolve(v).map_err(|issues| {
             format!(
                 "invalid schema descriptor:\n  {}",
-                i.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n  ")
+                issues.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("\n  ")
             )
         })?;
         let r = v.as_record().ok_or("descriptor must be a record")?;
@@ -226,7 +239,7 @@ impl Schema {
                             default: f.get("default").cloned(),
                             key: flag(f, "key"),
                             id: match f.get("id") {
-                                Some(Value::Int(i)) => Some(u32::try_from(*i).map_err(|_| "id out of range")?),
+                                Some(Value::Int(id)) => Some(u32::try_from(*id).map_err(|_| "id out of range")?),
                                 _ => None,
                             },
                             deprecated: flag(f, "deprecated"),
@@ -249,8 +262,7 @@ impl Schema {
 fn value_type(v: &Value) -> Result<TypeRef, String> {
     let r = v.as_record().ok_or("type must be a record")?;
     let kind = match r.get("kind") {
-        Some(Value::Variant(k, None)) => k.as_str(),
-        Some(Value::String(k)) => k.as_str(),
+        Some(Value::Variant(k, None) | Value::String(k)) => k.as_str(),
         _ => return Err("type without kind".into()),
     };
     let sub = |k: &str| -> Result<Box<TypeRef>, String> { Ok(Box::new(value_type(r.get(k).ok_or_else(|| format!("{kind} type needs `{k}`"))?)?)) };

@@ -20,6 +20,11 @@ fn gcd(mut a: u128, mut b: u128) -> u128 {
 }
 
 impl Rational {
+    /// Build a normalized rational `num/den`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `den` is zero or either component is `i128::MIN`.
     pub fn new(num: i128, den: i128) -> Result<Self, String> {
         if den == 0 {
             return Err("rational with zero denominator".into());
@@ -27,7 +32,8 @@ impl Rational {
         if num == i128::MIN || den == i128::MIN {
             return Err("rational component out of range".into());
         }
-        let g = gcd(num.unsigned_abs(), den.unsigned_abs()).max(1) as i128;
+        // Both magnitudes are at most i128::MAX (MIN is rejected above), so the gcd is too.
+        let g = gcd(num.unsigned_abs(), den.unsigned_abs()).max(1).cast_signed();
         let (mut n, mut d) = (num / g, den / g);
         if d < 0 {
             n = -n;
@@ -36,15 +42,22 @@ impl Rational {
         Ok(Rational { num: n, den: d })
     }
 
+    #[must_use]
     pub fn numerator(&self) -> i128 {
         self.num
     }
 
+    #[must_use]
     pub fn denominator(&self) -> i128 {
         self.den
     }
 
     /// Parse `-?N/D` where N and D are decimal integers without leading zeros and D > 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `s` does not have that form, a component does not fit
+    /// in `i128`, or the denominator is zero.
     pub fn parse(s: &str) -> Result<Self, String> {
         let err = || format!("invalid rational {s:?} (expected e.g. 22/7)");
         let (n, d) = s.split_once('/').ok_or_else(err)?;
@@ -58,11 +71,14 @@ impl Rational {
         Rational::new(num, den)
     }
 
+    #[must_use]
+    #[expect(clippy::cast_precision_loss, reason = "nearest binary64 approximation is the intent")]
     pub fn to_f64(&self) -> f64 {
         self.num as f64 / self.den as f64
     }
 
     /// The exact decimal value, if the denominator has only the factors 2 and 5.
+    #[must_use]
     pub fn to_decimal(&self) -> Option<crate::Decimal> {
         let mut d = self.den;
         let (mut twos, mut fives) = (0u32, 0u32);
@@ -80,7 +96,7 @@ impl Rational {
         let k = twos.max(fives);
         // num/den = num * 2^(k-twos) * 5^(k-fives) / 10^k
         let scale = 2i128.checked_pow(k - twos)?.checked_mul(5i128.checked_pow(k - fives)?)?;
-        Some(crate::Decimal::new(self.num.checked_mul(scale)?, -(k as i32)))
+        Some(crate::Decimal::new(self.num.checked_mul(scale)?, -i32::try_from(k).ok()?))
     }
 }
 

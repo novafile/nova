@@ -112,7 +112,7 @@
 //! (spec §6.3) against the NOVA schema, and what `serde_json` produces for the
 //! corresponding Rust types. Fields with defaults are therefore not
 //! `required`, and a string-keyed map accepts both its object form (a record
-//! before resolution, and serde_json's form) and the `[key, value]` pairs that
+//! before resolution, and `serde_json`'s form) and the `[key, value]` pairs that
 //! novafile-json writes for a resolved map. Kinds that only resolution produces
 //! (decimals given as plain numbers in text, for example) are described in
 //! their resolved, string form.
@@ -160,7 +160,7 @@ use std::fmt;
 pub enum Error {
     /// The schema name does not follow spec §6.7.
     InvalidName(String),
-    /// The version is not a SemVer 2.0.0 version.
+    /// The version is not a `SemVer` 2.0.0 version.
     InvalidVersion(String),
     /// The JSON Schema document cannot be converted.
     InvalidJsonSchema(String),
@@ -191,11 +191,20 @@ pub struct Conversion {
 /// NOVA schema for a Rust type via schemars (`#[derive(JsonSchema)]`),
 /// honoring serde attributes. Warnings are discarded; use [`conversion_for`]
 /// to see them.
+///
+/// # Errors
+///
+/// Fails if `name` is not a valid schema name, `version` is not `SemVer`,
+/// or the generated JSON Schema cannot be converted.
 pub fn schema_for<T: schemars::JsonSchema>(name: &str, version: &str) -> Result<novafile_schema::Schema, Error> {
     conversion_for::<T>(name, version).map(|c| c.schema)
 }
 
 /// Like [`schema_for`], but also returns the conversion warnings.
+///
+/// # Errors
+///
+/// As [`schema_for`].
 pub fn conversion_for<T: schemars::JsonSchema>(name: &str, version: &str) -> Result<Conversion, Error> {
     let generator = schemars::generate::SchemaSettings::draft2020_12().into_generator();
     let json = generator.into_root_schema_for::<T>().to_value();
@@ -208,6 +217,12 @@ pub fn conversion_for<T: schemars::JsonSchema>(name: &str, version: &str) -> Res
 /// The schema name and version default to those in `$id` (`urn:nova:name@version`,
 /// as written by [`to_json_schema`]) or `title`; without either the schema is
 /// anonymous. A name without a version gets `0.1.0` and a warning.
+///
+/// # Errors
+///
+/// [`Error::InvalidName`] or [`Error::InvalidVersion`] for a bad name or
+/// version, and [`Error::InvalidJsonSchema`] if the root is `false` or not
+/// an object or boolean.
 pub fn from_json_schema(json: &serde_json::Value, name: Option<&str>, version: Option<&str>) -> Result<Conversion, Error> {
     from_json::convert(json, name, version)
 }

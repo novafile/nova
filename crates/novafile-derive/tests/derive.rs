@@ -95,7 +95,7 @@ fn serde_values_resolve_against_the_derived_schema() {
     let bad = novafile_serde::to_value(&Infrastructure {
         services: vec![Service {
             id: "x".into(),
-            image: "".into(),
+            image: String::new(),
             port: Port(0),
             replicas: 101,
             enabled: true,
@@ -104,7 +104,7 @@ fn serde_values_resolve_against_the_derived_schema() {
         ..infra
     })
     .unwrap();
-    let issues: Vec<String> = schema.resolve(&bad).unwrap_err().iter().map(|i| i.to_string()).collect();
+    let issues: Vec<String> = schema.resolve(&bad).unwrap_err().iter().map(std::string::ToString::to_string).collect();
     assert_eq!(issues.len(), 3, "{issues:?}");
 }
 

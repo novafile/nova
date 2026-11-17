@@ -21,6 +21,10 @@ enum Num {
     },
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "an approximation is intended; the u64 digit is only cast when it has at most 53 bits"
+)]
 fn digits_log10(x: &BigInt) -> f64 {
     // log10 of a big integer, approximately (good to well under 1 decade).
     let bits = x.bits() as f64;
@@ -36,12 +40,12 @@ fn of(v: &Value) -> Option<Num> {
     Some(match v {
         Value::Int(i) => {
             let n = BigInt::from(*i);
-            let l = digits_log10(&n);
+            let approx_log10 = digits_log10(&n);
             Num::Finite {
                 num: n,
                 den: BigInt::from(1),
                 exp10: 0,
-                approx_log10: l,
+                approx_log10,
             }
         }
         Value::Float(f) => {
@@ -54,21 +58,22 @@ fn of(v: &Value) -> Option<Num> {
             // f = mantissa * 2^exp exactly.
             let bits = f.to_bits();
             let neg = bits >> 63 == 1;
-            let exp_bits = ((bits >> 52) & 0x7FF) as i64;
+            // 11-bit exponent field, so the signed reinterpretation is exact.
+            let exp_bits = ((bits >> 52) & 0x7FF).cast_signed();
             let frac = bits & ((1u64 << 52) - 1);
-            let (m, e) = if exp_bits == 0 {
+            let (mantissa, exp2) = if exp_bits == 0 {
                 (frac, -1074)
             } else {
                 (frac | (1u64 << 52), exp_bits - 1075)
             };
-            let mut n = BigInt::from(m);
+            let mut n = BigInt::from(mantissa);
             if neg {
                 n = -n;
             }
-            let (num, den) = if e >= 0 {
-                (n << e as usize, BigInt::from(1))
+            let (num, den) = if exp2 >= 0 {
+                (n << exp2.unsigned_abs(), BigInt::from(1))
             } else {
-                (n, BigInt::from(1) << (-e) as usize)
+                (n, BigInt::from(1) << exp2.unsigned_abs())
             };
             Num::Finite {
                 num,
@@ -79,22 +84,22 @@ fn of(v: &Value) -> Option<Num> {
         }
         Value::Decimal(d) => {
             let n = BigInt::from(d.coefficient());
-            let l = digits_log10(&n) + d.exponent() as f64;
+            let approx_log10 = digits_log10(&n) + f64::from(d.exponent());
             Num::Finite {
                 num: n,
                 den: BigInt::from(1),
-                exp10: d.exponent() as i64,
-                approx_log10: l,
+                exp10: i64::from(d.exponent()),
+                approx_log10,
             }
         }
         Value::Rational(r) => {
             let (n, dd) = (BigInt::from(r.numerator()), BigInt::from(r.denominator()));
-            let l = digits_log10(&n) - digits_log10(&dd);
+            let approx_log10 = digits_log10(&n) - digits_log10(&dd);
             Num::Finite {
                 num: n,
                 den: dd,
                 exp10: 0,
-                approx_log10: l,
+                approx_log10,
             }
         }
         _ => return None,
@@ -109,11 +114,17 @@ fn sign(n: &BigInt) -> i8 {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "callers pass a non-negative exponent gap, bounded to a few dozen by the magnitude check"
+)]
 fn scale(n: BigInt, exp10: i64) -> BigInt {
     n * BigInt::from(10).pow(exp10 as u32)
 }
 
 /// Compare two numeric values exactly. `None` if either is not numeric or is NaN.
+#[must_use]
 pub fn numeric_cmp(a: &Value, b: &Value) -> Option<Ordering> {
     let (a, b) = (of(a)?, of(b)?);
     let (an, ad, ae, al, bn, bd, be, bl) = match (a, b) {
@@ -172,8 +183,8 @@ mod tests {
             (r(1, 3), d("0.3333333333333333333333333333333333333"), Greater),
             (r(1, 3), Value::Float(1.0 / 3.0), Greater),
             (r(1, 2), Value::Float(0.5), Equal),
-            (Value::Int(i128::MAX), Value::Float(1.7014118346046923e38), Less), // float rounds up past i128::MAX
-            (Value::Int(9007199254740993), Value::Float(9007199254740992.0), Greater), // 2^53+1 vs 2^53, equal in binary64
+            (Value::Int(i128::MAX), Value::Float(1.701_411_834_604_692_3e38), Less), // float rounds up past i128::MAX
+            (Value::Int(9_007_199_254_740_993), Value::Float(9_007_199_254_740_992.0), Greater), // 2^53+1 vs 2^53, equal in binary64
             (d("1e400"), Value::Float(f64::MAX), Greater),
             (d("-1e400"), Value::Float(f64::MIN), Less),
             (d("1e-400"), Value::Float(0.0), Greater),

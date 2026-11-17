@@ -178,7 +178,7 @@ fn issues(v: &Value) -> Vec<String> {
     let schema = novafile_schemars::schema_for::<Fleet>("fleet", "1.2.0").unwrap();
     match schema.resolve(v) {
         Ok(_) => Vec::new(),
-        Err(issues) => issues.iter().map(|i| i.to_string()).collect(),
+        Err(issues) => issues.iter().map(std::string::ToString::to_string).collect(),
     }
 }
 
@@ -207,6 +207,7 @@ fn json_instances_resolve_and_violations_are_reported() {
 }
 
 #[test]
+#[expect(clippy::items_after_statements, reason = "test-local types sit next to the assertions that use them")]
 fn serde_attributes_and_open_records() {
     /// Not `deny_unknown_fields`, but `additionalProperties: true` via schemars.
     #[derive(JsonSchema)]

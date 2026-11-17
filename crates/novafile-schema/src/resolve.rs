@@ -1,6 +1,6 @@
 //! Schema-directed resolution and validation (spec §6.3–6.4).
 
-use crate::model::*;
+use crate::model::{Constraints, Def, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
 use base64::Engine;
 use novafile_text::{Path, Segment};
 use novafile_value::{Decimal, Duration, Rational, Record, Timestamp, Value};
@@ -76,6 +76,8 @@ impl<'s> Ctx<'s> {
         self.issue(format!("expected {expected}, found {}", v.kind()));
     }
 
+    #[expect(clippy::match_same_arms, reason = "one arm per kind keeps the conversion table readable")]
+    #[expect(clippy::cast_precision_loss, reason = "the int-to-float arm only takes integers up to 2^53, exact in f64")]
     fn structural(&mut self, v: Value, kind: &'s TypeKind) -> Value {
         match (kind, v) {
             (TypeKind::Any, v) => v,
@@ -97,13 +99,14 @@ impl<'s> Ctx<'s> {
             (TypeKind::Decimal, Value::Rational(r)) if r.to_decimal().is_some() => Value::Decimal(r.to_decimal().unwrap()),
             (TypeKind::Rational, v @ Value::Rational(_)) => v,
             (TypeKind::Rational, Value::Int(i)) => Value::Rational(Rational::new(i, 1).expect("nonzero denominator")),
-            (TypeKind::Rational, Value::Decimal(d)) => match decimal_to_rational(d) {
-                Some(r) => Value::Rational(r),
-                None => {
+            (TypeKind::Rational, Value::Decimal(d)) => {
+                if let Some(r) = decimal_to_rational(d) {
+                    Value::Rational(r)
+                } else {
                     self.issue("decimal is too large to represent as a rational");
                     Value::Decimal(d)
                 }
-            },
+            }
             (TypeKind::Rational, Value::String(s)) => self.lexical(s, "rational", |s| Rational::parse(s).map(Value::Rational)),
             (TypeKind::String, v @ Value::String(_)) => v,
             (TypeKind::Bytes, v @ Value::Bytes(_)) => v,
@@ -135,7 +138,7 @@ impl<'s> Ctx<'s> {
                     .zip(ts)
                     .enumerate()
                     .map(|(i, (v, t))| {
-                        self.path.push(Segment::Index(i as i64));
+                        self.path.push(index_segment(i));
                         let r = self.check(v, t);
                         self.path.pop();
                         r
@@ -193,7 +196,7 @@ impl<'s> Ctx<'s> {
             .into_iter()
             .enumerate()
             .map(|(i, v)| {
-                self.path.push(Segment::Index(i as i64));
+                self.path.push(index_segment(i));
                 let r = self.check(v, et);
                 self.path.pop();
                 r
@@ -208,7 +211,7 @@ impl<'s> Ctx<'s> {
                     if let Some(rec) = v.as_record() {
                         let k: Vec<Option<&Value>> = keys.iter().map(|k| rec.get(k)).collect();
                         if !seen.insert(k.clone()) {
-                            self.path.push(Segment::Index(i as i64));
+                            self.path.push(index_segment(i));
                             self.issue(format!("duplicate @key ({})", keys.join(", ")));
                             self.path.pop();
                         }
@@ -315,7 +318,7 @@ impl<'s> Ctx<'s> {
         {
             // Exact across kinds; NaN never satisfies a range.
             if lo.as_ref().is_some_and(|lo| !lo.le(&n)) || hi.as_ref().is_some_and(|hi| !n.le(hi)) {
-                let b = |o: &Option<Num>| o.as_ref().map(|n| n.to_string()).unwrap_or_default();
+                let b = |o: &Option<Num>| o.as_ref().map(std::string::ToString::to_string).unwrap_or_default();
                 self.issue(format!("{n} is outside @range({}..{})", b(lo), b(hi)));
             }
         }
@@ -346,10 +349,15 @@ impl<'s> Ctx<'s> {
     }
 }
 
+#[expect(clippy::cast_possible_wrap, reason = "an element index is at most isize::MAX")]
+fn index_segment(i: usize) -> Segment {
+    Segment::Index(i as i64)
+}
+
 fn decimal_to_rational(d: Decimal) -> Option<Rational> {
     let (c, e) = (d.coefficient(), d.exponent());
     if e >= 0 {
-        Rational::new(c.checked_mul(10i128.checked_pow(e as u32)?)?, 1).ok()
+        Rational::new(c.checked_mul(10i128.checked_pow(e.unsigned_abs())?)?, 1).ok()
     } else {
         Rational::new(c, 10i128.checked_pow(e.unsigned_abs())?).ok()
     }
@@ -362,6 +370,10 @@ fn names(vs: &[VariantDef]) -> String {
 impl Schema {
     /// Resolve `v` against type `t`: apply the permitted lexical conversions
     /// and defaults, and report every violation (spec §6.3).
+    ///
+    /// # Errors
+    ///
+    /// Returns every issue found if `v` does not conform to `t`.
     pub fn resolve_as(&self, v: &Value, t: &TypeRef) -> Result<Value, Vec<Issue>> {
         let mut c = Ctx {
             schema: self,
@@ -374,6 +386,11 @@ impl Schema {
     }
 
     /// Resolve against the `@root` type.
+    ///
+    /// # Errors
+    ///
+    /// Returns every issue found if `v` does not conform, or a single issue if
+    /// the schema has no `@root`.
     pub fn resolve(&self, v: &Value) -> Result<Value, Vec<Issue>> {
         let t = self.root_type().ok_or_else(|| {
             vec![Issue {
@@ -385,6 +402,11 @@ impl Schema {
     }
 
     /// Validate without materializing defaults.
+    ///
+    /// # Errors
+    ///
+    /// Returns every issue found if `v` does not conform, or a single issue if
+    /// the schema has no `@root`.
     pub fn validate(&self, v: &Value) -> Result<(), Vec<Issue>> {
         let t = self.root_type().ok_or_else(|| {
             vec![Issue {

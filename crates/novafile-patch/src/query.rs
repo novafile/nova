@@ -5,6 +5,11 @@ use novafile_text::{CmpOp, Path, PathError, Profile, Segment, document_to_text};
 use novafile_value::{Record, Revision, Value, revision};
 
 /// Evaluate a path that may contain `[*]` and a final projection.
+///
+/// # Errors
+///
+/// Returns a [`PathError`] if a step does not exist, a selector is ambiguous,
+/// or a step meets a value of the wrong kind.
 pub fn select(root: &Value, path: &Path) -> Result<Value, PathError> {
     sel(root, &path.0, 0, path)
 }
@@ -34,7 +39,7 @@ fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value
             let keep = |e: &&Value| {
                 filters.iter().all(|f| match f {
                     Segment::Filter(lhs, CmpOp::Absent, _) => lhs.get(e).is_err(),
-                    Segment::Filter(lhs, op, want) => lhs.get(e).map(|got| op.holds(got, want)).unwrap_or(false),
+                    Segment::Filter(lhs, op, want) => lhs.get(e).is_ok_and(|got| op.holds(got, want)),
                     _ => unreachable!(),
                 })
             };
@@ -97,9 +102,10 @@ pub struct Response {
 }
 
 impl Response {
+    #[must_use]
     pub fn to_text(&self, profile: Profile) -> String {
         let rev = self.revision.to_string();
-        let scope = self.scope.as_ref().map(|s| s.to_string());
+        let scope = self.scope.as_ref().map(std::string::ToString::to_string);
         let mut d: Vec<(&str, &str)> = vec![("revision", &rev)];
         if let Some(s) = &scope
             && s != "."
@@ -111,6 +117,10 @@ impl Response {
 }
 
 /// Parse `@get <path>` (or a bare path) and evaluate it.
+///
+/// # Errors
+///
+/// Returns a message if `request` is not a valid path or [`select`] fails.
 pub fn get(root: &Value, request: &str) -> Result<Response, String> {
     let req = request.trim();
     let p = req.strip_prefix("@get").or_else(|| req.strip_prefix("@select")).unwrap_or(req);

@@ -151,8 +151,8 @@ fn on_source(src: &str, ops: &str) -> novafile_patch::SourceEdit {
 fn changed(a: &str, b: &str) -> (Vec<String>, Vec<String>) {
     let (la, lb): (Vec<&str>, Vec<&str>) = (a.lines().collect(), b.lines().collect());
     (
-        la.iter().filter(|l| !lb.contains(l)).map(|s| s.to_string()).collect(),
-        lb.iter().filter(|l| !la.contains(l)).map(|s| s.to_string()).collect(),
+        la.iter().filter(|l| !lb.contains(l)).map(std::string::ToString::to_string).collect(),
+        lb.iter().filter(|l| !la.contains(l)).map(std::string::ToString::to_string).collect(),
     )
 }
 

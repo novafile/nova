@@ -50,7 +50,7 @@ fn value(schema: &Schema, text: &str) -> Value {
     schema.resolve(&novafile_text::parse(text).unwrap()).unwrap()
 }
 
-/// NOVA → bytes → DynamicMessage, compared with a text-format expectation.
+/// NOVA → bytes → `DynamicMessage`, compared with a text-format expectation.
 fn check_nova_to_proto(desc: &MessageDescriptor, schema: &Schema, nova: &Value, text_format: &str) -> DynamicMessage {
     let bytes = novafile_proto::encode(nova, schema).unwrap();
     let dynamic = DynamicMessage::decode(desc.clone(), bytes.as_slice()).unwrap();
@@ -59,7 +59,7 @@ fn check_nova_to_proto(desc: &MessageDescriptor, schema: &Schema, nova: &Value, 
     dynamic
 }
 
-/// DynamicMessage (text format) → prost bytes → NOVA, compared with the expectation.
+/// `DynamicMessage` (text format) → prost bytes → NOVA, compared with the expectation.
 fn check_proto_to_nova(desc: &MessageDescriptor, schema: &Schema, text_format: &str, expected: &Value) {
     let msg = DynamicMessage::parse_text_format(desc.clone(), text_format).unwrap();
     let bytes = msg.encode_to_vec();

@@ -3,6 +3,7 @@
 use crate::shape::{MAX_FIELD_NUMBER, WireType};
 
 /// Append `v` as a base-128 varint.
+#[expect(clippy::cast_possible_truncation, reason = "each byte carries the low 7 bits of `v`")]
 pub(crate) fn put_varint(buf: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
         buf.push((v as u8) | 0x80);
@@ -23,20 +24,21 @@ pub(crate) fn put_len(buf: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 pub(crate) fn zigzag32(n: i32) -> u64 {
-    u64::from(((n << 1) ^ (n >> 31)) as u32)
+    u64::from(((n << 1) ^ (n >> 31)).cast_unsigned())
 }
 
 pub(crate) fn zigzag64(n: i64) -> u64 {
-    ((n << 1) ^ (n >> 63)) as u64
+    ((n << 1) ^ (n >> 63)).cast_unsigned()
 }
 
 pub(crate) fn unzigzag32(v: u64) -> i32 {
-    let v = v as u32; // int32 fields use the low 32 bits of the varint
-    ((v >> 1) as i32) ^ -((v & 1) as i32)
+    #[expect(clippy::cast_possible_truncation, reason = "sint32 fields use the low 32 bits of the varint")]
+    let v = v as u32;
+    (v >> 1).cast_signed() ^ -(v & 1).cast_signed()
 }
 
 pub(crate) fn unzigzag64(v: u64) -> i64 {
-    ((v >> 1) as i64) ^ -((v & 1) as i64)
+    (v >> 1).cast_signed() ^ -(v & 1).cast_signed()
 }
 
 /// One field value as it appears on the wire.
@@ -120,6 +122,7 @@ impl<'a> Reader<'a> {
         if number == 0 || number > u64::from(MAX_FIELD_NUMBER) {
             return Err(format!("invalid field number {number}"));
         }
+        #[expect(clippy::cast_possible_truncation, reason = "checked against MAX_FIELD_NUMBER above")]
         let number = number as u32;
         let value = match key & 7 {
             0 => Wire::Varint(self.varint()?),
@@ -153,7 +156,7 @@ mod tests {
 
     #[test]
     fn varints_round_trip() {
-        for v in [0, 1, 127, 128, 300, u32::MAX as u64, u64::MAX] {
+        for v in [0, 1, 127, 128, 300, u64::from(u32::MAX), u64::MAX] {
             let mut buf = Vec::new();
             put_varint(&mut buf, v);
             let mut r = Reader::new(&buf);
@@ -177,7 +180,7 @@ mod tests {
     fn zigzag() {
         for n in [0, -1, 1, i32::MIN, i32::MAX] {
             assert_eq!(unzigzag32(zigzag32(n)), n);
-            assert_eq!(unzigzag64(zigzag64(n as i64)), n as i64);
+            assert_eq!(unzigzag64(zigzag64(i64::from(n))), i64::from(n));
         }
         assert_eq!(zigzag32(-1), 1);
         assert_eq!(zigzag64(i64::MIN), u64::MAX);

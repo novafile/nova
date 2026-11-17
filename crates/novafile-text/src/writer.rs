@@ -4,6 +4,7 @@ use crate::parser::{RESERVED_START, classify};
 use crate::path::{is_ident_char, is_ident_start};
 use base64::Engine;
 use novafile_value::{Value, canonical_bytes};
+use std::fmt::Write as _;
 
 /// Output profile. All profiles produce text that parses back to an equal value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,10 +25,12 @@ pub(crate) fn is_ident(s: &str) -> bool {
 }
 
 /// Key as written: bare identifier or quoted string.
+#[must_use]
 pub fn key_text(k: &str) -> String {
     if is_ident(k) { k.to_owned() } else { quote(k) }
 }
 
+#[must_use]
 pub fn quote(s: &str) -> String {
     let mut o = String::with_capacity(s.len() + 2);
     o.push('"');
@@ -38,7 +41,9 @@ pub fn quote(s: &str) -> String {
             '\n' => o.push_str("\\n"),
             '\r' => o.push_str("\\r"),
             '\t' => o.push_str("\\t"),
-            c if (c as u32) < 0x20 || c == '\u{7f}' => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c if (c as u32) < 0x20 || c == '\u{7f}' => {
+                let _ = write!(o, "\\u{:04x}", c as u32);
+            }
             c => o.push(c),
         }
     }
@@ -50,7 +55,7 @@ fn common_unsafe(s: &str) -> bool {
     s.is_empty()
         || RESERVED_START.contains(&s.as_bytes()[0])
         || s.starts_with("...")
-        || s.chars().any(|c| c.is_control())
+        || s.chars().any(char::is_control)
         || !matches!(classify(s), Ok(Value::String(_)))
 }
 
@@ -90,6 +95,7 @@ fn scalar_text(v: &Value) -> Option<String> {
 }
 
 /// Single-line flow rendering (spec §4.7).
+#[must_use]
 pub fn flow_string(v: &Value) -> String {
     let mut s = String::new();
     write_flow(&mut s, v, ", ");
@@ -170,19 +176,24 @@ fn write_flow(o: &mut String, v: &Value, sep: &str) {
 
 /// Put sets and maps (recursively) in canonical order and sort record keys.
 pub fn canonicalize(v: &mut Value) {
-    v.sort_keys();
     fn walk(v: &mut Value) {
         match v {
-            Value::List(l) | Value::Tuple(l) => l.iter_mut().for_each(walk),
+            Value::List(l) | Value::Tuple(l) => {
+                for x in l.iter_mut() {
+                    walk(x);
+                }
+            }
             Value::Set(l) => {
-                l.iter_mut().for_each(walk);
+                for x in l.iter_mut() {
+                    walk(x);
+                }
                 l.sort_by_cached_key(canonical_bytes);
             }
             Value::Map(m) => {
-                m.iter_mut().for_each(|(k, v)| {
+                for (k, v) in m.iter_mut() {
                     walk(k);
-                    walk(v)
-                });
+                    walk(v);
+                }
                 m.sort_by_cached_key(|(k, _)| canonical_bytes(k));
             }
             Value::Record(r) => r.iter_mut().for_each(|(_, v)| walk(v)),
@@ -190,6 +201,7 @@ pub fn canonicalize(v: &mut Value) {
             _ => {}
         }
     }
+    v.sort_keys();
     walk(v);
 }
 
@@ -260,7 +272,7 @@ impl<'t> W<'t> {
     fn emit_trailing(&mut self, mark: usize) {
         let Some(t) = self.trivia else { return };
         if let Some(c) = t.trailing.get(&self.here()) {
-            let at = self.out[mark..].find('\n').map(|i| mark + i).unwrap_or(self.out.len());
+            let at = self.out[mark..].find('\n').map_or(self.out.len(), |i| mark + i);
             self.out.insert_str(at, &format!("  {c}"));
         }
     }
@@ -298,7 +310,7 @@ impl<'t> W<'t> {
 
     fn table_fields(&self, l: &[Value]) -> Option<Vec<String>> {
         let was_table = self.trivia.is_some_and(|t| t.tables.contains(&self.here()));
-        if !(self.compact || was_table) || (l.len() < 2 && !was_table) || l.is_empty() {
+        if !(was_table || (self.compact && l.len() >= 2)) || l.is_empty() {
             return None;
         }
         let mut fields: Vec<String> = Vec::new();
@@ -356,7 +368,7 @@ impl<'t> W<'t> {
                 }
             }
             Value::Variant(t, Some(p)) => {
-                self.out.push_str(&format!(" !{t}\n"));
+                let _ = writeln!(self.out, " !{t}");
                 self.block(p, indent + 2);
             }
             _ => {
@@ -376,6 +388,7 @@ impl<'t> W<'t> {
             }
             Value::List(l) => {
                 for (i, it) in l.iter().enumerate() {
+                    #[expect(clippy::cast_possible_wrap, reason = "in-memory indices/lengths are at most isize::MAX, which fits in i64")]
                     self.path.push(crate::path::Segment::Index(i as i64));
                     self.item(it, indent);
                     self.path.pop();
@@ -414,9 +427,10 @@ impl<'t> W<'t> {
 
     fn table(&mut self, l: &[Value], fields: &[String], indent: usize) {
         let header: Vec<String> = fields.iter().map(|f| key_text(f)).collect();
-        self.out.push_str(&format!("[{}]{{{}}}:\n", l.len(), header.join(",")));
+        let _ = writeln!(self.out, "[{}]{{{}}}:", l.len(), header.join(","));
         for (i, row) in l.iter().enumerate() {
             let r = row.as_record().unwrap();
+            #[expect(clippy::cast_possible_wrap, reason = "in-memory indices/lengths are at most isize::MAX, which fits in i64")]
             self.path.push(crate::path::Segment::Index(i as i64));
             self.emit_leading(indent + 2);
             self.pad(indent + 2);
@@ -480,6 +494,7 @@ fn block_string_ok(s: &str) -> bool {
 }
 
 /// Render a value as a NOVA text document body.
+#[must_use]
 pub fn to_text(v: &Value, profile: Profile) -> String {
     let mut owned;
     let v = if profile == Profile::Canonical {
@@ -514,6 +529,7 @@ pub(crate) fn write_body(w: &mut W, v: &Value) {
 }
 
 /// Render directives followed by a body.
+#[must_use]
 pub fn document_to_text(directives: &[(&str, &str)], v: &Value, profile: Profile) -> String {
     let mut out = String::new();
     for (n, a) in directives {

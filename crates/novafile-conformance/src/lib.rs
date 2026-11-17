@@ -1,5 +1,5 @@
 //! The NOVA conformance suite: language-neutral inputs with JSON expectations
-//! (see `conformance/README.md` in https://github.com/novafile/spec).
+//! (see `conformance/README.md` in <https://github.com/novafile/spec>).
 //!
 //! [`expectations`] computes, with this reference implementation, the
 //! expected result of every case under a conformance directory. The `nova
@@ -9,10 +9,14 @@
 use novafile_text::{Profile, to_text};
 use novafile_value::{Record, Value, canonical_bytes, revision};
 use serde_json::{Value as J, json};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    b.iter().fold(String::with_capacity(b.len() * 2), |mut s, x| {
+        let _ = write!(s, "{x:02x}");
+        s
+    })
 }
 
 /// Expectation for a successfully produced value.
@@ -50,6 +54,14 @@ fn expect_path(input: &Path) -> PathBuf {
 }
 
 /// Every `(expectation file, expected JSON)` pair under `root`.
+///
+/// # Panics
+///
+/// Panics if a case's input files cannot be read, if a case contradicts
+/// its directory (a `valid` input fails, an `invalid` one succeeds), or if
+/// auxiliary inputs (schemas, base documents, template args) do not parse.
+#[must_use]
+#[expect(clippy::too_many_lines, reason = "one flat section per conformance category")]
 pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
     let mut out = Vec::new();
 
@@ -171,7 +183,7 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
             Value::Record(r) => r,
             _ => Record::new(),
         };
-        let e = match novafile_template::render(&read(&d.join("template.nova")), &args, &Default::default()) {
+        let e = match novafile_template::render(&read(&d.join("template.nova")), &args, &novafile_template::Options::default()) {
             Ok(v) => value_expect(&v),
             Err(e) => json!({"error": true, "message": e.to_string()}),
         };
@@ -181,11 +193,17 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
 }
 
 /// Format expectations exactly as written to disk.
+///
+/// # Panics
+///
+/// Never in practice: serializing a `serde_json::Value` cannot fail.
+#[must_use]
 pub fn render(j: &J) -> String {
     serde_json::to_string_pretty(j).unwrap() + "\n"
 }
 
 /// Locate the conformance directory: `$NOVA_CONFORMANCE`, else a sibling checkout of the spec repo.
+#[must_use]
 pub fn locate() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("NOVA_CONFORMANCE") {
         return Some(PathBuf::from(p));

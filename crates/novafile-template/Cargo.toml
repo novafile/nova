@@ -10,3 +10,6 @@ license.workspace = true
 novafile-value.workspace = true
 novafile-text.workspace = true
 novafile-schema.workspace = true
+
+[lints]
+workspace = true

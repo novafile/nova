@@ -33,3 +33,6 @@ novafile-proto = { workspace = true, optional = true }
 novafile-template = { workspace = true, optional = true }
 novafile-lint = { workspace = true, optional = true }
 novafile-schemars = { workspace = true, optional = true }
+
+[lints]
+workspace = true

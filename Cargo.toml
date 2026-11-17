@@ -45,3 +45,5 @@ syn = "2"
 toml = { version = "0.8", features = ["preserve_order"] }
 unicode-segmentation = "1"
 yaml-rust2 = "0.10"
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }

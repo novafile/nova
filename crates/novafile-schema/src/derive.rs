@@ -18,7 +18,7 @@
 //! The mapping follows the Serde binding (spec §11.3), so values produced
 //! by `novafile-serde` resolve against the generated schema.
 
-use crate::model::*;
+use crate::model::{Def, IntKind, Schema, TypeKind, TypeRef};
 use std::collections::HashSet;
 
 /// Collects named definitions while type expressions are generated.
@@ -43,6 +43,10 @@ impl SchemaGen {
         r
     }
 
+    ///
+    /// # Panics
+    ///
+    /// Panics if `version` is not a valid `SemVer` version (a bad `#[nova(version)]`).
     pub fn into_schema(self, root: Option<String>, name: Option<&str>, version: Option<&str>) -> Schema {
         Schema {
             name: name.map(str::to_owned),
@@ -60,17 +64,20 @@ pub trait NovaSchema {
 
     /// As a struct field, may this type be absent? (`Option<T>`: yes.)
     #[doc(hidden)]
+    #[must_use]
     fn nova_field_optional() -> bool {
         false
     }
 
     /// `(name, version)` from `#[nova(name = …, version = …)]`.
     #[doc(hidden)]
+    #[must_use]
     fn nova_schema_id() -> Option<(&'static str, &'static str)> {
         None
     }
 
     /// The complete schema with `Self` as `@root`.
+    #[must_use]
     fn novafile_schema() -> Schema
     where
         Self: Sized,
@@ -80,24 +87,25 @@ pub trait NovaSchema {
 }
 
 /// The complete schema for `T`, with `T` as the root type.
+#[must_use]
 pub fn schema_for<T: NovaSchema>() -> Schema {
     let mut generator = SchemaGen::default();
     let ty = T::nova_type(&mut generator);
-    let root = match ty.kind {
-        TypeKind::Named(n) => n,
-        _ => {
-            // Non-named roots (e.g. `Vec<Item>`) get an alias so they can be `@root`.
-            generator.defs.push(("Root".into(), Def::Alias(ty)));
-            "Root".into()
-        }
+    let root = if let TypeKind::Named(n) = ty.kind {
+        n
+    } else {
+        // Non-named roots (e.g. `Vec<Item>`) get an alias so they can be `@root`.
+        generator.defs.push(("Root".into(), Def::Alias(ty)));
+        "Root".into()
     };
-    let (name, version) = T::nova_schema_id().map(|(n, v)| (Some(n), Some(v))).unwrap_or((None, None));
+    let (name, version) = T::nova_schema_id().map_or((None, None), |(n, v)| (Some(n), Some(v)));
     generator.into_schema(Some(root), name, version)
 }
 
 /// Apply schema-syntax attributes (`@range(1..10) @len(..64, utf8)`) to a type.
 /// Used by the derive macro; panics with a clear message on invalid input.
 #[doc(hidden)]
+#[must_use]
 pub fn __with_attrs(mut ty: TypeRef, attrs: &str, field: &str) -> TypeRef {
     let mut p = crate::parse::TyParser::new(attrs);
     let rest = p.attrs(&mut ty).unwrap_or_else(|e| panic!("#[nova] on {field}: {e}"));
@@ -109,6 +117,7 @@ pub fn __with_attrs(mut ty: TypeRef, attrs: &str, field: &str) -> TypeRef {
 
 /// Parse a `#[nova(default = "…")]` flow literal.
 #[doc(hidden)]
+#[must_use]
 pub fn __default(text: &str, field: &str) -> novafile_value::Value {
     novafile_text::parse_flow(text).unwrap_or_else(|e| panic!("#[nova(default)] on {field}: {e}"))
 }

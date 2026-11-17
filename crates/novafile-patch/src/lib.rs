@@ -15,6 +15,11 @@ pub use query::{Response, get, select};
 pub use source::{SourceEdit, apply_to_source};
 
 /// Apply with no extra validation.
+///
+/// # Errors
+///
+/// Returns a [`PatchError`] under the same conditions as [`apply`], except
+/// [`PatchError::Invalid`].
 pub fn apply_unchecked(doc: &novafile_value::Value, patch: &Patch) -> Result<Applied, PatchError> {
     apply(doc, patch, &|_| Ok(()))
 }

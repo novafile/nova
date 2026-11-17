@@ -14,3 +14,6 @@ novafile-schema.workspace = true
 novafile-patch.workspace = true
 novafile-template.workspace = true
 serde_json.workspace = true
+
+[lints]
+workspace = true

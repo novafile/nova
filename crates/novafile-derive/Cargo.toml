@@ -20,3 +20,6 @@ novafile-value.workspace = true
 novafile-text.workspace = true
 novafile-serde.workspace = true
 serde.workspace = true
+
+[lints]
+workspace = true

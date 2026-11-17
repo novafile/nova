@@ -13,6 +13,7 @@ pub struct ValueDeserializer {
 }
 
 impl ValueDeserializer {
+    #[must_use]
     pub fn new(value: Value) -> Self {
         ValueDeserializer { value, key: false }
     }
@@ -67,7 +68,7 @@ macro_rules! key_number {
             if self.key {
                 if let Value::String(s) = &self.value {
                     let n: $t = s.parse().map_err(|_| de::Error::invalid_value(de::Unexpected::Str(s), &v))?;
-                    return ValueDeserializer::new(n.into_value()).deserialize_any(v);
+                    return ValueDeserializer::new(n.into_value()?).deserialize_any(v);
                 }
             }
             self.deserialize_any(v)
@@ -76,30 +77,32 @@ macro_rules! key_number {
 }
 
 trait IntoValue {
-    fn into_value(self) -> Value;
+    fn into_value(self) -> Result<Value, Error>;
 }
 macro_rules! into_value_int {
-    ($($t:ty),*) => {$(impl IntoValue for $t { fn into_value(self) -> Value { Value::Int(self as i128) } })*};
+    ($($t:ty),*) => {$(impl IntoValue for $t { fn into_value(self) -> Result<Value, Error> { Ok(Value::Int(self.into())) } })*};
 }
 into_value_int!(i8, i16, i32, i64, i128, u8, u16, u32, u64);
 impl IntoValue for u128 {
-    fn into_value(self) -> Value {
-        Value::Int(self as i128)
+    fn into_value(self) -> Result<Value, Error> {
+        i128::try_from(self)
+            .map(Value::Int)
+            .map_err(|_| Error::new("u128 value exceeds the NOVA integer range of this implementation"))
     }
 }
 impl IntoValue for f32 {
-    fn into_value(self) -> Value {
-        Value::Float(self.into())
+    fn into_value(self) -> Result<Value, Error> {
+        Ok(Value::Float(self.into()))
     }
 }
 impl IntoValue for f64 {
-    fn into_value(self) -> Value {
-        Value::Float(self)
+    fn into_value(self) -> Result<Value, Error> {
+        Ok(Value::Float(self))
     }
 }
 impl IntoValue for bool {
-    fn into_value(self) -> Value {
-        Value::Bool(self)
+    fn into_value(self) -> Result<Value, Error> {
+        Ok(Value::Bool(self))
     }
 }
 

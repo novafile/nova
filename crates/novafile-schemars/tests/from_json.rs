@@ -4,8 +4,8 @@
 use novafile_schemars::{Conversion, Error, from_json_schema};
 use serde_json::json;
 
-fn convert(j: serde_json::Value) -> Conversion {
-    let c = from_json_schema(&j, Some("test"), Some("1.0.0")).unwrap();
+fn convert(j: &serde_json::Value) -> Conversion {
+    let c = from_json_schema(j, Some("test"), Some("1.0.0")).unwrap();
     // Whatever comes out must be valid schema language.
     let text = c.schema.to_string();
     let reparsed = novafile_schema::parse_schema(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
@@ -18,8 +18,9 @@ fn body(c: &Conversion) -> String {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "one table-style test covering every mapping row")]
 fn draft_2020_12_mapping_rows() {
-    let c = convert(json!({
+    let c = convert(&json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Everything",
         "type": "object",
@@ -199,7 +200,7 @@ record MyConfig:
 
 #[test]
 fn warnings_for_approximated_constructs() {
-    let c = convert(json!({
+    let c = convert(&json!({
         "type": "object",
         "properties": {
             "c": {"const": "fixed"},
@@ -289,7 +290,7 @@ fn names_and_versions() {
 
 #[test]
 fn definition_names_are_sanitized_and_unique() {
-    let c = convert(json!({
+    let c = convert(&json!({
         "$ref": "#/$defs/Nullable_Inner",
         "$defs": {
             "Nullable_Inner": {"type": ["object", "null"], "properties": {"a": {"$ref": "#/$defs/my%20type"}}},
@@ -319,7 +320,7 @@ type T1st = bool
 
 #[test]
 fn keys_ids_and_order_annotations() {
-    let c = convert(json!({
+    let c = convert(&json!({
         "type": "object",
         "x-nova-order": ["z", "a"],
         "properties": {

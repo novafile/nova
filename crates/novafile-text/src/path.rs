@@ -55,6 +55,7 @@ pub enum CmpOp {
 }
 
 impl CmpOp {
+    #[must_use]
     pub fn symbol(self) -> &'static str {
         match self {
             CmpOp::Eq => "=",
@@ -73,12 +74,13 @@ impl CmpOp {
     /// and durations chronologically (a string operand is parsed as the
     /// other side's kind). Values that cannot be ordered only support `=`
     /// and `!=`; ordering comparisons on them are false.
+    #[must_use]
     pub fn holds(self, left: &Value, right: &Value) -> bool {
         use std::cmp::Ordering;
         let ord: Option<Ordering> = compare(left, right);
         match self {
-            CmpOp::Eq => ord.map(|o| o == Ordering::Equal).unwrap_or(left == right),
-            CmpOp::Ne => !ord.map(|o| o == Ordering::Equal).unwrap_or(left == right),
+            CmpOp::Eq => ord.map_or(left == right, |o| o == Ordering::Equal),
+            CmpOp::Ne => !ord.map_or(left == right, |o| o == Ordering::Equal),
             CmpOp::Lt => ord == Some(Ordering::Less),
             CmpOp::Le => matches!(ord, Some(Ordering::Less | Ordering::Equal)),
             CmpOp::Gt => ord == Some(Ordering::Greater),
@@ -136,28 +138,38 @@ pub(crate) fn is_ident_char(c: u8) -> bool {
 }
 
 impl Path {
+    #[must_use]
     pub fn root() -> Path {
         Path(Vec::new())
     }
 
+    #[must_use]
     pub fn is_root(&self) -> bool {
         self.0.is_empty()
     }
 
     /// True if the path addresses exactly one location (no `[*]`, no projection).
+    #[must_use]
     pub fn is_singular(&self) -> bool {
         !self.0.iter().any(|s| matches!(s, Segment::All | Segment::Filter(..) | Segment::Project(_)))
     }
 
+    #[must_use]
     pub fn join(&self, other: &Path) -> Path {
         Path(self.0.iter().chain(other.0.iter()).cloned().collect())
     }
 
+    #[must_use]
     pub fn parent(&self) -> Option<(Path, &Segment)> {
         let (last, rest) = self.0.split_last()?;
         Some((Path(rest.to_vec()), last))
     }
 
+    /// Parse a complete path; empty or `.` is the root.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if `s` is not a well-formed path in its entirety.
     pub fn parse(s: &str) -> Result<Path, String> {
         let s = s.trim();
         if s.is_empty() || s == "." {
@@ -172,6 +184,15 @@ impl Path {
 
     /// Parse a path at the start of `s`, stopping at the first character that
     /// cannot continue it. Returns the path and the number of bytes consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if a segment is malformed or a projection is not the
+    /// last segment.
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "byte-scanner convention: s source, b bytes, i cursor, c byte, n length"
+    )]
     pub fn parse_prefix(s: &str) -> Result<(Path, usize), String> {
         let b = s.as_bytes();
         let mut i = 0;
@@ -188,36 +209,33 @@ impl Path {
                 }
                 Some(b'.') if !first => {
                     i += 1;
-                    match b.get(i) {
-                        Some(b'{') => {
-                            i += 1;
-                            let mut fields = Vec::new();
-                            loop {
-                                while b.get(i) == Some(&b' ') {
-                                    i += 1;
-                                }
-                                let (name, n) = parse_name(&s[i..])?;
-                                i += n;
-                                fields.push(name);
-                                while b.get(i) == Some(&b' ') {
-                                    i += 1;
-                                }
-                                match b.get(i) {
-                                    Some(b',') => i += 1,
-                                    Some(b'}') => {
-                                        i += 1;
-                                        break;
-                                    }
-                                    _ => return Err("expected `,` or `}` in projection".into()),
-                                }
+                    if let Some(b'{') = b.get(i) {
+                        i += 1;
+                        let mut fields = Vec::new();
+                        loop {
+                            while b.get(i) == Some(&b' ') {
+                                i += 1;
                             }
-                            segs.push(Segment::Project(fields));
-                        }
-                        _ => {
                             let (name, n) = parse_name(&s[i..])?;
                             i += n;
-                            segs.push(Segment::Field(name));
+                            fields.push(name);
+                            while b.get(i) == Some(&b' ') {
+                                i += 1;
+                            }
+                            match b.get(i) {
+                                Some(b',') => i += 1,
+                                Some(b'}') => {
+                                    i += 1;
+                                    break;
+                                }
+                                _ => return Err("expected `,` or `}` in projection".into()),
+                            }
                         }
+                        segs.push(Segment::Project(fields));
+                    } else {
+                        let (name, n) = parse_name(&s[i..])?;
+                        i += n;
+                        segs.push(Segment::Field(name));
                     }
                 }
                 Some(c) if first && (is_ident_start(c) || c == b'"') => {
@@ -238,6 +256,11 @@ impl Path {
     }
 
     /// Resolve a singular path to the value it addresses.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PathError`] if the path is not singular, a step does not exist,
+    /// a selector is ambiguous, or a step meets a value of the wrong kind.
     pub fn get<'v>(&self, root: &'v Value) -> Result<&'v Value, PathError> {
         let mut cur = root;
         for (i, seg) in self.0.iter().enumerate() {
@@ -253,6 +276,11 @@ impl Path {
 }
 
 /// One navigation step (shared with novafile-patch's mutable resolution).
+///
+/// # Errors
+///
+/// Returns a [`PathError`] if `seg` does not exist in `cur`, is ambiguous,
+/// does not fit the kind of `cur`, or is not singular.
 pub fn step<'v>(cur: &'v Value, seg: &Segment, here: &dyn Fn() -> Path, upto: &dyn Fn() -> Path) -> Result<&'v Value, PathError> {
     let ty = |expected| PathError::Type {
         at: here(),
@@ -273,7 +301,7 @@ pub fn step<'v>(cur: &'v Value, seg: &Segment, here: &dyn Fn() -> Path, upto: &d
             Value::List(l) | Value::Tuple(l) => resolve_index(*i, l.len()).map(|i| &l[i]).ok_or_else(|| PathError::NotFound(upto())),
             Value::Map(m) => m
                 .iter()
-                .find(|(k, _)| *k == Value::Int(*i as i128))
+                .find(|(k, _)| *k == Value::Int(i128::from(*i)))
                 .map(|(_, v)| v)
                 .ok_or_else(|| PathError::NotFound(upto())),
             _ => Err(ty("list")),
@@ -307,11 +335,16 @@ pub fn step<'v>(cur: &'v Value, seg: &Segment, here: &dyn Fn() -> Path, upto: &d
     }
 }
 
+#[must_use]
 pub fn resolve_index(i: i64, len: usize) -> Option<usize> {
-    let idx = if i < 0 { len as i64 + i } else { i };
-    (idx >= 0 && (idx as usize) < len).then_some(idx as usize)
+    if i < 0 {
+        len.checked_sub(usize::try_from(i.unsigned_abs()).ok()?)
+    } else {
+        usize::try_from(i).ok().filter(|&idx| idx < len)
+    }
 }
 
+#[must_use]
 pub fn match_indices(list: &[Value], field: &str, want: &Value) -> Vec<usize> {
     list.iter()
         .enumerate()
@@ -336,6 +369,10 @@ fn parse_name(s: &str) -> Result<(String, usize), String> {
     }
 }
 
+#[expect(
+    clippy::many_single_char_names,
+    reason = "byte-scanner convention: s source, b bytes, j/k cursors, n length, p parser, v value"
+)]
 fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
     let b = s.as_bytes();
     let close = |i: usize| -> Result<usize, String> {
@@ -433,7 +470,7 @@ fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
     let end = close(p.pos)?;
     Ok((
         match v {
-            Value::Int(i) if i >= i64::MIN as i128 && i <= i64::MAX as i128 => Segment::Index(i as i64),
+            Value::Int(i) => i64::try_from(i).map_or(Segment::Key(Value::Int(i)), Segment::Index),
             other => Segment::Key(other),
         },
         end,

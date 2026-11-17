@@ -45,7 +45,7 @@ fn configuration() {
     assert!(f.iter().any(|f| f.rule == "key-case" && f.message.contains("`user_id` is not camelCase")));
     // In-document configuration and schema-governed documents.
     let f = lint_document("@x-lint allow=key-case\nfooBar: 1\n", &Config::default()).unwrap();
-    assert!(f.is_empty());
+    assert_eq!(f, [] as [novafile_lint::Finding; 0]);
     let f = lint_document("@schema x@1.0.0\nfooBar: 2026-11-17T16:00:00Z\n", &Config::default()).unwrap();
     assert!(f.is_empty(), "{f:#?}");
 }
@@ -60,10 +60,9 @@ fn schema_rules() {
         [("partial-ids", "record R"), ("field-case", "badField"), ("variant-case", "Active")],
         "{f:#?}"
     );
-    assert!(
-        lint_schema(include_str!("../../../examples/infrastructure.novs"), &Config::default())
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        lint_schema(include_str!("../../../examples/infrastructure.novs"), &Config::default()).unwrap(),
+        [] as [novafile_lint::Finding; 0]
     );
 }
 

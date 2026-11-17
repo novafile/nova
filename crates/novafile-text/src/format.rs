@@ -38,7 +38,7 @@ pub struct Trivia {
 }
 
 fn line_start(src: &str, at: usize) -> usize {
-    src[..at].rfind('\n').map(|i| i + 1).unwrap_or(0)
+    src[..at].rfind('\n').map_or(0, |i| i + 1)
 }
 
 fn prev_line_blank(src: &str, at: usize) -> bool {
@@ -52,9 +52,10 @@ fn prev_line_blank(src: &str, at: usize) -> bool {
 
 impl Trivia {
     /// Collect trivia from a parsed source.
+    #[must_use]
     pub fn collect(src: &str, spans: &SpanMap, value: &Value) -> Trivia {
         let mut t = Trivia::default();
-        let body_start = spans.iter().find(|s| s.kind == SpanKind::Root).map(|s| s.start).unwrap_or(src.len());
+        let body_start = spans.iter().find(|s| s.kind == SpanKind::Root).map_or(src.len(), |s| s.start);
         let mut blocks: Vec<_> = spans.iter().filter(|s| s.kind.is_block() && s.kind != SpanKind::Root).collect();
         blocks.sort_by_key(|s| (s.start, s.path.0.len()));
         // Containers written as tables: parents of table rows, found in one pass.
@@ -134,6 +135,11 @@ impl Trivia {
 /// Reformat `src` in `profile`, keeping comments, blank lines and spellings
 /// (except in the compact profile, which is meant for machines and LLMs, and
 /// the canonical profile, which mandates canonical spellings).
+///
+/// # Errors
+///
+/// Returns a [`ParseError`] if `src` is malformed, is a `@template` document,
+/// or contains template constructs.
 pub fn format_preserving(src: &str, profile: Profile) -> Result<String, ParseError> {
     let (doc, spans) = crate::parse_with_spans(src)?;
     if doc.is_template() {
@@ -150,17 +156,21 @@ pub fn format_preserving(src: &str, profile: Profile) -> Result<String, ParseErr
         offset: 0,
         message: m,
     })?;
-    render_parsed(src, &doc, &spans, &value, &value, profile)
+    Ok(render_parsed(src, &doc, &spans, &value, &value, profile))
 }
 
 /// Render `value` with the directives, comments and layout of `src`.
+///
+/// # Errors
+///
+/// Returns a [`ParseError`] if `src` is malformed.
 pub fn render_preserving(src: &str, value: &Value, profile: Profile) -> Result<String, ParseError> {
     let (doc, spans) = crate::parse_with_spans(src)?;
     let orig = doc.body.to_value().unwrap_or(Value::Null);
-    render_parsed(src, &doc, &spans, &orig, value, profile)
+    Ok(render_parsed(src, &doc, &spans, &orig, value, profile))
 }
 
-fn render_parsed(src: &str, doc: &crate::Document, spans: &SpanMap, orig: &Value, value: &Value, profile: Profile) -> Result<String, ParseError> {
+fn render_parsed(src: &str, doc: &crate::Document, spans: &SpanMap, orig: &Value, value: &Value, profile: Profile) -> String {
     let mut trivia = Trivia::collect(src, spans, orig);
     trivia.keep_spelling = profile == Profile::Human;
     let keep = profile != Profile::Compact;
@@ -212,7 +222,7 @@ fn render_parsed(src: &str, doc: &crate::Document, spans: &SpanMap, orig: &Value
             out.push('\n');
         }
     }
-    Ok(out)
+    out
 }
 
 /// Render one block-level fragment — the entry `seg` (a field or list index)
@@ -221,6 +231,12 @@ fn render_parsed(src: &str, doc: &crate::Document, spans: &SpanMap, orig: &Value
 /// line is meant to replace text that starts at the fragment's column: its
 /// indentation and the fragment's own leading comments are omitted (they are
 /// still in the surrounding text). The result ends with a newline.
+///
+/// # Panics
+///
+/// Panics if `seg` is not a [`Segment::Field`](crate::path::Segment::Field) or
+/// [`Segment::Index`](crate::path::Segment::Index).
+#[must_use]
 pub fn render_fragment(src: Option<&str>, parent: &Path, seg: &crate::path::Segment, value: &Value, indent: usize, continuation: bool) -> String {
     let mut trivia = src
         .and_then(|s| {
@@ -236,7 +252,7 @@ pub fn render_fragment(src: Option<&str>, parent: &Path, seg: &crate::path::Segm
         trivia.blank_before.remove(&here);
     }
     let mut w = W::new(false, Some(&trivia));
-    w.path = parent.0.clone();
+    w.path.clone_from(&parent.0);
     match seg {
         crate::path::Segment::Index(i) => {
             w.path.push(crate::path::Segment::Index(*i));
@@ -253,6 +269,7 @@ pub fn render_fragment(src: Option<&str>, parent: &Path, seg: &crate::path::Segm
 
 /// The single-line text for `value` after `key: ` / `- `, if the writer would
 /// keep it on one line (`used` = columns already taken on that line).
+#[must_use]
 pub fn inline_value(value: &Value, used: usize) -> Option<String> {
     W::new(false, None).inline_text(value, used)
 }

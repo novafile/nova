@@ -13,3 +13,6 @@ miette = ["dep:miette"]
 novafile-value.workspace = true
 base64.workspace = true
 miette = { workspace = true, optional = true }
+
+[lints]
+workspace = true

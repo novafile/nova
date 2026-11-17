@@ -21,6 +21,11 @@ pub mod set {
         }
     }
 
+    /// Serialize `c` as a set.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the serializer does; the NOVA serializer rejects duplicate elements.
     pub fn serialize<'a, S, C, T>(c: &'a C, s: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -30,6 +35,11 @@ pub mod set {
         s.serialize_newtype_struct(magic::SET, &Seq(c.into_iter().collect()))
     }
 
+    /// Deserialize a set (or any sequence) into `C`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the input is not a sequence `C` accepts.
     pub fn deserialize<'de, D: Deserializer<'de>, C: Deserialize<'de>>(d: D) -> Result<C, D::Error> {
         C::deserialize(d)
     }
@@ -39,17 +49,32 @@ pub mod set {
 pub mod duration {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
 
+    /// Serialize `d` as a NOVA duration.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `d` exceeds the NOVA duration range or the serializer fails.
     pub fn serialize<S: Serializer>(d: &std::time::Duration, s: S) -> Result<S::Ok, S::Error> {
-        novafile_value::Duration::from_nanos(d.as_nanos() as i128)
+        novafile_value::Duration::from_nanos(d.as_nanos().cast_signed())
             .map_err(S::Error::custom)?
             .serialize(s)
     }
 
+    /// Deserialize a NOVA duration.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the input is not a duration or the duration is negative.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<std::time::Duration, D::Error> {
         let n = novafile_value::Duration::deserialize(d)?.as_nanos();
         if n < 0 {
             return Err(D::Error::custom("negative duration cannot be a std::time::Duration"));
         }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "n is non-negative and a NOVA duration is at most i64::MAX seconds"
+        )]
         Ok(std::time::Duration::new((n / 1_000_000_000) as u64, (n % 1_000_000_000) as u32))
     }
 }
@@ -59,12 +84,18 @@ pub mod system_time {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    /// Serialize `t` as a NOVA timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `t` lies outside the years 0001-9999 or the serializer fails.
     pub fn serialize<S: Serializer>(t: &SystemTime, s: S) -> Result<S::Ok, S::Error> {
+        let to_secs = |d: Duration| i64::try_from(d.as_secs()).map_err(|_| "timestamp out of range (years 0001-9999)".to_owned());
         let ts = match t.duration_since(UNIX_EPOCH) {
-            Ok(d) => novafile_value::Timestamp::new(d.as_secs() as i64, d.subsec_nanos()),
+            Ok(d) => to_secs(d).and_then(|s| novafile_value::Timestamp::new(s, d.subsec_nanos())),
             Err(e) => {
                 let d = e.duration();
-                let (secs, nanos) = (d.as_secs() as i64, d.subsec_nanos());
+                let (secs, nanos) = (to_secs(d).map_err(S::Error::custom)?, d.subsec_nanos());
                 if nanos == 0 {
                     novafile_value::Timestamp::new(-secs, 0)
                 } else {
@@ -75,15 +106,20 @@ pub mod system_time {
         ts.map_err(S::Error::custom)?.serialize(s)
     }
 
+    /// Deserialize a NOVA timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the input is not a timestamp or it is out of `SystemTime`'s range.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SystemTime, D::Error> {
         let t = novafile_value::Timestamp::deserialize(d)?;
-        let (s, n) = (t.unix_seconds(), t.subsec_nanos());
-        let r = if s >= 0 {
-            UNIX_EPOCH.checked_add(Duration::new(s as u64, n))
+        let (secs, nanos) = (t.unix_seconds(), t.subsec_nanos());
+        let r = if secs >= 0 {
+            UNIX_EPOCH.checked_add(Duration::new(secs.unsigned_abs(), nanos))
         } else {
             UNIX_EPOCH
-                .checked_sub(Duration::new(s.unsigned_abs(), 0))
-                .and_then(|x| x.checked_add(Duration::new(0, n)))
+                .checked_sub(Duration::new(secs.unsigned_abs(), 0))
+                .and_then(|x| x.checked_add(Duration::new(0, nanos)))
         };
         r.ok_or_else(|| D::Error::custom("timestamp out of SystemTime range"))
     }

@@ -13,17 +13,33 @@
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument, Notification as _, PublishDiagnostics};
 use lsp_types::request::{Completion, DocumentSymbolRequest, Formatting, HoverRequest, Request as _};
-use lsp_types::*;
+use lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Hover,
+    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
+    PublishDiagnosticsParams, Range, ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+};
 use novafile_schema::{Def, Schema, SchemaRef, TypeKind};
 use novafile_text::spans::{SpanMap, line_col_utf16, offset_of_utf16};
 use novafile_text::{Path, Segment};
 use novafile_value::Value;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// Run the server on an established connection until shutdown.
+///
+/// # Errors
+///
+/// Fails if the LSP initialize handshake fails, if the client's capabilities
+/// or a notification's parameters cannot be (de)serialized, or if sending a
+/// message to the client fails.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "public API takes ownership of the connection for the server's lifetime"
+)]
 pub fn run(conn: Connection) -> Result<(), Error> {
     let caps = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
@@ -71,12 +87,17 @@ enum Kind {
     Document,
 }
 
+/// Whether a URI path has the given (case-sensitive) file extension.
+fn has_ext(path: &str, ext: &str) -> bool {
+    std::path::Path::new(path).extension().is_some_and(|e| e == ext)
+}
+
 fn kind_of(uri: &Url, text: &str) -> Kind {
-    if uri.path().ends_with(".novs") {
+    if has_ext(uri.path(), "novs") {
         return Kind::Schema;
     }
     let first = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).unwrap_or("");
-    if first.starts_with("@patch") || uri.path().ends_with(".patch") {
+    if first.starts_with("@patch") || has_ext(uri.path(), "patch") {
         Kind::Patch
     } else {
         Kind::Document
@@ -90,9 +111,10 @@ fn range(src: &str, start: usize, end: usize) -> Range {
 }
 
 /// Range of a 1-based line (whole line).
+#[expect(clippy::cast_possible_truncation, reason = "LSP positions are u32 by protocol")]
 fn line_range(src: &str, line: usize) -> Range {
     let l = line.saturating_sub(1) as u32;
-    let len = src.lines().nth(l as usize).map(|t| t.encode_utf16().count()).unwrap_or(0) as u32;
+    let len = src.lines().nth(l as usize).map_or(0, |t| t.encode_utf16().count()) as u32;
     Range::new(Position::new(l, 0), Position::new(l, len))
 }
 
@@ -140,7 +162,7 @@ fn parse_data(text: &str) -> Result<Option<Parsed>, novafile_text::ParseError> {
     Ok(Some(Parsed { value, spans, schema_ref }))
 }
 
-impl<'c> Server<'c> {
+impl Server<'_> {
     fn scan_schemas(&mut self, root: &std::path::Path) {
         fn walk(dir: &std::path::Path, depth: usize, out: &mut Vec<PathBuf>) {
             if depth > 8 {
@@ -175,7 +197,7 @@ impl<'c> Server<'c> {
         let open: Vec<(PathBuf, Schema)> = self
             .docs
             .iter()
-            .filter(|(u, _)| u.path().ends_with(".novs"))
+            .filter(|(u, _)| has_ext(u.path(), "novs"))
             .filter_map(|(u, t)| Some((u.to_file_path().ok()?, novafile_schema::parse_schema(t).ok()?)))
             .collect();
         let mut all: Vec<Schema> = open.iter().map(|(_, s)| s.clone()).collect();
@@ -214,6 +236,7 @@ impl<'c> Server<'c> {
             }
             Kind::Patch => match novafile_patch::parse_patch(text) {
                 Err(novafile_patch::PatchError::Syntax { line, col, message }) => {
+                    #[expect(clippy::cast_possible_truncation, reason = "LSP positions are u32 by protocol")]
                     let off = offset_of_utf16(text, line.saturating_sub(1) as u32, col.saturating_sub(1) as u32);
                     out.push(diag(point_range(text, off), DiagnosticSeverity::ERROR, "nova::patch::syntax", message));
                 }
@@ -258,7 +281,7 @@ impl<'c> Server<'c> {
     }
 
     /// Convention findings from `novafile-lint` (spec Appendix E).
-    fn lints(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
+    fn lints(uri: &Url, text: &str) -> Vec<Diagnostic> {
         let config = novafile_lint::Config::default();
         let findings = match kind_of(uri, text) {
             Kind::Schema => novafile_lint::lint_schema(text, &config).unwrap_or_default(),
@@ -281,7 +304,7 @@ impl<'c> Server<'c> {
     fn publish(&self, uri: &Url) -> Result<(), Error> {
         let Some(text) = self.docs.get(uri) else { return Ok(()) };
         let mut diagnostics = self.diagnostics(uri, text);
-        diagnostics.extend(self.lints(uri, text));
+        diagnostics.extend(Self::lints(uri, text));
         let params = PublishDiagnosticsParams {
             uri: uri.clone(),
             diagnostics,
@@ -326,23 +349,23 @@ impl<'c> Server<'c> {
         match n.method.as_str() {
             DidOpenTextDocument::METHOD => {
                 let p: DidOpenTextDocumentParams = serde_json::from_value(n.params)?;
-                let is_schema = p.text_document.uri.path().ends_with(".novs");
+                let is_schema = has_ext(p.text_document.uri.path(), "novs");
                 self.docs.insert(p.text_document.uri.clone(), p.text_document.text);
                 if is_schema {
-                    self.publish_all()?
+                    self.publish_all()?;
                 } else {
-                    self.publish(&p.text_document.uri)?
+                    self.publish(&p.text_document.uri)?;
                 }
             }
             DidChangeTextDocument::METHOD => {
                 let p: DidChangeTextDocumentParams = serde_json::from_value(n.params)?;
                 if let Some(c) = p.content_changes.into_iter().last() {
-                    let is_schema = p.text_document.uri.path().ends_with(".novs");
+                    let is_schema = has_ext(p.text_document.uri.path(), "novs");
                     self.docs.insert(p.text_document.uri.clone(), c.text);
                     if is_schema {
-                        self.publish_all()?
+                        self.publish_all()?;
                     } else {
-                        self.publish(&p.text_document.uri)?
+                        self.publish(&p.text_document.uri)?;
                     }
                 }
             }
@@ -365,10 +388,10 @@ impl<'c> Server<'c> {
     }
 
     fn request(&self, req: Request) -> Result<serde_json::Value, (i32, String)> {
-        let bad = |e: serde_json::Error| (lsp_server::ErrorCode::InvalidParams as i32, e.to_string());
         fn json<T: serde::Serialize>(v: T) -> Result<serde_json::Value, (i32, String)> {
             serde_json::to_value(v).map_err(|e| (lsp_server::ErrorCode::InternalError as i32, e.to_string()))
         }
+        let bad = |e: serde_json::Error| (lsp_server::ErrorCode::InvalidParams as i32, e.to_string());
         match req.method.as_str() {
             HoverRequest::METHOD => {
                 let p: HoverParams = serde_json::from_value(req.params).map_err(bad)?;
@@ -414,10 +437,10 @@ impl<'c> Server<'c> {
         if let Some(s) = self.schema_for(&p)
             && let Some((ty, field)) = s.type_at(&span.path)
         {
-            md.push_str(&format!("\n\nschema `{}`: `{ty}`", s.reference().map(|r| r.to_string()).unwrap_or_default()));
+            let _ = write!(md, "\n\nschema `{}`: `{ty}`", s.reference().map(|r| r.to_string()).unwrap_or_default());
             let (under, _) = s.deref(&ty);
             if *under != ty {
-                md.push_str(&format!(" = `{under}`"));
+                let _ = write!(md, " = `{under}`");
             }
             if let Some(f) = field {
                 let mut notes = Vec::new();
@@ -437,7 +460,7 @@ impl<'c> Server<'c> {
                     notes.push("**deprecated**".into());
                 }
                 if !notes.is_empty() {
-                    md.push_str(&format!("\n\n{}", notes.join(" · ")));
+                    let _ = write!(md, "\n\n{}", notes.join(" · "));
                 }
             }
         }
@@ -483,7 +506,7 @@ impl<'c> Server<'c> {
             .take(pos.character as usize)
             .collect::<Vec<u16>>()
             .iter()
-            .map(|&u| char::from_u32(u as u32).unwrap_or('?'))
+            .map(|&u| char::from_u32(u32::from(u)).unwrap_or('?'))
             .collect();
         // Parse with the line being edited blanked out, so incomplete input does not hide the structure.
         let mut blanked: Vec<&str> = lines.clone();
@@ -566,7 +589,7 @@ impl<'c> Server<'c> {
                         }
                     )),
                     insert_text: Some(format!("{}: ", f.name)),
-                    sort_text: Some(format!("{}{}", if f.optional || f.default.is_some() { 1 } else { 0 }, f.name)),
+                    sort_text: Some(format!("{}{}", i32::from(f.optional || f.default.is_some()), f.name)),
                     deprecated: Some(f.deprecated),
                     ..Default::default()
                 })
@@ -640,7 +663,7 @@ fn children_of(text: &str, p: &Parsed, parent: &Path) -> Vec<DocumentSymbol> {
                 name = format!("{name} {}", novafile_text::flow_string(id));
             }
             let full = range(text, s.start, s.end);
-            let sel = s.key.map(|(a, b)| range(text, a, b)).unwrap_or(full);
+            let sel = s.key.map_or(full, |(a, b)| range(text, a, b));
             let detail = if v.is_container() {
                 Some(v.kind().to_owned())
             } else {
@@ -662,6 +685,7 @@ fn children_of(text: &str, p: &Parsed, parent: &Path) -> Vec<DocumentSymbol> {
 }
 
 /// Request id helper for tests.
+#[must_use]
 pub fn request_id(i: i32) -> RequestId {
     RequestId::from(i)
 }

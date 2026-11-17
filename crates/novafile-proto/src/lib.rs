@@ -30,7 +30,7 @@
 //! | `duration` | `google.protobuf.Duration` | Same shape; seconds and nanos carry the same sign. |
 //! | `list<T>` `T[]` `set<T>` | `repeated T` | Packed for numeric scalars and enums; both packed and unpacked input is accepted. |
 //! | `map<K, V>` | `map<K, V>` | `K` must be `string` or an integer kind. |
-//! | `enum E` with only unit variants | `enum E` | `E_UNSPECIFIED = 0`, then `E_VARIANT = 1, 2, …` in declared order (SCREAMING_SNAKE, prefixed by the enum name). |
+//! | `enum E` with only unit variants | `enum E` | `E_UNSPECIFIED = 0`, then `E_VARIANT = 1, 2, …` in declared order (`SCREAMING_SNAKE`, prefixed by the enum name). |
 //! | `enum E` with a payload variant | `message E { oneof variant { … } }` | Variant *i* (0-based) is field *i* + 1; a unit variant is a `google.protobuf.Empty` member. |
 //! | `name?: T` (optional field), `T?` (nullable), field with `= default` | `optional T` | proto3 explicit presence, for scalar and enum fields; message fields always have presence. |
 //! | `@deprecated` | `[deprecated = true]` | |
@@ -101,6 +101,8 @@ pub const MAX_DEPTH: usize = 128;
 /// Render the proto3 `.proto` source for every definition reachable from the
 /// schema's `@root`.
 ///
+/// # Errors
+///
 /// Fails if a reachable type has no Protobuf mapping, or a record field lacks
 /// a valid, unique `@id(n)`; the message names the definition and field.
 ///
@@ -123,19 +125,39 @@ pub fn proto_file(schema: &Schema) -> Result<String, String> {
 ///
 /// The value is first resolved against the schema (spec §6.3); any violation
 /// is an error, as is a value that has no Protobuf form (see the crate docs).
+///
+/// # Errors
+///
+/// Fails if the schema has no Protobuf mapping (as for [`proto_file`]), the
+/// value does not resolve against the schema, or a value has no Protobuf
+/// form or nests deeper than [`MAX_DEPTH`]; the message names the path.
 pub fn encode(value: &Value, schema: &Schema) -> Result<Vec<u8>, String> {
     encode::encode(value, schema)
 }
 
 /// Decode the wire bytes of the root message into a NOVA value, which is then
 /// validated against the schema.
+///
+/// # Errors
+///
+/// Fails if the schema has no Protobuf mapping (as for [`proto_file`]), the
+/// bytes are malformed or use the wrong wire type for a field, a value is out
+/// of range for its NOVA type, messages nest deeper than [`MAX_DEPTH`], or the
+/// decoded value does not validate against the schema.
 pub fn decode(bytes: &[u8], schema: &Schema) -> Result<Value, String> {
     decode::decode(bytes, schema)
 }
 
 /// The proto3 `package` name the generated file uses, if the schema is named.
+#[must_use]
 pub fn package_name(schema: &Schema) -> Option<String> {
     codegen::package(schema)
+}
+
+/// The path segment for list position `i`.
+#[expect(clippy::cast_possible_wrap, reason = "a Vec length never exceeds isize::MAX")]
+pub(crate) fn index(i: usize) -> Segment {
+    Segment::Index(i as i64)
 }
 
 /// An error with the path (innermost segment first) at which it happened.

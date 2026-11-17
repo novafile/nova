@@ -74,6 +74,10 @@ impl Config {
     }
 
     /// Apply `@x-lint key=value …` settings from a document header.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if a setting is unknown or names an unknown case style.
     pub fn with_directive(mut self, arg: &str) -> Result<Config, String> {
         for part in arg.split_whitespace() {
             match part.split_once('=') {
@@ -92,6 +96,11 @@ fn is_ident(s: &str) -> bool {
 }
 
 /// Lint a NOVA text document.
+///
+/// # Errors
+///
+/// Returns a [`ParseError`](novafile_text::ParseError) if `src` is malformed,
+/// its `@x-lint` directive is invalid, or it contains template constructs.
 pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_text::ParseError> {
     let (doc, spans) = novafile_text::parse_with_spans(src)?;
     if doc.is_template() {
@@ -139,7 +148,7 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
         if config.on("compat-loss") {
             for (p, msg) in warnings {
                 let path = Path::parse(p.trim_start_matches('.')).unwrap_or_default();
-                let (a, b) = spans.closest(&path).map(|s| (s.value_start(src).min(s.end), s.end)).unwrap_or((0, 0));
+                let (a, b) = spans.closest(&path).map_or((0, 0), |s| (s.value_start(src).min(s.end), s.end));
                 out.push(Finding {
                     rule: "compat-loss",
                     level: Level::Warning,
@@ -272,7 +281,7 @@ fn scalars(src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schem
                     .map(Value::kind)
                     .collect();
                 let mut uniq = kinds.clone();
-                uniq.sort();
+                uniq.sort_unstable();
                 uniq.dedup();
                 if uniq.len() > 1 && kinds.len() == items.iter().filter(|i| !matches!(i, Value::Null)).count() {
                     out.push(Finding {
@@ -291,11 +300,15 @@ fn scalars(src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schem
 }
 
 /// Lint a schema (`.novs`) source. Findings are located at whole lines.
+///
+/// # Errors
+///
+/// Returns a [`SchemaError`](novafile_schema::SchemaError) if `src` is not a valid schema.
 pub fn lint_schema(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_schema::SchemaError> {
     let schema = novafile_schema::parse_schema(src)?;
     let mut out = Vec::new();
     let line_of = |needle: &str, after: usize| -> (usize, usize) {
-        let i = src[after..].find(needle).map(|i| after + i).unwrap_or(0);
+        let i = src[after..].find(needle).map_or(0, |i| after + i);
         (i, i + needle.len())
     };
     for (name, def) in &schema.defs {
@@ -356,6 +369,7 @@ pub fn lint_schema(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_
 }
 
 /// Apply all fixes (non-overlapping, back to front).
+#[must_use]
 pub fn apply_fixes(src: &str, findings: &[Finding]) -> String {
     let mut fixes: Vec<&Fix> = findings.iter().filter_map(|f| f.fix.as_ref()).collect();
     fixes.sort_by_key(|f| std::cmp::Reverse(f.start));

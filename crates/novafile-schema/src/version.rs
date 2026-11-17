@@ -1,4 +1,4 @@
-//! Semantic Versioning 2.0.0 (https://semver.org) for schemas (spec §6.7).
+//! Semantic Versioning 2.0.0 (<https://semver.org>) for schemas (spec §6.7).
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -34,6 +34,7 @@ fn ident_ok(s: &str) -> bool {
 }
 
 impl Version {
+    #[must_use]
     pub fn new(major: u64, minor: u64, patch: u64) -> Self {
         Version {
             major,
@@ -44,7 +45,12 @@ impl Version {
         }
     }
 
-    /// Parse strictly per SemVer 2.0.0: `MAJOR.MINOR.PATCH[-PRE][+BUILD]`.
+    /// Parse strictly per `SemVer` 2.0.0: `MAJOR.MINOR.PATCH[-PRE][+BUILD]`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `s` is not a valid `SemVer` 2.0.0 version (e.g. missing parts,
+    /// leading zeros, empty or invalid identifiers).
     pub fn parse(s: &str) -> Result<Version, String> {
         let ctx = |m: String| format!("invalid SemVer 2.0.0 version {s:?}: {m}");
         let (rest, build) = match s.split_once('+') {
@@ -87,11 +93,13 @@ impl Version {
         })
     }
 
+    #[must_use]
     pub fn is_prerelease(&self) -> bool {
         !self.pre.is_empty()
     }
 
-    /// SemVer precedence (build metadata ignored).
+    /// `SemVer` precedence (build metadata ignored).
+    #[must_use]
     pub fn precedence(&self, other: &Version) -> Ordering {
         (self.major, self.minor, self.patch)
             .cmp(&(other.major, other.minor, other.patch))
@@ -123,6 +131,7 @@ impl Version {
     /// Can a reader at version `self` read data written against `data`?
     /// (spec §6.7: same major and reader ≥ data; 0.y.z: same minor;
     /// 0.0.z and pre-releases: exact.)
+    #[must_use]
     pub fn can_read(&self, data: &Version) -> bool {
         if self.is_prerelease() || data.is_prerelease() || (self.major == 0 && self.minor == 0) || (data.major == 0 && data.minor == 0) {
             return self.same_release(data);
@@ -137,6 +146,7 @@ impl Version {
     }
 
     /// The smallest release that permits a change of the given kind after `self`.
+    #[must_use]
     pub fn required_bump(&self, kind: ChangeKind) -> Version {
         let v = |a, b, c| Version::new(a, b, c);
         match (kind, self.major, self.minor) {
@@ -191,6 +201,7 @@ pub struct SchemaRef {
     pub fingerprint: Option<String>,
 }
 
+#[must_use]
 pub fn valid_schema_name(n: &str) -> bool {
     let b = n.as_bytes();
     !b.is_empty()
@@ -201,6 +212,12 @@ pub fn valid_schema_name(n: &str) -> bool {
 }
 
 impl SchemaRef {
+    /// Parse a reference `name@MAJOR.MINOR.PATCH[#fingerprint]`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the name, the version or the 16-hex-digit fingerprint is invalid,
+    /// or the `@` separator is missing.
     pub fn parse(s: &str) -> Result<SchemaRef, String> {
         let (body, fp) = match s.split_once('#') {
             Some((b, f)) => {

@@ -76,6 +76,12 @@ const TAG_MAP: u64 = 259;
 // ---------------------------------------------------------------- decoding
 
 /// Decode exactly one CBOR data item; trailing bytes are an error.
+///
+/// # Errors
+///
+/// Returns a message naming the byte offset if the input is truncated,
+/// malformed or has trailing bytes, nests deeper than 128 levels, or uses
+/// a tag, simple value or integer range NOVA does not support.
 pub fn from_slice(b: &[u8]) -> Result<Value, String> {
     let mut d = Decoder { b, i: 0, depth: 0 };
     let v = d.item()?;
@@ -167,29 +173,26 @@ impl Decoder<'_> {
             }
             Ok(())
         };
-        match self.arg(ai)? {
-            Some(n) => {
-                let n = self.length(n, 1)?;
-                let s = self.take(n)?.to_vec();
-                check(self, &s)?;
-                Ok(s)
-            }
-            None => {
-                let mut out = Vec::new();
-                loop {
-                    let ib = self.byte()?;
-                    if ib == 0xff {
-                        return Ok(out);
-                    }
-                    if ib >> 5 != major {
-                        return self.err("indefinite-length string chunk of the wrong type");
-                    }
-                    let n = self.definite(ib & 31)?;
-                    let n = self.length(n, 1)?;
-                    let chunk = self.take(n)?.to_vec();
-                    check(self, &chunk)?;
-                    out.extend(chunk);
+        if let Some(n) = self.arg(ai)? {
+            let n = self.length(n, 1)?;
+            let s = self.take(n)?.to_vec();
+            check(self, &s)?;
+            Ok(s)
+        } else {
+            let mut out = Vec::new();
+            loop {
+                let ib = self.byte()?;
+                if ib == 0xff {
+                    return Ok(out);
                 }
+                if ib >> 5 != major {
+                    return self.err("indefinite-length string chunk of the wrong type");
+                }
+                let n = self.definite(ib & 31)?;
+                let n = self.length(n, 1)?;
+                let chunk = self.take(n)?.to_vec();
+                check(self, &chunk)?;
+                out.extend(chunk);
             }
         }
     }
@@ -198,20 +201,17 @@ impl Decoder<'_> {
     fn array(&mut self, ai: u8) -> Result<Vec<Value>, String> {
         self.enter()?;
         let mut out = Vec::new();
-        match self.arg(ai)? {
-            Some(n) => {
-                let n = self.length(n, 1)?;
-                out.reserve(n);
-                for _ in 0..n {
-                    out.push(self.item()?);
-                }
+        if let Some(n) = self.arg(ai)? {
+            let n = self.length(n, 1)?;
+            out.reserve(n);
+            for _ in 0..n {
+                out.push(self.item()?);
             }
-            None => {
-                while self.peek()? != 0xff {
-                    out.push(self.item()?);
-                }
-                self.i += 1;
+        } else {
+            while self.peek()? != 0xff {
+                out.push(self.item()?);
             }
+            self.i += 1;
         }
         self.depth -= 1;
         Ok(out)
@@ -227,19 +227,16 @@ impl Decoder<'_> {
             out.push((k, v));
             Ok(())
         };
-        match self.arg(ai)? {
-            Some(n) => {
-                let n = self.length(n, 2)?;
-                for _ in 0..n {
-                    next(self)?;
-                }
+        if let Some(n) = self.arg(ai)? {
+            let n = self.length(n, 2)?;
+            for _ in 0..n {
+                next(self)?;
             }
-            None => {
-                while self.peek()? != 0xff {
-                    next(self)?;
-                }
-                self.i += 1;
+        } else {
+            while self.peek()? != 0xff {
+                next(self)?;
             }
+            self.i += 1;
         }
         self.depth -= 1;
         let at = self.i;
@@ -319,7 +316,13 @@ impl Decoder<'_> {
                         secs += 1.0;
                         nanos = 0.0;
                     }
-                    Timestamp::new(secs as i64, nanos as u32).map(Value::Timestamp).or_else(|e| bad(&e))
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "|f| < 1e17 fits i64 and nanos is in [0, 1e9)"
+                    )]
+                    let t = Timestamp::new(secs as i64, nanos as u32);
+                    t.map(Value::Timestamp).or_else(|e| bad(&e))
                 }
                 _ => bad("expected an integer or a finite float"),
             },
@@ -403,6 +406,11 @@ fn f16_to_f64(h: u16) -> f64 {
 
 /// binary64 → binary16, only if the conversion is exact. NaN maps to the
 /// canonical quiet NaN `0x7e00`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "range checks on the exponent bound every narrowed value to binary16's fields"
+)]
 fn f64_to_f16_exact(f: f64) -> Option<u16> {
     if f.is_nan() {
         return Some(0x7e00);
@@ -431,7 +439,7 @@ fn f64_to_f16_exact(f: f64) -> Option<u16> {
     if (-24..-14).contains(&e) {
         // Subnormal binary16: value = m × 2^-24.
         let sig = mant | 1 << 52;
-        let shift = (28 - e) as u32;
+        let shift = (28 - e).cast_unsigned();
         if sig & ((1u64 << shift) - 1) != 0 {
             return None;
         }
@@ -444,6 +452,7 @@ fn f64_to_f16_exact(f: f64) -> Option<u16> {
 
 /// Encode a value as one CBOR data item, reporting every lossy mapping.
 /// With `deterministic`, output is RFC 8949 §4.2.1 core deterministic.
+#[must_use]
 pub fn to_vec(v: &Value, deterministic: bool) -> (Vec<u8>, Vec<Warning>) {
     let mut e = Encoder {
         det: deterministic,
@@ -459,21 +468,22 @@ struct Encoder {
     rep: Reporter,
 }
 
+#[expect(clippy::cast_possible_truncation, reason = "each match arm bounds `arg` to the target width")]
 fn head(out: &mut Vec<u8>, major: u8, arg: u64) {
     let m = major << 5;
     match arg {
         0..=23 => out.push(m | arg as u8),
-        24..=0xff => out.extend([m | 24, arg as u8]),
+        24..=0xff => out.extend([m | 0x18, arg as u8]),
         0x100..=0xffff => {
-            out.push(m | 25);
+            out.push(m | 0x19);
             out.extend((arg as u16).to_be_bytes());
         }
         0x1_0000..=0xffff_ffff => {
-            out.push(m | 26);
+            out.push(m | 0x1a);
             out.extend((arg as u32).to_be_bytes());
         }
         _ => {
-            out.push(m | 27);
+            out.push(m | 0x1b);
             out.extend(arg.to_be_bytes());
         }
     }
@@ -486,23 +496,27 @@ fn text(out: &mut Vec<u8>, s: &str) {
 
 fn int(out: &mut Vec<u8>, i: i128) {
     let (major, tag, n) = if i >= 0 {
-        (0, TAG_POS_BIGNUM, i as u128)
+        (0, TAG_POS_BIGNUM, i.cast_unsigned())
     } else {
-        (1, TAG_NEG_BIGNUM, (-1 - i) as u128)
+        (1, TAG_NEG_BIGNUM, (-1 - i).cast_unsigned())
     };
-    match u64::try_from(n) {
-        Ok(n) => head(out, major, n),
-        Err(_) => {
-            head(out, 6, tag);
-            let be = n.to_be_bytes();
-            let digits = &be[be.iter().position(|&b| b != 0).unwrap_or(be.len())..];
-            head(out, 2, digits.len() as u64);
-            out.extend_from_slice(digits);
-        }
+    if let Ok(n) = u64::try_from(n) {
+        head(out, major, n);
+    } else {
+        head(out, 6, tag);
+        let be = n.to_be_bytes();
+        let digits = &be[be.iter().position(|&b| b != 0).unwrap_or(be.len())..];
+        head(out, 2, digits.len() as u64);
+        out.extend_from_slice(digits);
     }
 }
 
 impl Encoder {
+    #[expect(
+        clippy::float_cmp,
+        clippy::cast_possible_truncation,
+        reason = "narrowing to f32 is deliberate; exact equality checks it was lossless"
+    )]
     fn float(&self, out: &mut Vec<u8>, f: f64) {
         if !self.det {
             out.push(0xfb);
@@ -530,7 +544,9 @@ impl Encoder {
         if sort && self.det {
             items.sort();
         }
-        items.into_iter().for_each(|b| out.extend(b));
+        for b in items {
+            out.extend(b);
+        }
     }
 
     /// Encode `v` into a fresh buffer with the given reporter.

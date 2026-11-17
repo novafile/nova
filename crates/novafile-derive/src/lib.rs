@@ -10,12 +10,13 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as Ts;
 use quote::quote;
+use std::fmt::Write as _;
 use syn::{Attribute, Data, DeriveInput, Error, Fields, LitInt, LitStr, parse_macro_input, spanned::Spanned};
 
 #[proc_macro_derive(NovaSchema, attributes(nova))]
 pub fn derive_nova_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    expand(input).unwrap_or_else(Error::into_compile_error).into()
+    expand(&input).unwrap_or_else(Error::into_compile_error).into()
 }
 
 #[derive(Default)]
@@ -28,6 +29,7 @@ struct Container {
 }
 
 #[derive(Default)]
+#[expect(clippy::struct_excessive_bools, reason = "one flag per independent attribute")]
 struct FieldAttrs {
     rename: Option<String>,
     key: bool,
@@ -49,9 +51,9 @@ fn ignore(meta: &syn::meta::ParseNestedMeta) -> syn::Result<()> {
     if meta.input.peek(syn::Token![=]) {
         meta.value()?.parse::<syn::Expr>()?;
     } else if meta.input.peek(syn::token::Paren) {
-        let _content;
-        syn::parenthesized!(_content in meta.input);
-        let _: Ts = _content.parse()?;
+        let content;
+        syn::parenthesized!(content in meta.input);
+        let _: Ts = content.parse()?;
     }
     Ok(())
 }
@@ -149,7 +151,7 @@ fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
     Ok(f)
 }
 
-/// Serde's `rename_all` rules, for snake_case fields and PascalCase variants.
+/// Serde's `rename_all` rules, for `snake_case` fields and `PascalCase` variants.
 fn rename(name: &str, rule: Option<&str>, is_variant: bool) -> syn::Result<String> {
     let Some(rule) = rule else { return Ok(name.to_owned()) };
     let words: Vec<String> = if is_variant {
@@ -203,28 +205,26 @@ fn record_fields(owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> 
         let at = format!("{owner}.{name}");
         let mut attr_text = String::new();
         if let Some(r) = &a.range {
-            attr_text.push_str(&format!(" @range({r})"));
+            let _ = write!(attr_text, " @range({r})");
         }
         if let Some(l) = &a.len {
-            attr_text.push_str(&format!(" @len({l})"));
+            let _ = write!(attr_text, " @len({l})");
         }
         let with = if attr_text.is_empty() {
             quote!()
         } else {
             quote!(let ty = ::novafile_schema::derive::__with_attrs(ty, #attr_text, #at);)
         };
-        let default = match &a.default {
-            Some(d) => quote!(Some(::novafile_schema::derive::__default(#d, #at))),
-            None => quote!(None),
+        let default = if let Some(d) = &a.default {
+            quote!(Some(::novafile_schema::derive::__default(#d, #at)))
+        } else {
+            quote!(None)
         };
         let has_default = a.default.is_some();
         let serde_default = a.serde_default;
         let key = a.key;
         let deprecated = a.deprecated;
-        let id = match a.id {
-            Some(n) => quote!(Some(#n)),
-            None => quote!(None),
-        };
+        let id = if let Some(n) = a.id { quote!(Some(#n)) } else { quote!(None) };
         out.push(quote! {{
             let ty = <#ty as ::novafile_schema::NovaSchema>::nova_type(generator);
             #with
@@ -247,7 +247,7 @@ fn record_fields(owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> 
     }})
 }
 
-fn expand(input: DeriveInput) -> syn::Result<Ts> {
+fn expand(input: &DeriveInput) -> syn::Result<Ts> {
     if !input.generics.params.is_empty() {
         return Err(Error::new(input.generics.span(), "NovaSchema cannot be derived for generic types yet"));
     }
@@ -268,10 +268,10 @@ fn expand(input: DeriveInput) -> syn::Result<Ts> {
                 let ty = &u.unnamed[0].ty;
                 let mut attr_text = String::new();
                 if let Some(r) = &a.range {
-                    attr_text.push_str(&format!(" @range({r})"));
+                    let _ = write!(attr_text, " @range({r})");
                 }
                 if let Some(l) = &a.len {
-                    attr_text.push_str(&format!(" @len({l})"));
+                    let _ = write!(attr_text, " @len({l})");
                 }
                 let with = if attr_text.is_empty() {
                     quote!()

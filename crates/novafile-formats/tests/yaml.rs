@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use novafile_formats::yaml::{from_str, from_str_multi, to_string};
 use novafile_value::{Decimal, Duration, Rational, Record, Timestamp, Value};
 
@@ -142,7 +144,7 @@ fn alias_bomb_is_rejected_quickly() {
     let mut doc = String::from("a0: &a0 [lol, lol, lol, lol, lol, lol, lol, lol, lol, lol]\n");
     for i in 1..10 {
         let p = i - 1;
-        doc.push_str(&format!("a{i}: &a{i} [*a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}]\n"));
+        writeln!(doc, "a{i}: &a{i} [*a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}]").unwrap();
     }
     let start = std::time::Instant::now();
     let e = from_str(&doc).unwrap_err();
@@ -269,7 +271,7 @@ fn json_subset() -> Value {
         ("neg", Value::Int(i128::MIN)),
         ("f", Value::Float(1.5)),
         ("tiny", Value::Float(1e-300)),
-        ("huge", Value::Float(1.7976931348623157e308)),
+        ("huge", Value::Float(1.797_693_134_862_315_7e308)),
         ("third", Value::Float(1.0 / 3.0)),
         ("negzero", Value::Float(-0.0)),
         ("nan", Value::Float(f64::NAN)),

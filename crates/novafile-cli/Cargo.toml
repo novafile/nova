@@ -26,3 +26,6 @@ serde_json.workspace = true
 clap.workspace = true
 miette = { workspace = true, features = ["fancy"] }
 detect-coding-agent.workspace = true
+
+[lints]
+workspace = true

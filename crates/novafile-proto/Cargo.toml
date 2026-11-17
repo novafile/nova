@@ -14,3 +14,6 @@ novafile-text.workspace = true
 [dev-dependencies]
 prost-reflect.workspace = true
 protox.workspace = true
+
+[lints]
+workspace = true

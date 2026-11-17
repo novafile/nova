@@ -166,7 +166,12 @@ fn nova_kind(wip: P, v: Value) -> R {
     } else {
         let n = duration(v)?.as_nanos();
         let n = u128::try_from(n).map_err(|_| Error::new("negative duration cannot be a std::time::Duration"))?;
-        wip.set(std::time::Duration::new((n / 1_000_000_000) as u64, (n % 1_000_000_000) as u32))?
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a NOVA duration is at most i64::MAX seconds, and the remainder is below 1e9"
+        )]
+        let d = std::time::Duration::new((n / 1_000_000_000) as u64, (n % 1_000_000_000) as u32);
+        wip.set(d)?
     })
 }
 
@@ -191,8 +196,11 @@ where
 }
 
 fn is_integer(st: ScalarType) -> bool {
-    use ScalarType::*;
-    matches!(st, U8 | U16 | U32 | U64 | U128 | USize | I8 | I16 | I32 | I64 | I128 | ISize)
+    use ScalarType as S;
+    matches!(
+        st,
+        S::U8 | S::U16 | S::U32 | S::U64 | S::U128 | S::USize | S::I8 | S::I16 | S::I32 | S::I64 | S::I128 | S::ISize
+    )
 }
 
 fn scalar(wip: P, st: Option<ScalarType>, v: Value, key: bool) -> R {
@@ -212,9 +220,12 @@ fn scalar(wip: P, st: Option<ScalarType>, v: Value, key: bool) -> R {
         (Some(S::String), Value::String(s)) => wip.set(s)?,
         (Some(S::CowStr), Value::String(s)) => wip.set(Cow::<'static, str>::Owned(s))?,
         (Some(S::Str), _) => return Err(Error::new("cannot deserialize a borrowed &str from an owned value; use String")),
+        #[expect(clippy::cast_possible_truncation, reason = "an f32 target rounds the value by design")]
         (Some(S::F32), Value::Float(f)) => wip.set(f as f32)?,
+        #[expect(clippy::cast_precision_loss, reason = "an integer read into a float rounds by design")]
         (Some(S::F32), Value::Int(i)) => wip.set(i as f32)?,
         (Some(S::F64), Value::Float(f)) => wip.set(f)?,
+        #[expect(clippy::cast_precision_loss, reason = "an integer read into a float rounds by design")]
         (Some(S::F64), Value::Int(i)) => wip.set(i as f64)?,
         (Some(S::U8), Value::Int(i)) => int::<u8>(wip, i, "u8")?,
         (Some(S::U16), Value::Int(i)) => int::<u16>(wip, i, "u16")?,
@@ -446,6 +457,10 @@ fn fields(mut wip: P, fields: &'static [Field], r: Record, deny: bool) -> R {
         return Err(Error::new(format!("unknown field `{k}`, expected one of {}", expected.join(", "))));
     }
     // Missing fields without a default are an error here rather than at build time.
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "`FieldPlan` is not exported by facet-reflect, so the method path cannot be named"
+    )]
     let required: Vec<bool> = match wip.field_plans() {
         Some(plans) => plans.iter().map(|p| p.is_required()).collect(),
         None => vec![false; fields.len()],
@@ -501,31 +516,29 @@ fn enumeration(wip: P, v: Value) -> R {
         };
     }
     if shape.is_untagged() {
-        return untagged(wip, et.variants, v);
+        return untagged(wip, et.variants, &v);
     }
-    match (shape.get_tag_attr(), shape.get_content_attr()) {
-        (Some(t), content) => {
-            let Value::Record(mut r) = v else {
-                return Err(invalid(&v, format_args!("enum {shape}")));
-            };
-            let tag = match r.remove(t) {
-                Some(Value::String(s) | Value::Variant(s, None)) => s,
-                Some(other) => return Err(invalid(&other, "a variant tag").at_field(t)),
-                None => return Err(Error::new(format!("missing field `{t}`"))),
-            };
-            let (wip, variant) = select(wip, et.variants, &tag)?;
-            let payload = match content {
-                Some(c) => r.remove(c),
-                None if variant.data.kind == StructKind::Unit => None,
-                None => Some(Value::Record(r)),
-            };
-            payload_into(wip, variant, payload)
-        }
-        (None, _) => {
-            let (tag, payload) = external_tag(v, shape)?;
-            let (wip, variant) = select(wip, et.variants, &tag)?;
-            payload_into(wip, variant, payload)
-        }
+    if let Some(t) = shape.get_tag_attr() {
+        let content = shape.get_content_attr();
+        let Value::Record(mut r) = v else {
+            return Err(invalid(&v, format_args!("enum {shape}")));
+        };
+        let tag = match r.remove(t) {
+            Some(Value::String(s) | Value::Variant(s, None)) => s,
+            Some(other) => return Err(invalid(&other, "a variant tag").at_field(t)),
+            None => return Err(Error::new(format!("missing field `{t}`"))),
+        };
+        let (wip, variant) = select(wip, et.variants, &tag)?;
+        let payload = match content {
+            Some(c) => r.remove(c),
+            None if variant.data.kind == StructKind::Unit => None,
+            None => Some(Value::Record(r)),
+        };
+        payload_into(wip, variant, payload)
+    } else {
+        let (tag, payload) = external_tag(v, shape)?;
+        let (wip, variant) = select(wip, et.variants, &tag)?;
+        payload_into(wip, variant, payload)
     }
 }
 
@@ -554,10 +567,10 @@ fn payload_into(wip: P, variant: &'static Variant, payload: Option<Value>) -> R 
 
 /// Untagged enums take the first variant whose payload the value fits (as
 /// with serde). Each candidate is tried on a scratch value of the same type.
-fn untagged(wip: P, variants: &'static [Variant], v: Value) -> R {
+fn untagged(wip: P, variants: &'static [Variant], v: &Value) -> R {
     let shape = wip.shape();
     for (i, variant) in variants.iter().enumerate() {
-        let payload = match (&variant.data.kind, &v) {
+        let payload = match (&variant.data.kind, v) {
             (StructKind::Unit, Value::Null) => None,
             (StructKind::Unit, _) => continue,
             _ => Some(v.clone()),

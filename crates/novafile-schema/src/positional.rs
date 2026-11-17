@@ -10,7 +10,7 @@
 //! depends on the schema, which is why readers must hold exactly the
 //! schema identified by the document's fingerprint.
 
-use crate::model::*;
+use crate::model::{Def, Schema, TypeKind, TypeRef};
 use novafile_value::{Record, Value};
 
 const ABSENT: &str = "_";
@@ -21,11 +21,16 @@ fn absent() -> Value {
 
 impl Schema {
     /// Convert a value (resolved against the root type first) into its positional form.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the schema has no `@root`, or if `v` does not resolve against it
+    /// (the issues are joined into one message).
     pub fn to_positional(&self, v: &Value) -> Result<Value, String> {
         let root = self.root_type().ok_or("the positional profile needs a schema with @root")?;
         let resolved = self
             .resolve_as(v, &root)
-            .map_err(|i| i.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("; "))?;
+            .map_err(|i| i.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; "))?;
         let out = self.pos_out(&resolved, &root, "")?;
         Ok(match out {
             Value::Tuple(items) => Value::List(items),
@@ -34,11 +39,16 @@ impl Schema {
     }
 
     /// Convert a positional value back into a normal (named) value, validated against the schema.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the schema has no `@root`, if `v` does not have the positional
+    /// shape, or if the named value does not resolve against the schema.
     pub fn from_positional(&self, v: &Value) -> Result<Value, String> {
         let root = self.root_type().ok_or("the positional profile needs a schema with @root")?;
         let named = self.pos_in(v, &root, "")?;
         self.resolve_as(&named, &root)
-            .map_err(|i| i.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("; "))
+            .map_err(|i| i.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; "))
     }
 
     fn pos_out(&self, v: &Value, t: &TypeRef, at: &str) -> Result<Value, String> {

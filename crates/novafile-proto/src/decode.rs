@@ -2,7 +2,7 @@
 
 use crate::shape::{Classified, Message, Plan, Scalar, Shape, Single, WireType, classify_field, classify_payload, field_number};
 use crate::wire::{Reader, Wire, fields, unzigzag32, unzigzag64};
-use crate::{Fail, MAX_DEPTH};
+use crate::{Fail, MAX_DEPTH, index};
 use novafile_schema::{FieldDef, Schema};
 use novafile_text::Segment;
 use novafile_value::{Decimal, Duration, Rational, Record, Timestamp, Value};
@@ -85,14 +85,16 @@ impl<'s> Decoder<'s> {
                 Ok(Value::Variant(vd.name.clone(), payload))
             }
             Message::Timestamp => {
-                let secs = last_varint(&wire, 1)?.unwrap_or(0) as i64;
-                let nanos = last_varint(&wire, 2)?.unwrap_or(0) as u32 as i32;
+                let secs = last_varint(&wire, 1)?.unwrap_or(0).cast_signed();
+                #[expect(clippy::cast_possible_truncation, reason = "int32 fields use the low 32 bits of the varint")]
+                let nanos = (last_varint(&wire, 2)?.unwrap_or(0) as u32).cast_signed();
                 let nanos = u32::try_from(nanos).map_err(|_| Fail::new(format!("google.protobuf.Timestamp has negative nanos {nanos}")))?;
                 Timestamp::new(secs, nanos).map(Value::Timestamp).map_err(Fail::new)
             }
             Message::Duration => {
-                let secs = last_varint(&wire, 1)?.unwrap_or(0) as i64;
-                let nanos = i64::from(last_varint(&wire, 2)?.unwrap_or(0) as u32 as i32);
+                let secs = last_varint(&wire, 1)?.unwrap_or(0).cast_signed();
+                #[expect(clippy::cast_possible_truncation, reason = "int32 fields use the low 32 bits of the varint")]
+                let nanos = i64::from((last_varint(&wire, 2)?.unwrap_or(0) as u32).cast_signed());
                 if nanos.abs() >= NANOS_PER_SEC || (secs > 0 && nanos < 0) || (secs < 0 && nanos > 0) {
                     return Err(Fail::new(format!("invalid google.protobuf.Duration: seconds {secs}, nanos {nanos}")));
                 }
@@ -152,7 +154,7 @@ impl<'s> Decoder<'s> {
             Shape::Repeated { elem, set } => {
                 let mut items = Vec::new();
                 for w in entries {
-                    let at = Segment::Index(items.len() as i64);
+                    let at = index(items.len());
                     match (elem, w) {
                         (Single::Scalar(s), Wire::Len(bytes)) if s.packable() => packed(bytes, s, &mut items),
                         (Single::Scalar(s), w) => scalar(*w, s).map(|v| items.push(v)),
@@ -180,12 +182,11 @@ impl<'s> Decoder<'s> {
                     };
                     let v = v.map_err(|e| e.at(Segment::Key(k.clone())))?;
                     // Last entry wins for duplicate keys.
-                    match index.get(&k) {
-                        Some(&i) => out[i].1 = v,
-                        None => {
-                            index.insert(k.clone(), out.len());
-                            out.push((k, v));
-                        }
+                    if let Some(&i) = index.get(&k) {
+                        out[i].1 = v;
+                    } else {
+                        index.insert(k.clone(), out.len());
+                        out.push((k, v));
                     }
                 }
                 Ok(Value::Map(out))
@@ -230,11 +231,12 @@ fn packed(bytes: &[u8], s: Scalar<'_>, items: &mut Vec<Value>) -> Result<(), Fai
             WireType::I64 => Wire::I64(r.fixed64()?),
             wt => unreachable!("{wt:?} is not packable"),
         };
-        items.push(scalar(w, s).map_err(|e| e.at(Segment::Index(items.len() as i64)))?);
+        items.push(scalar(w, s).map_err(|e| e.at(index(items.len())))?);
     }
     Ok(())
 }
 
+#[expect(clippy::cast_possible_truncation, reason = "uint32 and enum (int32) fields use the low 32 bits of the varint")]
 fn scalar(w: Wire<'_>, s: Scalar<'_>) -> Result<Value, Fail> {
     if w.wire_type() != s.wire_type() {
         return Err(wire_mismatch(w, s.wire_type()));
@@ -248,18 +250,18 @@ fn scalar(w: Wire<'_>, s: Scalar<'_>) -> Result<Value, Fail> {
         (Scalar::UInt64, Wire::Varint(v)) => Value::Int(v.into()),
         (Scalar::Enum(name, vs), Wire::Varint(v)) => {
             // Enums are int32 on the wire.
-            let n = v as u32 as i32;
-            let i = usize::try_from(n)
+            let number = (v as u32).cast_signed();
+            let idx = usize::try_from(number)
                 .ok()
                 .and_then(|n| n.checked_sub(1))
                 .filter(|&i| i < vs.len())
                 .ok_or_else(|| {
-                    Fail::new(match n {
+                    Fail::new(match number {
                         0 => format!("{name} value 0 (UNSPECIFIED) has no NOVA variant"),
                         n => format!("unknown {name} value {n}"),
                     })
                 })?;
-            Value::Variant(vs[i].name.clone(), None)
+            Value::Variant(vs[idx].name.clone(), None)
         }
         (Scalar::Double, Wire::I64(bits)) => Value::Float(f64::from_bits(bits)),
         (Scalar::String, Wire::Len(b)) => Value::String(text(b)?),

@@ -19,3 +19,6 @@ facet-reflect.workspace = true
 novafile-serde.workspace = true
 novafile-value = { workspace = true, features = ["facet", "serde"] }
 serde.workspace = true
+
+[lints]
+workspace = true

@@ -17,7 +17,7 @@ use std::process::ExitCode;
 )]
 struct Cli {
     /// Agent mode: plain, narratable errors and agent hints. `auto` detects coding
-    /// agents (Claude Code, Codex, Copilot, Cursor, …); also settable via NOVA_AGENT.
+    /// agents (Claude Code, Codex, Copilot, Cursor, …); also settable via `NOVA_AGENT`.
     #[arg(long, value_enum, global = true, env = "NOVA_AGENT", default_value = "auto")]
     agent: AgentMode,
     #[command(subcommand)]
@@ -193,7 +193,7 @@ enum Cmd {
     Guide,
     /// Check documents (.nova) and schemas (.novs) against NOVA conventions; exits 1 on warnings.
     ///
-    /// Rules: key-case (snake_case keys; fixable), key-collision, quoted-key, untyped-timestamp
+    /// Rules: key-case (`snake_case` keys; fixable), key-collision, quoted-key, untyped-timestamp
     /// (fixable), mixed-list, compat-loss (with `@compat json|yaml|toml`), field-case,
     /// variant-case, partial-ids. Configure in a file with `@x-lint case=camel allow=rule,…`.
     Lint {
@@ -225,7 +225,7 @@ enum SchemaCmd {
     Fmt { file: PathBuf },
     /// Print `name#fingerprint`.
     Fingerprint { file: PathBuf },
-    /// Classify changes between two schema versions and verify the SemVer bump; exits 1 if insufficient.
+    /// Classify changes between two schema versions and verify the `SemVer` bump; exits 1 if insufficient.
     Check { old: PathBuf, new: PathBuf },
     /// Print the proto3 `.proto` file for a schema (fields need `@id`).
     Proto { file: PathBuf },
@@ -243,7 +243,7 @@ enum SchemaCmd {
         /// Schema name for `@schema name@version`.
         #[arg(long)]
         name: Option<String>,
-        /// SemVer version (default 0.1.0).
+        /// `SemVer` version (default 0.1.0).
         #[arg(long)]
         version: Option<String>,
     },
@@ -446,8 +446,8 @@ fn render_as(l: &Loaded, f: Format, strict: bool) -> R<Vec<u8>> {
 }
 
 fn render_with(l: &Loaded, f: Format, strict: bool, schema: Option<&Schema>) -> R<Vec<u8>> {
-    let d: Vec<(&str, &str)> = l.directives.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-    let text = |p| document_to_text(&d, &l.value, p).into_bytes();
+    let directives: Vec<(&str, &str)> = l.directives.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let text = |p| document_to_text(&directives, &l.value, p).into_bytes();
     Ok(match f {
         Format::Nova => text(Profile::Human),
         Format::Compact => text(Profile::Compact),
@@ -514,7 +514,7 @@ fn out(bytes: &[u8], to: Option<&Path>) -> R<()> {
     }
 }
 
-fn issues(i: Vec<novafile_schema::Issue>) -> String {
+fn issues(i: &[novafile_schema::Issue]) -> String {
     i.iter().map(|i| format!("  {i}")).collect::<Vec<_>>().join("\n")
 }
 
@@ -551,6 +551,7 @@ fn patch_error(e: &novafile_patch::PatchError, file: &Path, src: &str) -> E {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "one dispatch arm per subcommand")]
 fn run(cli: Cli) -> R<ExitCode> {
     match cli.cmd {
         Cmd::Guide => print!("{AGENT_GUIDE}"),
@@ -560,7 +561,7 @@ fn run(cli: Cli) -> R<ExitCode> {
             allow,
             fix,
             format,
-        } => return lint(files, case, allow, fix, &format),
+        } => return lint(&files, case, allow, fix, &format),
         Cmd::Fmt { file, to, write } => {
             // NOVA text keeps its comments, blank lines and spellings (spec §3).
             let profile = match to {
@@ -571,7 +572,7 @@ fn run(cli: Cli) -> R<ExitCode> {
             };
             let text = read_text(&file)
                 .ok()
-                .filter(|t| is_nova_text(&file, t) && !file.extension().is_some_and(|e| e == "novs"));
+                .filter(|t| is_nova_text(&file, t) && file.extension().is_none_or(|e| e != "novs"));
             if file.extension().is_some_and(|e| e == "novs") && matches!(to, Format::Nova | Format::Canonical) {
                 out(load_schema(&file)?.to_canonical_text().as_bytes(), write.then_some(file.as_path()))?;
                 return Ok(ExitCode::SUCCESS);
@@ -639,7 +640,7 @@ fn run(cli: Cli) -> R<ExitCode> {
                         )
                         .into());
                     }
-                    return Err(format!("{} is invalid:\n{}", file.display(), issues(i)).into());
+                    return Err(format!("{} is invalid:\n{}", file.display(), issues(&i)).into());
                 }
             }
         }
@@ -654,9 +655,7 @@ fn run(cli: Cli) -> R<ExitCode> {
         } => {
             let l = load_as(&file, from)?;
             let r = novafile_patch::get(&l.value, &path)?;
-            let multi = !novafile_text::Path::parse(path.trim().trim_start_matches("@get").trim_start_matches("@select"))
-                .map(|p| p.is_singular())
-                .unwrap_or(true);
+            let multi = !novafile_text::Path::parse(path.trim().trim_start_matches("@get").trim_start_matches("@select")).map_or(true, |p| p.is_singular());
             let json = matches!(to, Format::Json | Format::JsonCompact);
             let one_line = |v: &Value| -> String {
                 match v {
@@ -705,34 +704,31 @@ fn run(cli: Cli) -> R<ExitCode> {
                 s.accepts_reference(r).map_err(|e| format!("{}: {e}", patch.display()))?;
             }
             let validate = |v: &Value| match &s {
-                Some(s) => s.validate(v).map_err(|i| i.iter().map(|i| i.to_string()).collect()),
+                Some(s) => s.validate(v).map_err(|i| i.iter().map(std::string::ToString::to_string).collect()),
                 None => Ok(()),
             };
             let text = read_text(&file).ok().filter(|t| is_nova_text(&file, t));
-            let (bytes, applied) = match text {
+            let (bytes, applied) = if let Some(src) = text {
                 // Document-preserving: minimal edits to the source text.
-                Some(src) => {
-                    let r = novafile_patch::apply_to_source(&src, &p, &validate).map_err(|e| patch_error(&e, &patch, &patch_src))?;
-                    (r.text.into_bytes(), r.applied)
-                }
-                None => {
-                    let is_schema = file.extension().is_some_and(|e| e == "novs");
-                    let meta = novafile_schema::meta_schema();
-                    let meta_check = |v: &Value| meta.validate(v).map_err(|i| i.iter().map(|i| i.to_string()).collect());
-                    let check: &dyn Fn(&Value) -> Result<(), Vec<String>> = if is_schema { &meta_check } else { &validate };
-                    let applied = novafile_patch::apply(&l.value, &p, check).map_err(|e| patch_error(&e, &patch, &patch_src))?;
-                    if is_schema {
-                        // Patched schema descriptors are written back in the schema language.
-                        let s = Schema::from_value(&applied.value)?;
-                        eprintln!("note: {} is rewritten in canonical form (comments are not kept)", file.display());
-                        (s.to_canonical_text().into_bytes(), applied)
-                    } else {
-                        let result = Loaded {
-                            directives: l.directives,
-                            value: applied.value.clone(),
-                        };
-                        (render_as(&result, Format::Nova, false)?, applied)
-                    }
+                let r = novafile_patch::apply_to_source(&src, &p, &validate).map_err(|e| patch_error(&e, &patch, &patch_src))?;
+                (r.text.into_bytes(), r.applied)
+            } else {
+                let is_schema = file.extension().is_some_and(|e| e == "novs");
+                let meta = novafile_schema::meta_schema();
+                let meta_check = |v: &Value| meta.validate(v).map_err(|i| i.iter().map(std::string::ToString::to_string).collect());
+                let check: &dyn Fn(&Value) -> Result<(), Vec<String>> = if is_schema { &meta_check } else { &validate };
+                let applied = novafile_patch::apply(&l.value, &p, check).map_err(|e| patch_error(&e, &patch, &patch_src))?;
+                if is_schema {
+                    // Patched schema descriptors are written back in the schema language.
+                    let s = Schema::from_value(&applied.value)?;
+                    eprintln!("note: {} is rewritten in canonical form (comments are not kept)", file.display());
+                    (s.to_canonical_text().into_bytes(), applied)
+                } else {
+                    let result = Loaded {
+                        directives: l.directives,
+                        value: applied.value.clone(),
+                    };
+                    (render_as(&result, Format::Nova, false)?, applied)
                 }
             };
             out(&bytes, write.then_some(file.as_path()))?;
@@ -760,13 +756,13 @@ fn run(cli: Cli) -> R<ExitCode> {
             let opts = novafile_template::Options {
                 loader: &loader,
                 schema: s.as_ref(),
-                limits: Default::default(),
+                limits: novafile_template::Limits::default(),
             };
             let v = novafile_template::render(&src, &args, &opts).map_err(|e| format!("{}: {e}", file.display()))?;
             if let Some(s) = &s
                 && s.root.is_some()
             {
-                s.validate(&v).map_err(|i| format!("rendered document is invalid:\n{}", issues(i)))?;
+                s.validate(&v).map_err(|i| format!("rendered document is invalid:\n{}", issues(&i)))?;
             }
             out(&render_as(&Loaded { directives: vec![], value: v }, to, false)?, None)?;
         }
@@ -803,21 +799,19 @@ fn run(cli: Cli) -> R<ExitCode> {
                 let tokens = std::str::from_utf8(&bytes)
                     .ok()
                     .filter(|_| !matches!(f, Format::Binary | Format::BinaryCanonical | Format::Cbor))
-                    .map(|t| c.count(t).to_string())
-                    .unwrap_or_else(|| "-".into());
+                    .map_or_else(|| "-".into(), |t| c.count(t).to_string());
                 println!("{name:<18} {:>9} {tokens:>9}", bytes.len());
             }
             eprintln!("(token counts are a tokenizer-independent heuristic; see spec §10)");
         }
         Cmd::Schema { cmd } => match cmd {
-            SchemaCmd::Fmt { file } => print!("{}", load_schema(&file)?.to_canonical_text()),
+            SchemaCmd::Fmt { file } | SchemaCmd::FromNova { file } => print!("{}", load_schema(&file)?.to_canonical_text()),
             SchemaCmd::Fingerprint { file } => println!("{}", load_schema(&file)?.fingerprint()),
             SchemaCmd::Proto { file } => print!("{}", novafile_proto::proto_file(&load_schema(&file)?)?),
             SchemaCmd::ToNova { file } => {
                 let v = load_schema(&file)?.to_value();
                 print!("{}", document_to_text(&[("schema", META_REF)], &v, Profile::Human));
             }
-            SchemaCmd::FromNova { file } => print!("{}", load_schema(&file)?.to_canonical_text()),
             SchemaCmd::Meta => print!("{}", novafile_schema::META_SCHEMA_SRC),
             SchemaCmd::JsonSchema { file } => {
                 let j = novafile_schemars::to_json_schema(&load_schema(&file)?);
@@ -855,14 +849,14 @@ fn run(cli: Cli) -> R<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn lint(files: Vec<PathBuf>, case: Option<String>, allow: Vec<String>, fix: bool, format: &str) -> R<ExitCode> {
+fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, format: &str) -> R<ExitCode> {
     let mut config = novafile_lint::Config::default();
     if let Some(c) = case {
         config.case = novafile_lint::Case::parse(&c).ok_or_else(|| format!("unknown case {c:?} (snake, camel, kebab)"))?;
     }
     config.allow = allow;
     let mut warnings = 0;
-    for file in &files {
+    for file in files {
         let mut src = read_text(file)?;
         let is_schema = file.extension().is_some_and(|e| e == "novs");
         let run = |src: &str| -> R<Vec<novafile_lint::Finding>> {
@@ -894,8 +888,8 @@ fn lint(files: Vec<PathBuf>, case: Option<String>, allow: Vec<String>, fix: bool
                         Value::String(if f.level == novafile_lint::Level::Warning { "warning" } else { "hint" }.into()),
                     ),
                     ("message", Value::String(f.message.clone())),
-                    ("line", Value::Int(line as i128 + 1)),
-                    ("col", Value::Int(col as i128 + 1)),
+                    ("line", Value::Int(i128::from(line) + 1)),
+                    ("col", Value::Int(i128::from(col) + 1)),
                     ("fixable", Value::Bool(f.fix.is_some())),
                 ] {
                     rec.set(k, v);

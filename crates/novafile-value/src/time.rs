@@ -1,6 +1,7 @@
 //! Timestamps (UTC instants) and signed durations.
 
 use std::fmt;
+use std::fmt::Write as _;
 
 /// An instant on the UTC time line with nanosecond precision.
 /// Offsets in the text form are presentation only (spec §2.6).
@@ -18,12 +19,17 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;
-    let mp = (m as i64 + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let mp = (i64::from(m) + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "day of month is in 1..=31 and month in 1..=12"
+)]
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -37,6 +43,16 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// Nanoseconds from 1 to 9 fraction digits (checked by the caller), padded
+/// with trailing zeros to nine places.
+fn frac_nanos(digits: &[u8]) -> u32 {
+    digits
+        .iter()
+        .chain(std::iter::repeat(&b'0'))
+        .take(9)
+        .fold(0, |acc, &c| acc * 10 + u32::from(c - b'0'))
+}
+
 fn days_in_month(y: i64, m: u32) -> u32 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -47,6 +63,12 @@ fn days_in_month(y: i64, m: u32) -> u32 {
 }
 
 impl Timestamp {
+    /// Build a timestamp from Unix seconds and a nanosecond fraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nanos` is not below one second or the instant lies
+    /// outside the years 0001-9999.
     pub fn new(secs: i64, nanos: u32) -> Result<Self, String> {
         if nanos >= 1_000_000_000 || !(MIN_SECS..=MAX_SECS).contains(&secs) {
             return Err("timestamp out of range (years 0001-9999)".into());
@@ -54,15 +76,23 @@ impl Timestamp {
         Ok(Timestamp { secs, nanos })
     }
 
+    #[must_use]
     pub fn unix_seconds(&self) -> i64 {
         self.secs
     }
 
+    #[must_use]
     pub fn subsec_nanos(&self) -> u32 {
         self.nanos
     }
 
     /// Parse an RFC 3339 date-time: `YYYY-MM-DDTHH:MM:SS[.F{1,9}](Z|±HH:MM)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `s` does not have that form, a field is out of
+    /// range, or the resulting instant lies outside the years 0001-9999.
+    #[expect(clippy::many_single_char_names, reason = "y/d/h date-time fields and the b/i/n parser cursor convention")]
     pub fn parse(s: &str) -> Result<Self, String> {
         let err = || format!("invalid RFC 3339 timestamp {s:?}");
         let b = s.as_bytes();
@@ -74,12 +104,13 @@ impl Timestamp {
             if !part.iter().all(u8::is_ascii_digit) {
                 return Err(err());
             }
-            Ok(std::str::from_utf8(part).unwrap().parse().unwrap())
+            // At most 9 digits, so this cannot overflow.
+            Ok(part.iter().fold(0, |acc, &c| acc * 10 + u32::from(c - b'0')))
         };
         if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
             return Err(err());
         }
-        let (y, mo, d) = (num(0..4)? as i64, num(5..7)?, num(8..10)?);
+        let (y, mo, d) = (i64::from(num(0..4)?), num(5..7)?, num(8..10)?);
         let (h, mi, se) = (num(11..13)?, num(14..16)?, num(17..19)?);
         if y < 1 || !(1..=12).contains(&mo) || d < 1 || d > days_in_month(y, mo) || h > 23 || mi > 59 || se > 59 {
             return Err(err());
@@ -96,13 +127,13 @@ impl Timestamp {
             if n == 0 || n > 9 {
                 return Err(err());
             }
-            nanos = num(start..i)? * 10u32.pow((9 - n) as u32);
+            nanos = frac_nanos(&b[start..i]);
         }
         let offset: i64 = match b.get(i) {
             Some(b'Z') if i + 1 == b.len() => 0,
             Some(c @ (b'+' | b'-')) if i + 6 == b.len() && b[i + 3] == b':' => {
-                let oh = num(i + 1..i + 3)? as i64;
-                let om = num(i + 4..i + 6)? as i64;
+                let oh = i64::from(num(i + 1..i + 3)?);
+                let om = i64::from(num(i + 4..i + 6)?);
                 if oh > 23 || om > 59 {
                     return Err(err());
                 }
@@ -111,7 +142,7 @@ impl Timestamp {
             }
             _ => return Err(err()),
         };
-        let secs = days_from_civil(y, mo, d) * 86_400 + (h * 3600 + mi * 60 + se) as i64 - offset;
+        let secs = days_from_civil(y, mo, d) * 86_400 + i64::from(h * 3600 + mi * 60 + se) - offset;
         Timestamp::new(secs, nanos).map_err(|_| err())
     }
 }
@@ -143,6 +174,11 @@ const NS: i128 = 1_000_000_000;
 const MAX_DURATION: i128 = i64::MAX as i128 * NS;
 
 impl Duration {
+    /// Build a duration from a signed nanosecond count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `|nanos|` exceeds `i64::MAX` seconds.
     pub fn from_nanos(nanos: i128) -> Result<Self, String> {
         if nanos.abs() > MAX_DURATION {
             return Err("duration out of range".into());
@@ -150,12 +186,19 @@ impl Duration {
         Ok(Duration { nanos })
     }
 
+    #[must_use]
     pub fn as_nanos(&self) -> i128 {
         self.nanos
     }
 
     /// Parse a duration in NOVA notation, `-?(Nd)?(Nh)?(Nm)?(N(.F{1,9})?s)?`
     /// (at least one component), or in ISO 8601 notation (see [`Duration::parse_iso8601`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `s` matches neither notation, units are repeated or
+    /// out of order, or the total is out of range.
+    #[expect(clippy::many_single_char_names, reason = "b/i/n/u parser cursor convention")]
     pub fn parse(s: &str) -> Result<Self, String> {
         if s.strip_prefix('-').unwrap_or(s).starts_with('P') {
             return Duration::parse_iso8601(s);
@@ -175,7 +218,7 @@ impl Duration {
             let start = i;
             let mut n: i128 = 0;
             while i < b.len() && b[i].is_ascii_digit() {
-                n = n.checked_mul(10).and_then(|v| v.checked_add((b[i] - b'0') as i128)).ok_or_else(err)?;
+                n = n.checked_mul(10).and_then(|v| v.checked_add(i128::from(b[i] - b'0'))).ok_or_else(err)?;
                 i += 1;
             }
             if i == start {
@@ -192,7 +235,7 @@ impl Duration {
                 if len == 0 || len > 9 || b.get(i) != Some(&b's') {
                     return Err(err());
                 }
-                frac_ns = std::str::from_utf8(&b[fs..i]).unwrap().parse::<i128>().unwrap() * 10i128.pow((9 - len) as u32);
+                frac_ns = i128::from(frac_nanos(&b[fs..i]));
             }
             let u = *b.get(i).ok_or_else(err)?;
             let idx = units[next_unit..].iter().position(|(c, _)| *c == u).ok_or_else(err)? + next_unit;
@@ -218,6 +261,13 @@ impl Duration {
     ///
     /// Years and months (`Y`, and `M` before `T`) are rejected: their length
     /// depends on the calendar, while NOVA durations are exact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `s` does not have that form, uses years or months,
+    /// has units out of order, a fraction on a unit other than seconds, or a
+    /// total out of range.
+    #[expect(clippy::many_single_char_names, reason = "b/i/n/u parser cursor convention")]
     pub fn parse_iso8601(s: &str) -> Result<Self, String> {
         let err = |why: &str| format!("invalid ISO 8601 duration {s:?}: {why}");
         let (neg, rest) = match s.strip_prefix('-') {
@@ -263,7 +313,7 @@ impl Duration {
                     if b.get(i).copied() != fraction_unit {
                         return Err(err("only seconds may have a fraction"));
                     }
-                    frac_ns = section[fs..i].parse::<i128>().unwrap() * 10i128.pow((9 - len) as u32);
+                    frac_ns = i128::from(frac_nanos(&b[fs..i]));
                 }
                 let u = *b.get(i).ok_or_else(|| err("missing unit designator"))?;
                 if u == b'Y' || (u == b'M' && fraction_unit.is_none()) {
@@ -296,6 +346,7 @@ impl Duration {
     }
 
     /// ISO 8601 rendering: `PT1H30M`, `P2DT3H`, `PT0S`, `-PT1.5S`.
+    #[must_use]
     pub fn to_iso8601(&self) -> String {
         let mut out = String::new();
         if self.nanos < 0 {
@@ -307,22 +358,22 @@ impl Duration {
         let days = n / (86_400 * ns);
         n %= 86_400 * ns;
         if days > 0 {
-            out.push_str(&format!("{days}D"));
+            let _ = write!(out, "{days}D");
         }
         if n > 0 || days == 0 {
             out.push('T');
             let (h, m) = (n / (3_600 * ns), n / (60 * ns) % 60);
             let rem = n % (60 * ns);
             if h > 0 {
-                out.push_str(&format!("{h}H"));
+                let _ = write!(out, "{h}H");
             }
             if m > 0 {
-                out.push_str(&format!("{m}M"));
+                let _ = write!(out, "{m}M");
             }
             if rem > 0 || (h == 0 && m == 0) {
-                out.push_str(&format!("{}", rem / ns));
+                let _ = write!(out, "{}", rem / ns);
                 if !rem.is_multiple_of(ns) {
-                    out.push_str(&format!(".{}", format!("{:09}", rem % ns).trim_end_matches('0')));
+                    let _ = write!(out, ".{}", format!("{:09}", rem % ns).trim_end_matches('0'));
                 }
                 out.push('S');
             }

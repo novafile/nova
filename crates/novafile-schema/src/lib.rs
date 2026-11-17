@@ -23,16 +23,19 @@ pub use version::{ChangeKind, PreId, SchemaRef, Version, valid_schema_name};
 
 impl Schema {
     /// Canonical rendering used for fingerprints.
+    #[must_use]
     pub fn to_canonical_text(&self) -> String {
         self.to_string()
     }
 
     /// The first 64 bits of SHA-256 over the canonical text, as 16 hex digits (spec §6.6).
+    #[must_use]
     pub fn fingerprint_hex(&self) -> String {
         novafile_value::revision(&novafile_value::Value::String(self.to_canonical_text())).hex()[..16].to_owned()
     }
 
     /// `name@version#<16 hex>` (spec §6.6), or `anonymous#<hex>`.
+    #[must_use]
     pub fn fingerprint(&self) -> String {
         match self.reference() {
             Some(r) => format!("{r}#{}", self.fingerprint_hex()),
@@ -41,6 +44,7 @@ impl Schema {
     }
 
     /// `name@version`, if the schema is named.
+    #[must_use]
     pub fn reference(&self) -> Option<SchemaRef> {
         Some(SchemaRef {
             name: self.name.clone()?,
@@ -51,6 +55,11 @@ impl Schema {
 
     /// Check a document's `@schema` reference against this schema (spec §6.7):
     /// same name, a version this schema can read, and a matching fingerprint if given.
+    ///
+    /// # Errors
+    ///
+    /// Fails, with the reason, if `reference` is malformed, this schema has no
+    /// name and version, or the name, version or fingerprint does not match.
     pub fn accepts_reference(&self, reference: &str) -> Result<(), String> {
         let r = SchemaRef::parse(reference)?;
         let mine = self.reference().ok_or("an anonymous schema cannot check @schema references")?;
@@ -91,7 +100,12 @@ pub struct VersionCheck {
     pub problems: Vec<String>,
 }
 
-/// Classify the changes from `old` to `new` and verify the SemVer bump.
+/// Classify the changes from `old` to `new` and verify the `SemVer` bump.
+///
+/// # Errors
+///
+/// Fails if either schema lacks `@schema name@version` or the names differ.
+/// An unacceptable bump is reported in [`VersionCheck::problems`] instead.
 pub fn check_versions(old: &Schema, new: &Schema) -> Result<VersionCheck, String> {
     let (o, n) = (
         old.reference().ok_or("old schema has no `@schema name@version`")?,
@@ -144,6 +158,7 @@ pub fn check_versions(old: &Schema, new: &Schema) -> Result<VersionCheck, String
 
 impl Schema {
     /// Follow aliases to the underlying type (and the definition, if named).
+    #[must_use]
     pub fn deref<'a>(&'a self, t: &'a TypeRef) -> (&'a TypeRef, Option<&'a Def>) {
         let mut cur = t;
         for _ in 0..64 {
@@ -162,6 +177,7 @@ impl Schema {
     /// The declared type at a concrete path below the root type (fields and
     /// indices only), together with the field definition when the last
     /// segment names a record field. Used by editors for hover and completion.
+    #[must_use]
     pub fn type_at(&self, path: &novafile_text::Path) -> Option<(TypeRef, Option<FieldDef>)> {
         use novafile_text::Segment;
         let mut cur = self.root_type()?;

@@ -20,3 +20,6 @@ novafile-text.workspace = true
 novafile-serde.workspace = true
 serde.workspace = true
 jsonschema.workspace = true
+
+[lints]
+workspace = true

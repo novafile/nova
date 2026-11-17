@@ -1,7 +1,7 @@
 //! Schema evolution checks (spec §6.5). "Compatible" means every value valid
 //! under the old schema resolves under the new one (new readers, old data).
 
-use crate::model::*;
+use crate::model::{Def, IntKind, Num, Schema, TypeKind, TypeRef};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Change {
@@ -36,6 +36,7 @@ fn range_of(t: &TypeRef) -> (Option<Num>, Option<Num>) {
 }
 
 /// Does every value of `old` also satisfy `new`?
+#[must_use]
 pub fn widens(old: &TypeRef, new: &TypeRef) -> bool {
     if matches!(new.kind, TypeKind::Any) {
         return true;
@@ -44,11 +45,9 @@ pub fn widens(old: &TypeRef, new: &TypeRef) -> bool {
         return false;
     }
     let kinds = match (&old.kind, &new.kind) {
-        (TypeKind::Int(_), TypeKind::Int(_)) => true,
-        (TypeKind::Int(_), TypeKind::Decimal | TypeKind::Rational) => true,
-        (TypeKind::Decimal, TypeKind::Rational) => true,
+        (TypeKind::Int(_), TypeKind::Int(_) | TypeKind::Decimal | TypeKind::Rational) | (TypeKind::Decimal, TypeKind::Rational) => true,
         (TypeKind::Int(k), TypeKind::Float) => matches!(k, IntKind::I8 | IntKind::I16 | IntKind::I32 | IntKind::U8 | IntKind::U16 | IntKind::U32),
-        (TypeKind::List(a), TypeKind::List(b)) | (TypeKind::Set(a), TypeKind::Set(b)) | (TypeKind::List(a), TypeKind::Set(b)) => {
+        (TypeKind::List(a), TypeKind::List(b) | TypeKind::Set(b)) | (TypeKind::Set(a), TypeKind::Set(b)) => {
             widens(a, b) && !matches!((&old.kind, &new.kind), (TypeKind::List(_), TypeKind::Set(_)))
         }
         (TypeKind::Map(ak, av), TypeKind::Map(bk, bv)) => widens(ak, bk) && widens(av, bv),
@@ -72,12 +71,13 @@ pub fn widens(old: &TypeRef, new: &TypeRef) -> bool {
         (Some(o), Some(n)) => o.le(&n),
     };
     let (olen, nlen) = (old.constraints.len.unwrap_or((None, None)), new.constraints.len.unwrap_or((None, None)));
-    let len_ok = (nlen.0.is_none() || olen.0.is_some_and(|o| nlen.0.unwrap() <= o)) && (nlen.1.is_none() || olen.1.is_some_and(|o| o <= nlen.1.unwrap()));
+    let len_ok = nlen.0.is_none_or(|n| olen.0.is_some_and(|o| n <= o)) && nlen.1.is_none_or(|n| olen.1.is_some_and(|o| o <= n));
     // Changing what @len counts is only safe if the new type has no @len.
     let unit_ok = new.constraints.len.is_none() || old.constraints.len.is_none() || old.constraints.len_unit == new.constraints.len_unit;
     lo_ok && hi_ok && len_ok && unit_ok
 }
 
+#[must_use]
 pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
     let mut out = Vec::new();
     let mut push = |breaking, at: &str, m: String| {
@@ -85,7 +85,7 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
             breaking,
             at: at.to_owned(),
             message: m,
-        })
+        });
     };
     if old.root != new.root {
         push(true, "@root", format!("root changed from {:?} to {:?}", old.root, new.root));
@@ -107,7 +107,7 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
                         None => push(true, &format!("{name}.{}", v.name), "variant removed".into()),
                         Some(w) => match (&v.payload, &w.payload) {
                             (None, None) => {}
-                            (Some(x), Some(y)) if widens(x, y) => {}
+                            (Some(old_p), Some(new_p)) if widens(old_p, new_p) => {}
                             _ => push(true, &format!("{name}.{}", v.name), "variant payload changed incompatibly".into()),
                         },
                     }

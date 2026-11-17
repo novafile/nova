@@ -63,8 +63,9 @@ fn open(c: &Client, uri: &str, text: &str) {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "one end-to-end session exercising every feature in order")]
 fn end_to_end() {
-    let (mut c, h, dir) = start();
+    let (mut c, server, dir) = start();
     let uri = format!("file://{}/infra.nova", dir.display());
 
     // A valid document: no diagnostics.
@@ -140,10 +141,10 @@ fn end_to_end() {
         json!({"textDocument": {"uri": uri, "version": 6}, "contentChanges": [{"text": text2}]}),
     );
     c.diagnostics();
-    let l = text2.lines().position(|l| l.starts_with("status:")).unwrap();
+    let status_line = text2.lines().position(|s| s.starts_with("status:")).unwrap();
     let items = c.request(
         "textDocument/completion",
-        json!({"textDocument": {"uri": uri}, "position": {"line": l, "character": 8}}),
+        json!({"textDocument": {"uri": uri}, "position": {"line": status_line, "character": 8}}),
     );
     let labels: Vec<&str> = items.as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap()).collect();
     assert_eq!(labels, ["active", "draining", "!failed(string)"]);
@@ -154,23 +155,23 @@ fn end_to_end() {
         json!({"textDocument": {"uri": uri, "version": 7}, "contentChanges": [{"text": DOC.replace("region: eu-central-1", "region:   eu-central-1")}]}),
     );
     c.diagnostics();
-    let f = c.request(
+    let edits = c.request(
         "textDocument/formatting",
         json!({"textDocument": {"uri": uri}, "options": {"tabSize": 2, "insertSpaces": true}}),
     );
-    let new_text = f[0]["newText"].as_str().unwrap();
+    let new_text = edits[0]["newText"].as_str().unwrap();
     assert!(
         new_text.contains("region: eu-central-1\n") && new_text.contains("# a string until the schema resolves it"),
-        "{f}"
+        "{edits}"
     );
     let plain = format!("file://{}/plain.nova", dir.display());
     open(&c, &plain, "b:   1\na: [1,2]\n");
     c.diagnostics();
-    let f = c.request(
+    let edits = c.request(
         "textDocument/formatting",
         json!({"textDocument": {"uri": plain}, "options": {"tabSize": 2, "insertSpaces": true}}),
     );
-    assert_eq!(f[0]["newText"], "b: 1\na: [1, 2]\n");
+    assert_eq!(edits[0]["newText"], "b: 1\na: [1, 2]\n");
 
     // Patch files get patch diagnostics.
     let patch = format!("file://{}/x.patch", dir.display());
@@ -180,6 +181,6 @@ fn end_to_end() {
 
     c.request("shutdown", Value::Null);
     c.notify("exit", Value::Null);
-    h.join().unwrap();
+    server.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
 }

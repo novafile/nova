@@ -56,6 +56,7 @@ pub enum Value {
 }
 
 impl Value {
+    #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
             Value::Null => "null",
@@ -77,12 +78,17 @@ impl Value {
         }
     }
 
+    #[must_use]
     pub fn is_container(&self) -> bool {
         matches!(self, Value::List(_) | Value::Tuple(_) | Value::Set(_) | Value::Record(_) | Value::Map(_))
             || matches!(self, Value::Variant(_, Some(p)) if p.is_container())
     }
 
     /// Build a set, rejecting duplicate elements.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if two elements are equal.
     pub fn set(items: Vec<Value>) -> Result<Value, String> {
         let mut seen = std::collections::HashSet::new();
         for it in &items {
@@ -94,6 +100,10 @@ impl Value {
     }
 
     /// Build a map, rejecting duplicate keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if two keys are equal.
     pub fn map(entries: Vec<(Value, Value)>) -> Result<Value, String> {
         let mut seen = std::collections::HashSet::new();
         for (k, _) in &entries {
@@ -104,6 +114,7 @@ impl Value {
         Ok(Value::Map(entries))
     }
 
+    #[must_use]
     pub fn as_record(&self) -> Option<&Record> {
         match self {
             Value::Record(r) => Some(r),
@@ -118,6 +129,7 @@ impl Value {
         }
     }
 
+    #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::String(s) => Some(s),
@@ -125,6 +137,7 @@ impl Value {
         }
     }
 
+    #[must_use]
     pub fn as_list(&self) -> Option<&Vec<Value>> {
         match self {
             Value::List(l) => Some(l),
@@ -142,7 +155,7 @@ impl Value {
             Value::List(l) | Value::Tuple(l) | Value::Set(l) => l.iter_mut().for_each(Value::sort_keys),
             Value::Map(m) => m.iter_mut().for_each(|(k, v)| {
                 k.sort_keys();
-                v.sort_keys()
+                v.sort_keys();
             }),
             Value::Variant(_, Some(p)) => p.sort_keys(),
             _ => {}
@@ -162,7 +175,7 @@ impl From<String> for Value {
 }
 impl From<i64> for Value {
     fn from(i: i64) -> Self {
-        Value::Int(i as i128)
+        Value::Int(i128::from(i))
     }
 }
 impl From<bool> for Value {
@@ -194,7 +207,7 @@ impl Eq for Value {}
 
 impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        canonical_bytes(self).hash(state)
+        canonical_bytes(self).hash(state);
     }
 }
 

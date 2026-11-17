@@ -15,20 +15,22 @@ pub enum IntKind {
 }
 
 impl IntKind {
+    #[must_use]
     pub fn bounds(self) -> (i128, i128) {
         match self {
             IntKind::Int => (i128::MIN, i128::MAX),
-            IntKind::I8 => (i8::MIN as i128, i8::MAX as i128),
-            IntKind::I16 => (i16::MIN as i128, i16::MAX as i128),
-            IntKind::I32 => (i32::MIN as i128, i32::MAX as i128),
-            IntKind::I64 => (i64::MIN as i128, i64::MAX as i128),
-            IntKind::U8 => (0, u8::MAX as i128),
-            IntKind::U16 => (0, u16::MAX as i128),
-            IntKind::U32 => (0, u32::MAX as i128),
-            IntKind::U64 => (0, u64::MAX as i128),
+            IntKind::I8 => (i128::from(i8::MIN), i128::from(i8::MAX)),
+            IntKind::I16 => (i128::from(i16::MIN), i128::from(i16::MAX)),
+            IntKind::I32 => (i128::from(i32::MIN), i128::from(i32::MAX)),
+            IntKind::I64 => (i128::from(i64::MIN), i128::from(i64::MAX)),
+            IntKind::U8 => (0, i128::from(u8::MAX)),
+            IntKind::U16 => (0, i128::from(u16::MAX)),
+            IntKind::U32 => (0, i128::from(u32::MAX)),
+            IntKind::U64 => (0, i128::from(u64::MAX)),
         }
     }
 
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             IntKind::Int => "int",
@@ -43,6 +45,7 @@ impl IntKind {
         }
     }
 
+    #[must_use]
     pub fn from_name(n: &str) -> Option<Self> {
         Some(match n {
             "int" => IntKind::Int,
@@ -87,6 +90,10 @@ pub struct Num(pub Value);
 
 impl Num {
     /// Parse a bound literal.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `s` is not an integer, decimal or rational literal.
     pub fn parse(s: &str) -> Result<Num, String> {
         let s = s.trim();
         if let Ok(i) = s.parse::<i128>() {
@@ -101,15 +108,18 @@ impl Num {
     }
 
     /// The value as a bound, if it is numeric (int, float, decimal, rational).
+    #[must_use]
     pub fn of(v: &Value) -> Option<Num> {
         matches!(v, Value::Int(_) | Value::Float(_) | Value::Decimal(_) | Value::Rational(_)).then(|| Num(v.clone()))
     }
 
+    #[must_use]
     pub fn int(i: i128) -> Num {
         Num(Value::Int(i))
     }
 
     /// Exact `self <= other`; false if either is NaN.
+    #[must_use]
     pub fn le(&self, other: &Num) -> bool {
         matches!(
             novafile_value::numeric_cmp(&self.0, &other.0),
@@ -146,6 +156,7 @@ pub enum LenUnit {
 }
 
 impl LenUnit {
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             LenUnit::Scalars => "scalars",
@@ -155,6 +166,7 @@ impl LenUnit {
         }
     }
 
+    #[must_use]
     pub fn from_name(s: &str) -> Option<LenUnit> {
         Some(match s {
             "scalars" => LenUnit::Scalars,
@@ -165,6 +177,7 @@ impl LenUnit {
         })
     }
 
+    #[must_use]
     pub fn measure(self, s: &str) -> usize {
         match self {
             LenUnit::Scalars => s.chars().count(),
@@ -190,6 +203,7 @@ pub struct TypeRef {
 }
 
 impl TypeRef {
+    #[must_use]
     pub fn new(kind: TypeKind) -> Self {
         TypeRef {
             kind,
@@ -217,10 +231,12 @@ pub struct RecordDef {
 }
 
 impl RecordDef {
+    #[must_use]
     pub fn field(&self, name: &str) -> Option<&FieldDef> {
         self.fields.iter().find(|f| f.name == name)
     }
 
+    #[must_use]
     pub fn key_fields(&self) -> Vec<&str> {
         self.fields.iter().filter(|f| f.key).map(|f| f.name.as_str()).collect()
     }
@@ -242,7 +258,7 @@ pub enum Def {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Schema {
-    /// Schema name and SemVer version from `@schema name@X.Y.Z` (spec §6.7).
+    /// Schema name and `SemVer` version from `@schema name@X.Y.Z` (spec §6.7).
     /// Anonymous schemas (no `@schema` line) cannot be referenced or evolved.
     pub name: Option<String>,
     pub version: Option<crate::Version>,
@@ -251,10 +267,12 @@ pub struct Schema {
 }
 
 impl Schema {
+    #[must_use]
     pub fn def(&self, name: &str) -> Option<&Def> {
         self.defs.iter().find(|(n, _)| n == name).map(|(_, d)| d)
     }
 
+    #[must_use]
     pub fn root_type(&self) -> Option<TypeRef> {
         self.root.as_ref().map(|r| TypeRef::new(TypeKind::Named(r.clone())))
     }
@@ -304,8 +322,8 @@ impl fmt::Display for TypeRef {
             write!(
                 f,
                 " @range({}..{})",
-                b(lo.as_ref().map(|n| n.to_string())),
-                b(hi.as_ref().map(|n| n.to_string()))
+                b(lo.as_ref().map(std::string::ToString::to_string)),
+                b(hi.as_ref().map(std::string::ToString::to_string))
             )?;
         }
         if let Some((lo, hi)) = &self.constraints.len {

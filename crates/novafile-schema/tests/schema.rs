@@ -25,7 +25,7 @@ fn reports_all_issues_with_paths() {
         "environment: prod\nregion: x\ndeployed_at: yesterday\nstatus: exploded\nservices:\n  - id: a\n    image: i\n    port: 0\n    replicas: 500\n  - id: a\n    image: \"\"\n    port: 80\n    replicas: 1\n    extra: 1\n",
     )
     .unwrap();
-    let issues: Vec<String> = s.resolve(&bad).unwrap_err().iter().map(|i| i.to_string()).collect();
+    let issues: Vec<String> = s.resolve(&bad).unwrap_err().iter().map(std::string::ToString::to_string).collect();
     let joined = issues.join("\n");
     for needle in [
         "deployed_at: string is not a valid timestamp",
@@ -93,7 +93,7 @@ fn rational_resolution() {
         "a: 22/7\nb: 3/1\nc: @decimal(\"0.375\")\nd: 1/4\n"
     );
     let bad = novafile_text::parse("a: 1/3\nb: 1.5\nc: 1/3\nd: 1\n").unwrap();
-    let e: Vec<String> = s.resolve(&bad).unwrap_err().iter().map(|i| i.to_string()).collect();
+    let e: Vec<String> = s.resolve(&bad).unwrap_err().iter().map(std::string::ToString::to_string).collect();
     assert_eq!(e, ["b: expected rational, found float", "c: expected decimal, found rational"]);
 }
 
@@ -114,11 +114,17 @@ fn semver_bumps_are_enforced() {
         (r.kind, r.problems.clone()),
         (ChangeKind::Breaking, vec!["breaking changes require at least 2.0.0, got 1.1.0".to_string()])
     );
-    assert!(check_versions(&old, &with(&broken, "2.0.0")).unwrap().problems.is_empty());
+    assert_eq!(check_versions(&old, &with(&broken, "2.0.0")).unwrap().problems, [] as [std::string::String; 0]);
     let r = check_versions(&old, &with(&reformatted, "1.0.1")).unwrap();
     assert_eq!((r.kind, r.problems.len()), (ChangeKind::None, 0));
-    assert!(!check_versions(&old, &with(&reformatted, "1.0.0")).unwrap().problems.is_empty());
-    assert!(check_versions(&old, &with(&broken, "2.0.0-rc.1")).unwrap().problems.is_empty());
+    assert_ne!(
+        check_versions(&old, &with(&reformatted, "1.0.0")).unwrap().problems,
+        [] as [std::string::String; 0]
+    );
+    assert_eq!(
+        check_versions(&old, &with(&broken, "2.0.0-rc.1")).unwrap().problems,
+        [] as [std::string::String; 0]
+    );
 }
 
 #[test]
@@ -164,12 +170,12 @@ fn exact_ranges_and_len_units() {
     .unwrap();
     let issues = |src: &str| match s.resolve(&novafile_text::parse(src).unwrap()) {
         Ok(_) => vec![],
-        Err(i) => i.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
+        Err(i) => i.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
     };
     // The binary64 nearest 0.1 is slightly above 1/10, so it is outside 0..0.1 exactly.
     let ok = "q: 0.34\nn: abcd\ng: \"e\u{301}\"\nu: \"ab\"\nc: \"äöüß\"\n";
     assert_eq!(issues(&format!("p: 0.1\n{ok}")), ["p: 0.1 is outside @range(0..0.1)"]);
-    assert!(issues(&format!("p: 0.09999999999999999\n{ok}")).is_empty());
+    assert_eq!(issues(&format!("p: 0.09999999999999999\n{ok}")), [] as [std::string::String; 0]);
     // 0.3333 as a decimal is below 1/3.
     assert_eq!(issues(&format!("p: 0.0\nq: 0.3333\n{}", &ok[8..])), ["q: 0.3333 is outside @range(1/3..)"]);
     // UTF-8 bytes vs scalars vs graphemes vs UTF-16.
@@ -243,7 +249,7 @@ fn constraints_on_type_arguments() {
     );
     assert_eq!(parse_schema(&text).unwrap().fingerprint(), s.fingerprint());
     let issues = s.resolve(&novafile_text::parse("ports: [80, 2000]\nm: {abc: (-1, x)}\n").unwrap()).unwrap_err();
-    let msgs: Vec<String> = issues.iter().map(|i| i.to_string()).collect();
+    let msgs: Vec<String> = issues.iter().map(std::string::ToString::to_string).collect();
     assert_eq!(msgs, ["ports[1]: 2000 is outside @range(1..1024)", "m.abc[0]: -1 is outside @range(0..)"]);
 }
 

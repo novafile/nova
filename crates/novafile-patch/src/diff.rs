@@ -6,6 +6,7 @@ use novafile_value::{Value, revision};
 
 /// Produce a patch that turns `a` into `b`. Every change is conditional on
 /// the old value, and the patch is pinned to `a`'s revision.
+#[must_use]
 pub fn diff(a: &Value, b: &Value) -> Patch {
     let mut ops = Vec::new();
     walk(a, b, &mut Vec::new(), &mut ops);
@@ -88,6 +89,7 @@ fn walk(a: &Value, b: &Value, path: &mut Vec<Segment>, ops: &mut Vec<Op>) {
                 }
             } else if la.len() == lb.len() {
                 for (i, (va, vb)) in la.iter().zip(lb).enumerate() {
+                    #[expect(clippy::cast_possible_wrap, reason = "in-memory indices/lengths are at most isize::MAX, which fits in i64")]
                     path.push(Segment::Index(i as i64));
                     walk(va, vb, path, ops);
                     path.pop();

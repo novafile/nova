@@ -67,6 +67,10 @@ pub enum Cond {
 
 impl Node {
     /// Convert a template-free tree into a value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the tree contains a template construct.
     pub fn to_value(&self) -> Result<Value, String> {
         const TPL: &str = "template construct in a non-template document";
         Ok(match self {
@@ -145,10 +149,12 @@ pub struct Document {
 }
 
 impl Document {
+    #[must_use]
     pub fn directive(&self, name: &str) -> Option<&str> {
         self.directives.iter().find(|d| d.name == name).map(|d| d.arg.as_str())
     }
 
+    #[must_use]
     pub fn is_template(&self) -> bool {
         self.template.is_some()
     }

@@ -9,10 +9,11 @@
 //! never text, so there is no indentation or escaping to get wrong.
 
 use novafile_schema::{Schema, parse_type};
-use novafile_text::ast::*;
+use novafile_text::ast::{Cond, Entry, ForHead, Item, Key, Node, Part};
 use novafile_text::{Path, Segment, parse_document};
 use novafile_value::{Record, Value};
 use std::fmt;
+use std::fmt::Write as _;
 use std::path::{Component, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +36,10 @@ fn err<T>(m: impl Into<String>) -> Result<T, TemplateError> {
 pub trait Loader {
     /// Load `path` as imported from the document identified by `from`.
     /// Returns a stable identifier (for cycle detection) and the source.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if `path` is not reachable from `from` or cannot be read.
     fn load(&self, path: &str, from: Option<&str>) -> Result<(String, String), String>;
 }
 
@@ -114,6 +119,13 @@ impl Default for Options<'_> {
 }
 
 /// Render template source with the given arguments.
+///
+/// # Errors
+///
+/// Returns a [`TemplateError`] if `src` is not a valid template; an argument is
+/// unknown, missing, or does not match its `@param` type (resolved against
+/// `opts.schema`); an import fails, cycles, or nests too deeply; evaluation
+/// fails; or the output exceeds the node budget in `opts.limits`.
 pub fn render(src: &str, args: &Record, opts: &Options) -> Result<Value, TemplateError> {
     render_inner(src, None, args, opts, &mut Vec::new(), &mut 0)
 }
@@ -157,7 +169,7 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stac
                     "parameter {:?} does not match `{}`: {}",
                     p.name,
                     p.ty,
-                    issues.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("; ")
+                    issues.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; ")
                 ))
             })?
         };
@@ -203,7 +215,7 @@ fn size(v: &Value) -> usize {
     }
 }
 
-impl<'b> Eval<'b> {
+impl Eval<'_> {
     fn charge(&mut self, n: usize) -> Result<(), TemplateError> {
         *self.budget += n;
         if *self.budget > self.max {
@@ -248,7 +260,9 @@ impl<'b> Eval<'b> {
                     match &v {
                         Value::String(x) => s.push_str(x),
                         Value::Int(i) => s.push_str(&i.to_string()),
-                        Value::Float(f) => s.push_str(&format!("{f:?}")),
+                        Value::Float(f) => {
+                            let _ = write!(s, "{f:?}");
+                        }
                         Value::Decimal(d) => s.push_str(&d.to_string()),
                         Value::Rational(r) => s.push_str(&r.to_string()),
                         Value::Bool(b) => s.push_str(&b.to_string()),

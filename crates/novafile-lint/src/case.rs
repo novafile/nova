@@ -12,6 +12,7 @@ pub enum Case {
 }
 
 impl Case {
+    #[must_use]
     pub fn parse(s: &str) -> Option<Case> {
         Some(match s {
             "snake" | "snake_case" => Case::Snake,
@@ -21,6 +22,7 @@ impl Case {
         })
     }
 
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Case::Snake => "snake_case",
@@ -30,6 +32,7 @@ impl Case {
     }
 
     /// Convert an identifier to this case.
+    #[must_use]
     pub fn convert(self, s: &str) -> String {
         let words = split_words(s);
         match self {
@@ -51,6 +54,7 @@ impl Case {
     }
 
     /// Is `s` already in this case?
+    #[must_use]
     pub fn matches(self, s: &str) -> bool {
         !s.is_empty() && self.convert(s) == s
     }

@@ -152,6 +152,11 @@ fn the_rust_type_acts_as_a_schema() {
 
 #[test]
 fn errors_carry_paths() {
+    #[derive(Serialize)]
+    struct D {
+        #[serde(with = "novafile_serde::with::set")]
+        tags: Vec<&'static str>,
+    }
     let text = to_string(&sample()).unwrap().replace("port: 3000", "port: 70000");
     let e = from_str::<Infra>(&text).unwrap_err();
     assert_eq!(e.path(), "services[1].port");
@@ -163,11 +168,6 @@ fn errors_carry_paths() {
     let e = from_str::<Infra>(&to_string(&sample()).unwrap().replace("!Active", "!Exploded")).unwrap_err();
     assert!(e.to_string().contains("unknown variant `Exploded`"), "{e}");
 
-    #[derive(Serialize)]
-    struct D {
-        #[serde(with = "novafile_serde::with::set")]
-        tags: Vec<&'static str>,
-    }
     assert!(to_value(&D { tags: vec!["a", "a"] }).unwrap_err().to_string().contains("duplicate set element"));
 }
 

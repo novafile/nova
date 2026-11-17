@@ -36,6 +36,7 @@ pub struct Frame {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[expect(clippy::struct_excessive_bools, reason = "independent encoder switches; public API")]
 pub struct FrameOptions {
     pub canonical: bool,
     pub dedupe_strings: bool,
@@ -83,10 +84,11 @@ impl fmt::Display for FrameError {
 impl std::error::Error for FrameError {}
 
 /// CRC-32 (IEEE 802.3, reflected, poly 0xEDB88320).
+#[must_use]
 pub fn crc32(data: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &b in data {
-        crc ^= b as u32;
+        crc ^= u32::from(b);
         for _ in 0..8 {
             crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
         }
@@ -94,6 +96,7 @@ pub fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
+#[expect(clippy::cast_possible_truncation, reason = "LEB128: only the low 7 bits are kept per byte")]
 fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
         out.push((v as u8) | 0x80);
@@ -107,7 +110,7 @@ fn get_varint(buf: &[u8], pos: &mut usize) -> Result<u64, FrameError> {
     for shift in (0..64).step_by(7) {
         let b = *buf.get(*pos).ok_or(FrameError::Truncated)?;
         *pos += 1;
-        v |= ((b & 0x7F) as u64) << shift;
+        v |= u64::from(b & 0x7F) << shift;
         if b & 0x80 == 0 {
             return Ok(v);
         }
@@ -115,6 +118,7 @@ fn get_varint(buf: &[u8], pos: &mut usize) -> Result<u64, FrameError> {
     Err(FrameError::Malformed("varint too long".into()))
 }
 
+#[must_use]
 pub fn encode_frame(frame: &Frame, opts: FrameOptions) -> Vec<u8> {
     let payload = encode(
         &frame.value,
@@ -158,6 +162,12 @@ pub fn encode_frame(frame: &Frame, opts: FrameOptions) -> Vec<u8> {
 }
 
 /// Decode one frame from the start of `buf`; returns the frame and bytes consumed.
+///
+/// # Errors
+///
+/// Returns [`FrameError`] if the buffer is truncated, has the wrong magic or an
+/// unsupported version, sets unknown flags, has a non-UTF-8 schema reference,
+/// fails its CRC-32 check, or carries a payload that does not decode.
 pub fn decode_frame(buf: &[u8]) -> Result<(Frame, usize), FrameError> {
     if buf.len() < 6 {
         return Err(if buf.len() >= 4 && &buf[..4] != MAGIC {
@@ -178,21 +188,21 @@ pub fn decode_frame(buf: &[u8]) -> Result<(Frame, usize), FrameError> {
     }
     let mut pos = 6;
     let schema = if f & flags::SCHEMA != 0 {
-        let n = get_varint(buf, &mut pos)? as usize;
+        let n = usize::try_from(get_varint(buf, &mut pos)?).map_err(|_| FrameError::Truncated)?;
         let s = buf.get(pos..pos.checked_add(n).ok_or(FrameError::Truncated)?).ok_or(FrameError::Truncated)?;
         pos += n;
         Some(String::from_utf8(s.to_vec()).map_err(|_| FrameError::Malformed("schema reference is not UTF-8".into()))?)
     } else {
         None
     };
-    let len = get_varint(buf, &mut pos)? as usize;
+    let len = usize::try_from(get_varint(buf, &mut pos)?).map_err(|_| FrameError::Truncated)?;
     let end = pos.checked_add(len).ok_or(FrameError::Truncated)?;
     let payload = buf.get(pos..end).ok_or(FrameError::Truncated)?;
     pos = end;
     if f & flags::CRC32 != 0 {
-        let c = buf.get(pos..pos + 4).ok_or(FrameError::Truncated)?;
+        let c: [u8; 4] = buf.get(pos..pos + 4).and_then(|c| c.try_into().ok()).ok_or(FrameError::Truncated)?;
         pos += 4;
-        let expected = u32::from_be_bytes(c.try_into().unwrap());
+        let expected = u32::from_be_bytes(c);
         let actual = crc32(payload);
         if expected != actual {
             return Err(FrameError::Checksum { expected, actual });
@@ -216,6 +226,7 @@ pub struct FrameReader<'a> {
 }
 
 impl<'a> FrameReader<'a> {
+    #[must_use]
     pub fn new(buf: &'a [u8]) -> Self {
         FrameReader {
             buf,
@@ -225,13 +236,14 @@ impl<'a> FrameReader<'a> {
         }
     }
 
+    #[must_use]
     pub fn recovering(mut self) -> Self {
         self.recover = true;
         self
     }
 }
 
-impl<'a> Iterator for FrameReader<'a> {
+impl Iterator for FrameReader<'_> {
     type Item = Result<Frame, (usize, FrameError)>;
 
     fn next(&mut self) -> Option<Self::Item> {

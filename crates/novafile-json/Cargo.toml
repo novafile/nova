@@ -9,3 +9,6 @@ license.workspace = true
 [dependencies]
 novafile-value.workspace = true
 base64.workspace = true
+
+[lints]
+workspace = true

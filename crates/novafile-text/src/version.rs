@@ -16,6 +16,11 @@ pub const TEMPLATE_VERSION: LangVersion = LangVersion { major: 0, minor: 1 };
 
 impl LangVersion {
     /// Parse `MAJOR.MINOR` (decimal, no leading zeros).
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if `s` is not two dot-separated decimal `u32`s without
+    /// leading zeros.
     pub fn parse(s: &str) -> Result<LangVersion, String> {
         let err = || format!("invalid language version {s:?} (expected MAJOR.MINOR, e.g. 0.1)");
         let (a, b) = s.split_once('.').ok_or_else(err)?;
@@ -34,6 +39,7 @@ impl LangVersion {
     /// Can an implementation of `self` read a document declaring `declared`?
     /// Same major and declared minor ≤ supported minor; while the major is 0,
     /// minors must match exactly.
+    #[must_use]
     pub fn supports(self, declared: LangVersion) -> bool {
         self.major == declared.major
             && if self.major == 0 {
@@ -44,6 +50,11 @@ impl LangVersion {
     }
 
     /// Parse `text` and check it against `self`; `what` names the language in errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if `text` is not a valid version or `self` does not
+    /// [`supports`](Self::supports) it.
     pub fn check(self, text: &str, what: &str) -> Result<LangVersion, String> {
         let v = LangVersion::parse(text.trim())?;
         if !self.supports(v) {

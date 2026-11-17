@@ -57,7 +57,7 @@
 //! | variant with payload | single-key mapping `tag: payload` | yes |
 
 use std::collections::HashMap;
-use std::fmt::Display;
+use std::fmt::{Display, Write as _};
 use std::str::Chars;
 
 use base64::Engine;
@@ -75,6 +75,13 @@ const CORE: &str = "tag:yaml.org,2002:";
 
 /// Parse a single-document YAML stream. An empty stream is `null`; a
 /// stream with more than one document is an error (see [`from_str_multi`]).
+///
+/// # Errors
+///
+/// Returns a message with the line and column if the YAML is malformed, the
+/// stream holds more than one document, the expansion exceeds
+/// [`NODE_BUDGET`] or 128 nesting levels, a merge key, unknown
+/// tag or duplicate key is used, or a scalar does not fit its NOVA kind.
 pub fn from_str(s: &str) -> Result<Value, String> {
     let mut l = Loader::new(s);
     let first = l.document()?;
@@ -86,6 +93,11 @@ pub fn from_str(s: &str) -> Result<Value, String> {
 
 /// Parse every document of a YAML stream. The node budget applies to the
 /// stream as a whole.
+///
+/// # Errors
+///
+/// Fails under the same conditions as [`from_str`], except that multiple
+/// documents are allowed.
 pub fn from_str_multi(s: &str) -> Result<Vec<Value>, String> {
     let mut l = Loader::new(s);
     let mut out = Vec::new();
@@ -284,9 +296,8 @@ impl<'a> Loader<'a> {
 
 fn scalar(text: String, style: TScalarStyle, tag: TagKind) -> Result<Value, String> {
     let core = match tag {
-        TagKind::NonSpecific => return Ok(Value::String(text)),
         TagKind::None if style == TScalarStyle::Plain => return resolve_plain(&text),
-        TagKind::None => return Ok(Value::String(text)),
+        TagKind::NonSpecific | TagKind::None => return Ok(Value::String(text)),
         TagKind::Core(c) => c,
     };
     let bad = || format!("{text:?} is not a valid !!{core}");
@@ -446,7 +457,9 @@ fn double_quoted(s: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
             '\0' => out.push_str("\\0"),
-            c if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{feff}') => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{feff}') => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
             c => out.push(c),
         }
     }
@@ -463,6 +476,7 @@ fn string_scalar(s: &str) -> String {
 const MAX_IMPLICIT_KEY: usize = 1000;
 
 /// Serialize to block-style YAML, reporting every lossy mapping.
+#[must_use]
 pub fn to_string(v: &Value) -> (String, Vec<Warning>) {
     let mut w = Writer {
         out: String::new(),
@@ -594,7 +608,7 @@ impl Writer {
 
     fn indexed(&mut self, i: usize, f: impl FnOnce(&mut Self)) {
         let n = self.rep.path.len();
-        self.rep.path.push_str(&format!("[{i}]"));
+        let _ = write!(self.rep.path, "[{i}]");
         f(self);
         self.rep.path.truncate(n);
     }
@@ -609,7 +623,10 @@ impl Writer {
             Value::Variant(_, Some(_)) => true,
             _ => false,
         };
-        if !block_key {
+        if block_key {
+            self.out.push_str("? ");
+            self.node(k, indent + 2, Pos::Inline);
+        } else {
             let text = self.scalar(k);
             if text.chars().count() <= MAX_IMPLICIT_KEY {
                 self.out.push_str(&text);
@@ -619,9 +636,6 @@ impl Writer {
             self.out.push_str("? ");
             self.out.push_str(&text);
             self.out.push('\n');
-        } else {
-            self.out.push_str("? ");
-            self.node(k, indent + 2, Pos::Inline);
         }
         self.pad(indent);
         self.out.push_str(": ");

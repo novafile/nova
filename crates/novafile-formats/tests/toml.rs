@@ -68,7 +68,7 @@ fn datetimes() {
 
     let v = rec(vec![("at", ts("2026-11-17T16:00:00.123456789Z")), ("old", ts("0001-01-01T00:00:00Z"))]);
     let (t, w) = to_string(&v).unwrap();
-    assert!(w.is_empty());
+    assert_eq!(w, [] as [novafile_formats::Warning; 0]);
     assert!(t.contains("at = 2026-11-17T16:00:00.123456789Z"), "{t}");
     assert_eq!(from_str(&t).unwrap(), v);
 }

@@ -12,3 +12,6 @@ novafile-text.workspace = true
 novafile-schema.workspace = true
 novafile-json.workspace = true
 novafile-formats.workspace = true
+
+[lints]
+workspace = true
