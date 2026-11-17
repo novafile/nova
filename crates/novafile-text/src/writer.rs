@@ -1,6 +1,6 @@
 //! Text writer with three profiles (spec §4.10).
 
-use crate::parser::{RESERVED_START, classify};
+use crate::parser::{RESERVED_START, classify, starts_list_item};
 use crate::path::{is_ident_char, is_ident_start};
 use base64::Engine;
 use novafile_value::{Value, canonical_bytes};
@@ -61,18 +61,21 @@ fn common_unsafe(s: &str) -> bool {
     s.is_empty()
         || RESERVED_START.contains(&s.as_bytes()[0])
         || s.starts_with("...")
+        // A leading byte order mark is stripped at the start of a document.
+        || s.starts_with('\u{feff}')
         || s.chars().any(char::is_control)
         || !matches!(classify(s), Ok(Value::String(_)))
 }
 
 /// Can `s` be written as a bare flow word?
 pub(crate) fn word_safe(s: &str) -> bool {
-    !common_unsafe(s) && !s.ends_with(':') && !s.bytes().any(|c| c.is_ascii_whitespace() || b",[]{}()\"".contains(&c))
+    // A bare `-` would open a list item where a flow word starts a line.
+    !common_unsafe(s) && s != "-" && !s.ends_with(':') && !s.bytes().any(|c| c.is_ascii_whitespace() || b",[]{}()\"".contains(&c))
 }
 
 /// Can `s` be written as a plain block scalar?
 pub(crate) fn plain_safe(s: &str) -> bool {
-    !common_unsafe(s) && s.trim() == s && !s.ends_with(':') && !s.contains(": ") && !s.contains(" #") && s != "-" && !s.starts_with("- ")
+    !common_unsafe(s) && s.trim() == s && !s.ends_with(':') && !s.contains(": ") && !s.contains(" #") && !starts_list_item(s)
 }
 
 /// Float literal text; NaN and the infinities use the `@float("...")` form.

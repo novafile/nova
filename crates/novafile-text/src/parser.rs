@@ -39,6 +39,11 @@ pub(crate) const RESERVED_START: &[u8] = b"!\"#$%&'*,:<=>?@[\\]^`{|}~()";
 /// Bytes that end a bare word in flow context.
 const FLOW_DELIMS: &[u8] = b",[]{}()\"";
 
+/// Whether a line's content `t` opens a list item: `-` alone or followed by inline whitespace.
+pub(crate) fn starts_list_item(t: &str) -> bool {
+    t == "-" || t.starts_with("- ") || t.starts_with("-\t")
+}
+
 /// The kind of number a token spells.
 pub(crate) enum NumKind {
     /// An integer.
@@ -1000,7 +1005,7 @@ impl<'a> Parser<'a> {
 
     /// Whether the cursor is at a `-` list marker (followed by a space, a line break or the end of input).
     fn is_list_marker(&self) -> bool {
-        self.peek() == Some(b'-') && matches!(self.peek_at(1), None | Some(b' ' | b'\r' | b'\n'))
+        self.peek() == Some(b'-') && matches!(self.peek_at(1), None | Some(b' ' | b'\t' | b'\r' | b'\n'))
     }
 
     /// The template control keyword (`@if `, `@for ` or `@else`) at the cursor, if any.
@@ -1025,7 +1030,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            if t == "-" || t.starts_with("- ") || (t.starts_with('[') && t.as_bytes().get(1).is_some_and(u8::is_ascii_digit)) {
+            if starts_list_item(t) || (t.starts_with('[') && t.as_bytes().get(1).is_some_and(u8::is_ascii_digit)) {
                 return BlockKind::List;
             }
 
@@ -1290,7 +1295,7 @@ impl<'a> Parser<'a> {
             return self.err("a plain value cannot start with `...`; quote the string");
         }
 
-        if text == "-" || text.starts_with("- ") {
+        if starts_list_item(text) {
             return self.err("`- ` starts a list item, which must be on its own line; quote the string");
         }
 

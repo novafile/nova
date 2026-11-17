@@ -148,6 +148,7 @@ fn top_level_shapes() {
     for v in [
         Value::Int(5),
         "hello world".into(),
+        "-".into(),
         Value::List(vec![Value::Int(1), rec(vec![("a", Value::Int(1)), ("b", Value::Int(2))])]),
         Value::List(vec![rec(vec![("a", Value::Int(1))]), rec(vec![("a", Value::Int(2))])]),
         rec(vec![]),
@@ -362,4 +363,16 @@ fn flow_continuation_lines_and_stream_splitting() {
     let docs = split_stream("a: [x,\n  y]\n---\nb: 1\n");
     assert_eq!(docs.len(), 2);
     assert_eq!(parse(docs[0]).unwrap(), parse("a: [x, y]\n").unwrap());
+}
+
+#[test]
+fn tab_after_dash_is_a_list_marker() {
+    // Tabs are inline whitespace (spec §4.1), so `-\t` opens a list item like `- `.
+    assert_eq!(parse("-\tx\n").unwrap(), Value::List(vec!["x".into()]));
+    assert!(parse("-\t").is_err());
+    let v = rec(vec![("a", "-\tx".into()), ("b", "-".into())]);
+    for p in [Profile::Human, Profile::Compact] {
+        let t = to_text(&v, p);
+        assert_eq!(parse(&t).unwrap_or_else(|e| panic!("{e}\n{t}")), v, "{t}");
+    }
 }
