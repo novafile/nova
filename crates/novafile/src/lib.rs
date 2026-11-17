@@ -1,6 +1,6 @@
 //! NOVA — one precise semantic model with several interchangeable
 //! representations. This crate re-exports the reference implementation;
-//! see the [specification](https://github.com/sunsided/nova/blob/main/SPEC.md).
+//! see the [specification](https://github.com/novafile/spec/blob/main/SPEC.md).
 //!
 //! | Module | Crate | Feature |
 //! | --- | --- | --- |

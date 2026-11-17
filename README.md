@@ -8,9 +8,9 @@
 - **Queries and conditional patches** for agents that read and change *parts* of a document.
 - **Templates** for composition, rendered to plain values before anything else sees them.
 
-📄 **[Read the specification →](SPEC.md)**
+📄 **[Read the specification →](https://github.com/novafile/spec/blob/main/SPEC.md)**
 
-This repository contains the draft specification (v0.1) and a reference implementation in Rust. The format is called NOVA (files `.nova`, schemas `.novs`); the Rust packages are published as `novafile-*`, and the command-line tool is `nvf`.
+This repository is the Rust reference implementation. The specification, design proposals and the cross-implementation conformance suite live in [novafile/spec](https://github.com/novafile/spec); editor support in [novafile/vscode-novafile](https://github.com/novafile/vscode-novafile) and [novafile/tree-sitter-nova](https://github.com/novafile/tree-sitter-nova). The format is called NOVA (files `.nova`, schemas `.novs`); the Rust packages are published as `novafile-*`, and the command-line tool is `nvf`.
 
 ## A taste
 
@@ -129,6 +129,7 @@ let schema = Infrastructure::novafile_schema();             // == the hand-writt
 | [`novafile-schemars`](crates/novafile-schemars) | NOVA schemas from Rust types (`#[derive(JsonSchema)]`), and NOVA schema ↔ JSON Schema |
 | [`novafile-serde`](crates/novafile-serde) | Serde integration: `to_string`/`from_str`, `to_vec`/`from_slice`, `to_value`/`from_value` |
 | [`novafile-lint`](crates/novafile-lint) | Conventions and lints with fixes (`nvf lint`, also shown by the language server) |
+| [`novafile-conformance`](crates/novafile-conformance) | Generates and runs the [conformance suite](https://github.com/novafile/spec/tree/main/conformance) (unpublished) |
 | [`novafile-cli`](crates/novafile-cli) | The `nvf` command |
 | [`novafile-lsp`](crates/novafile-lsp) | Language server: diagnostics with workspace schemas, outline, hover, completion, formatting |
 
@@ -163,7 +164,7 @@ nvf schema check old.novs new.novs    # exits 1 on breaking changes
 
 ## Conventions and `nvf lint`
 
-JSON never settled on naming conventions; NOVA has them: `snake_case` keys and variants, and `@id` on all fields or on none. `nvf lint` checks documents and schemas, and `--fix` applies the safe fixes (renaming keys, typing timestamps) without disturbing comments. Data that mirrors an external JSON, YAML or TOML contract is marked `@compat json` (added automatically by `nvf convert`). For such data, names are left alone and anything the format cannot represent is flagged. See [spec Appendix E](SPEC.md#appendix-e--conventions-and-lints).
+JSON never settled on naming conventions; NOVA has them: `snake_case` keys and variants, and `@id` on all fields or on none. `nvf lint` checks documents and schemas, and `--fix` applies the safe fixes (renaming keys, typing timestamps) without disturbing comments. Data that mirrors an external JSON, YAML or TOML contract is marked `@compat json` (added automatically by `nvf convert`). For such data, names are left alone and anything the format cannot represent is flagged. See [spec Appendix E](https://github.com/novafile/spec/blob/main/SPEC.md#appendix-e--conventions-and-lints).
 
 ```bash
 nvf lint config.nova examples/*.novs
@@ -212,7 +213,7 @@ A VS Code extension, with a TextMate grammar for syntax highlighting, is not wri
 
 ## Status
 
-This is a draft. Formatting and patching are **document-preserving**: `nvf fmt` keeps comments, blank lines and spellings, and `nvf patch -w` edits only the lines it changes. See [SPEC.md §14](SPEC.md#14-reference-implementation) and [Appendix C](SPEC.md#appendix-c--open-questions-and-future-work).
+This is a draft. Formatting and patching are **document-preserving**: `nvf fmt` keeps comments, blank lines and spellings, and `nvf patch -w` edits only the lines it changes. See [SPEC.md §14](https://github.com/novafile/spec/blob/main/SPEC.md#14-reference-implementation) and [Appendix C](https://github.com/novafile/spec/blob/main/SPEC.md#appendix-c--open-questions-and-future-work).
 
 ## License
 
@@ -223,6 +224,11 @@ Licensed under either of, at your option:
 
 SPDX-License-Identifier: `EUPL-1.2 OR MPL-2.0`
 
-The example files in [`examples/`](examples/) are dedicated to the public domain under [CC0-1.0](examples/LICENSE) (SPDX-License-Identifier: `CC0-1.0`): copy them into your own projects without conditions.
+Exceptions, which keep the license of the format they belong to:
+
+| Files | License |
+| --- | --- |
+| [`crates/novafile-schema/meta/nova-schema.novs`](crates/novafile-schema/meta/nova-schema.novs), a verbatim copy of the [specification's meta-schema](https://github.com/novafile/spec/blob/main/meta/nova-schema.novs) | Apache-2.0 ([LICENSE-APACHE](crates/novafile-schema/LICENSE-APACHE)) |
+| [`examples/`](examples/) | CC0-1.0 ([LICENSE](examples/LICENSE)) |
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this work shall be dual-licensed as above, without any additional terms or conditions.

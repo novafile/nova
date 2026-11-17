@@ -1,0 +1,15 @@
+[package]
+name = "novafile-conformance"
+description = "Generator and runner for the NOVA conformance suite (github.com/novafile/spec)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+novafile-value.workspace = true
+novafile-text.workspace = true
+novafile-schema.workspace = true
+novafile-patch.workspace = true
+novafile-template.workspace = true
+serde_json.workspace = true

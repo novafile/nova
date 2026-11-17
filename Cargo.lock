@@ -1071,6 +1071,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "novafile-conformance"
+version = "0.1.0"
+dependencies = [
+ "novafile-patch",
+ "novafile-schema",
+ "novafile-template",
+ "novafile-text",
+ "novafile-value",
+ "serde_json",
+]
+
+[[package]]
 name = "novafile-derive"
 version = "0.1.0"
 dependencies = [
