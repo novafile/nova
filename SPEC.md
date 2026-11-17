@@ -329,13 +329,29 @@ Record keys in flow context are identifiers or quoted strings, followed by `:`.
 | Literal | Kind | Argument |
 | --- | --- | --- |
 | `@timestamp("2026-11-17T16:00:00Z")` | timestamp | RFC 3339 date-time: `YYYY-MM-DDTHH:MM:SS[.F{1,9}](Z\|±HH:MM)`. Uppercase `T` and `Z`. |
-| `@duration("1h30m")` | duration | `-?(Nd)?(Nh)?(Nm)?(N[.F{1,9}]s)?` — at least one component, units in this order. |
+| `@duration("1h30m")`, `@duration("PT1H30M")` | duration | NOVA notation `-?(Nd)?(Nh)?(Nm)?(N[.F{1,9}]s)?` — at least one component, units in this order — or ISO 8601 notation (below). |
 | `@decimal("12.50")` | decimal | `-?D+(.D+)?([eE][+-]?D+)?` |
 | `@rational("22/7")` | rational | as §4.5 |
 | `@bytes("AP8H")` | bytes | Standard base64 with padding (RFC 4648 §4). |
 | `@float("nan")` | float | `nan`, `inf`, `-inf`, or a number. |
 
 The argument MUST be a quoted string literal.
+
+**ISO 8601 durations.** Wherever a duration is parsed — typed literals, schema resolution (§6.3), language bindings — implementations MUST also accept the ISO 8601 form restricted to exact units:
+
+```
+iso-duration = ["-"] "P" [n "W"] [n "D"] ["T" [n "H"] [n "M"] [n [("." | ",") F{1,9}] "S"]]
+```
+
+- At least one component MUST be present. `T` MUST be followed by at least one time component.
+- Only seconds may carry a fraction.
+- Designators are uppercase.
+- `W` is 7 days and `D` is 86 400 seconds.
+- Years (`Y`) and months (`M` before `T`) MUST be rejected, because their length depends on the calendar and a NOVA duration is exact. (Calendar periods such as "1 month" are a different concept from durations; a schema can model them as a record.)
+
+Examples: `PT1H30M` = `1h30m`, `P30D` = `30d`, `P1W` = `7d`, `PT0.5S` = `0.5s`, `-PT90M` = `-1h30m`.
+
+Writers always emit the canonical NOVA notation (§4.10). The reference implementation also offers an ISO rendering (`Duration::to_iso8601`) for interoperability.
 
 ### 4.9 Tables
 
