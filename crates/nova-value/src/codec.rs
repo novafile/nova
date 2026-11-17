@@ -24,6 +24,8 @@ pub(crate) mod tag {
     pub const UNIT_VARIANT: u8 = 0x0F;
     pub const VARIANT: u8 = 0x10;
     pub const RATIONAL: u8 = 0x11;
+    // 0x12 is reserved for tensors (docs/proposals/0001-tensors.md).
+    pub const RECORD_LIST: u8 = 0x13;
 }
 
 const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
@@ -34,6 +36,43 @@ pub struct EncodeOptions {
     pub canonical: bool,
     /// Replace repeated strings with back-references (spec §5.3).
     pub dedupe_strings: bool,
+    /// Write lists of same-shaped records as record lists: field names once,
+    /// then values only (spec §5.3). Ignored when `canonical`.
+    pub tables: bool,
+}
+
+/// Field order for a list that can be written as a record list: at least two
+/// non-empty records, every record's keys in the shared order, and at least
+/// half of all cells present.
+fn table_shape(items: &[Value]) -> Option<Vec<&str>> {
+    if items.len() < 2 {
+        return None;
+    }
+    let mut fields: Vec<&str> = Vec::new();
+    let mut present = 0usize;
+    for v in items {
+        let Value::Record(r) = v else { return None };
+        if r.is_empty() {
+            return None;
+        }
+        let mut last: Option<usize> = None;
+        for k in r.keys() {
+            let idx = match fields.iter().position(|f| f == k) {
+                Some(i) => i,
+                None => {
+                    fields.push(k);
+                    fields.len() - 1
+                }
+            };
+            // A record whose key order disagrees with the shared order would be reordered.
+            if last.is_some_and(|l| idx < l) {
+                return None;
+            }
+            last = Some(idx);
+            present += 1;
+        }
+    }
+    (fields.len() <= 256 && present * 2 >= fields.len() * items.len()).then_some(fields)
 }
 
 fn put_varint(out: &mut Vec<u8>, mut v: u128) {
@@ -138,6 +177,34 @@ impl Encoder {
                 out.push(tag::DURATION);
                 put_varint(out, zigzag(d.as_nanos()));
             }
+            Value::List(items) if self.opts.tables && !self.opts.canonical && table_shape(items).is_some() => {
+                let fields = table_shape(items).unwrap();
+                out.push(tag::RECORD_LIST);
+                put_varint(out, items.len() as u128);
+                put_varint(out, fields.len() as u128);
+                for f in &fields {
+                    self.string(out, f);
+                }
+                let dense = items.iter().all(|r| matches!(r, Value::Record(r) if r.len() == fields.len()));
+                out.push(if dense { 0 } else { 1 });
+                for row in items {
+                    let Value::Record(r) = row else { unreachable!() };
+                    if !dense {
+                        let mut bits = vec![0u8; fields.len().div_ceil(8)];
+                        for (i, f) in fields.iter().enumerate() {
+                            if r.contains_key(f) {
+                                bits[i / 8] |= 1 << (i % 8);
+                            }
+                        }
+                        out.extend_from_slice(&bits);
+                    }
+                    for f in &fields {
+                        if let Some(v) = r.get(f) {
+                            self.value(out, v);
+                        }
+                    }
+                }
+            }
             Value::List(items) | Value::Tuple(items) => {
                 out.push(if matches!(v, Value::List(_)) { tag::LIST } else { tag::TUPLE });
                 put_varint(out, items.len() as u128);
@@ -220,6 +287,7 @@ pub fn canonical_bytes(v: &Value) -> Vec<u8> {
         EncodeOptions {
             canonical: true,
             dedupe_strings: false,
+            tables: false,
         },
     )
 }
@@ -459,6 +527,49 @@ impl<'a> Decoder<'a> {
                 self.depth -= 1;
                 Value::Map(entries)
             }
+            tag::RECORD_LIST => {
+                let n = self.count()?;
+                let k = self.count()?;
+                let mut fields: Vec<String> = Vec::with_capacity(k);
+                for _ in 0..k {
+                    let f = self.string()?;
+                    if fields.contains(&f) {
+                        return Err(DecodeError {
+                            offset: start,
+                            message: format!("duplicate record-list field {f:?}"),
+                        });
+                    }
+                    fields.push(f);
+                }
+                let dense = match self.byte()? {
+                    0 => true,
+                    1 => false,
+                    m => return self.err(format!("invalid record-list mode {m}")),
+                };
+                self.depth += 2;
+                let mut rows = Vec::with_capacity(n.min(4096));
+                for _ in 0..n {
+                    let present: Vec<bool> = if dense {
+                        vec![true; k]
+                    } else {
+                        let bits = self.take(k.div_ceil(8))?;
+                        if k % 8 != 0 && bits[k / 8] >> (k % 8) != 0 {
+                            return self.err("unused record-list presence bits must be zero");
+                        }
+                        (0..k).map(|i| bits[i / 8] & (1 << (i % 8)) != 0).collect()
+                    };
+                    let mut r = Record::new();
+                    for (f, p) in fields.iter().zip(present) {
+                        if p {
+                            let v = self.value()?;
+                            r.insert(f.clone(), v).expect("field names are unique");
+                        }
+                    }
+                    rows.push(Value::Record(r));
+                }
+                self.depth -= 2;
+                Value::List(rows)
+            }
             tag::UNIT_VARIANT => Value::Variant(self.string()?, None),
             tag::VARIANT => {
                 let name = self.string()?;
@@ -574,10 +685,22 @@ mod tests {
             EncodeOptions {
                 canonical: true,
                 dedupe_strings: false,
+                tables: false,
             },
             EncodeOptions {
                 canonical: false,
                 dedupe_strings: true,
+                tables: false,
+            },
+            EncodeOptions {
+                canonical: false,
+                dedupe_strings: false,
+                tables: true,
+            },
+            EncodeOptions {
+                canonical: false,
+                dedupe_strings: true,
+                tables: true,
             },
         ] {
             let bytes = encode(&v, opts);
@@ -589,6 +712,7 @@ mod tests {
             EncodeOptions {
                 canonical: false,
                 dedupe_strings: true,
+                tables: false,
             },
         )
         .len();
@@ -623,5 +747,85 @@ mod tests {
         assert!(r.matches(&s));
         assert!(r.matches(&s[..15]));
         assert!(!r.matches("sha256:abc"));
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+
+    fn rec(entries: Vec<(&str, Value)>) -> Value {
+        Value::Record(Record::from_entries(entries.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()).unwrap())
+    }
+
+    fn services(n: usize, sparse: bool) -> Value {
+        Value::List(
+            (0..n)
+                .map(|i| {
+                    let mut e = vec![
+                        ("id", Value::String(format!("svc-{i}"))),
+                        ("port", Value::Int(8000 + i as i128)),
+                        ("replicas", Value::Int(3)),
+                    ];
+                    if !sparse || i % 3 == 0 {
+                        e.push(("enabled", Value::Bool(true)));
+                    }
+                    rec(e)
+                })
+                .collect(),
+        )
+    }
+
+    const T: EncodeOptions = EncodeOptions {
+        canonical: false,
+        dedupe_strings: false,
+        tables: true,
+    };
+
+    #[test]
+    fn record_lists_round_trip_and_shrink() {
+        let td = EncodeOptions { dedupe_strings: true, ..T };
+        for v in [
+            services(100, false),
+            services(100, true),
+            rec(vec![("nested", services(5, true)), ("other", Value::List(vec![Value::Int(1)]))]),
+        ] {
+            for opts in [T, td] {
+                assert_eq!(decode(&encode(&v, opts)).unwrap(), v);
+            }
+        }
+        let v = services(100, false);
+        let plain = encode(&v, EncodeOptions::default()).len();
+        let dedupe = encode(
+            &v,
+            EncodeOptions {
+                dedupe_strings: true,
+                ..Default::default()
+            },
+        )
+        .len();
+        let table = encode(&v, T).len();
+        assert!(table < dedupe && dedupe < plain, "plain {plain}, dedupe {dedupe}, table {table}");
+        // Canonical encoding never uses record lists.
+        assert_eq!(encode(&v, EncodeOptions { canonical: true, ..T }), canonical_bytes(&v));
+    }
+
+    #[test]
+    fn record_list_shape_rules() {
+        // Disagreeing key order stays a plain list (field order is preserved).
+        let v = Value::List(vec![
+            rec(vec![("a", Value::Int(1)), ("b", Value::Int(2))]),
+            rec(vec![("b", Value::Int(2)), ("a", Value::Int(1))]),
+        ]);
+        assert_eq!(encode(&v, T)[0], tag::LIST);
+        // Decoded field order follows the original.
+        let back = decode(&encode(&services(3, true), T)).unwrap();
+        let keys: Vec<_> = back.as_list().unwrap()[0].as_record().unwrap().keys().cloned().collect();
+        assert_eq!(keys, ["id", "port", "replicas", "enabled"]);
+        // Malformed input is rejected.
+        assert!(decode(&[tag::RECORD_LIST, 1, 2, 2, b'a', 2, b'a', 0, tag::NULL, tag::NULL]).is_err()); // duplicate field
+        assert!(decode(&[tag::RECORD_LIST, 1, 1, 2, b'a', 1, 0b10, tag::NULL]).is_err()); // stray presence bit
+        assert!(decode(&[tag::RECORD_LIST, 1, 1, 2, b'a', 7, tag::NULL]).is_err());
+        // bad mode
     }
 }

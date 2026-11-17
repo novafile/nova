@@ -94,10 +94,9 @@ impl Trivia {
             if line_start(src, first) > body_start && prev_line_blank(src, first) {
                 t.blank_before.insert(p.clone());
             }
-            if matches!(s.kind, SpanKind::BlockEntry | SpanKind::BlockItem)
-                && spans.children(&s.path).next().is_some_and(|c| c.kind == SpanKind::TableRow) {
-                    t.tables.insert(p.clone());
-                }
+            if matches!(s.kind, SpanKind::BlockEntry | SpanKind::BlockItem) && spans.children(&s.path).next().is_some_and(|c| c.kind == SpanKind::TableRow) {
+                t.tables.insert(p.clone());
+            }
         }
         if spans.children(&Path::root()).next().is_some_and(|c| c.kind == SpanKind::TableRow) {
             t.tables.insert(Path::root().to_string());

@@ -23,7 +23,9 @@ pub mod flags {
     pub const CRC32: u8 = 0b0000_0100;
     /// The payload may contain string back-references (informational).
     pub const DEDUPE: u8 = 0b0000_1000;
-    pub const KNOWN: u8 = 0b0000_1111;
+    /// The payload may contain record lists (informational).
+    pub const TABLES: u8 = 0b0001_0000;
+    pub const KNOWN: u8 = 0b0001_1111;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -37,6 +39,8 @@ pub struct Frame {
 pub struct FrameOptions {
     pub canonical: bool,
     pub dedupe_strings: bool,
+    /// Encode lists of same-shaped records as record lists (spec §5.3).
+    pub tables: bool,
     pub checksum: bool,
 }
 
@@ -45,6 +49,7 @@ impl Default for FrameOptions {
         FrameOptions {
             canonical: false,
             dedupe_strings: true,
+            tables: true,
             checksum: true,
         }
     }
@@ -116,6 +121,7 @@ pub fn encode_frame(frame: &Frame, opts: FrameOptions) -> Vec<u8> {
         EncodeOptions {
             canonical: opts.canonical,
             dedupe_strings: opts.dedupe_strings && !opts.canonical,
+            tables: opts.tables && !opts.canonical,
         },
     );
     let mut f = 0u8;
@@ -124,8 +130,13 @@ pub fn encode_frame(frame: &Frame, opts: FrameOptions) -> Vec<u8> {
     }
     if opts.canonical {
         f |= flags::CANONICAL;
-    } else if opts.dedupe_strings {
-        f |= flags::DEDUPE;
+    } else {
+        if opts.dedupe_strings {
+            f |= flags::DEDUPE;
+        }
+        if opts.tables {
+            f |= flags::TABLES;
+        }
     }
     if opts.checksum {
         f |= flags::CRC32;
@@ -277,6 +288,7 @@ mod tests {
             FrameOptions {
                 canonical: true,
                 dedupe_strings: false,
+                tables: false,
                 checksum: false,
             },
         ] {

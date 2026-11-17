@@ -443,6 +443,8 @@ Notation:
 | `0x0F` | unit variant | `str` tag |
 | `0x10` | variant with payload | `str` tag, value |
 | `0x11` | rational | `varint(zigzag(n))` `varint(d)`, normalized (§2.4) |
+| `0x12` | *(reserved for tensors)* | see [docs/proposals/0001-tensors.md](docs/proposals/0001-tensors.md) |
+| `0x13` | list of records (record list) | `varint(n)` `varint(k)` `str`×k field names, mode byte, then n rows (§5.3) |
 
 Decoders MUST reject:
 
@@ -461,7 +463,7 @@ The **canonical encoding** of a value is the encoding above with:
 
 - record fields sorted by the UTF-8 bytes of their keys;
 - set elements, and map entries by key, sorted by the bytewise order of their canonical encodings;
-- no string back-references (§5.3);
+- no string back-references (§5.3) and no record lists (§5.3a);
 - NaN canonicalized.
 
 It is the basis of equality, ordering and revisions (§2.12–2.13).
@@ -474,6 +476,25 @@ A string payload starts with `h = varint(...)`:
 - if `h` is odd, the string is entry `h >> 1` of the **string table**.
 
 The string table is empty at the start of each top-level value. Every **literal** string payload — record keys, string values and variant tags — is appended to it in encoding order, by encoders and decoders alike. An encoder MAY replace any later occurrence of a string with a back-reference, and SHOULD do so only when the reference is shorter than the literal. Repeated record keys in lists of records therefore cost one or two bytes each. Decoders MAY bound the table size; the reference implementation allows 2^20 entries.
+
+### 5.3a Record lists
+
+A list whose elements are all records may be encoded with tag `0x13`. The field names are written once, and each row then carries only its values:
+
+```
+record-list = 0x13 varint(n) varint(k) str×k mode row×n
+mode        = 0x00 (dense: every row has all k fields)
+            | 0x01 (sparse: each row starts with a presence bitmap)
+row         = [bitmap: ceil(k/8) bytes] value×(fields present)
+```
+
+- Bit *i* of the bitmap (byte `i/8`, bit `i%8`, least-significant first) is set if field *i* is present. Unused high bits MUST be zero.
+- Values appear in field-header order. Each value is a full tagged value (§5.1), so a column may mix kinds and may contain nested record lists.
+- Field names MUST be unique. They take part in the string table (§5.3) like any other string.
+- The decoded value is a `list` of `record`s. Each record's fields are in field-header order.
+- Like back-references, record lists are an **encoder choice and never part of the canonical encoding** (§5.2).
+
+The reference encoder uses a record list only when doing so preserves each record's field order — every record's keys follow the shared field order — and when the table is at least half dense. Decoders MUST accept any valid record list.
 
 ### 5.4 Frames
 
@@ -495,6 +516,7 @@ frame = magic  "NOVA" (4E 4F 56 41)
 | `0x02` CANONICAL | The payload is in canonical form; the receiver can hash it directly. |
 | `0x04` CRC32 | A CRC-32 (IEEE 802.3, reflected polynomial `0xEDB88320`) of the payload follows it. |
 | `0x08` DEDUPE | The payload may contain back-references. Informational. |
+| `0x10` TABLES | The payload may contain record lists (§5.3a). Informational. |
 
 Unknown flag bits and unknown versions MUST be rejected.
 

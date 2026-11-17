@@ -297,6 +297,7 @@ fn render_as(l: &Loaded, f: Format, strict: bool) -> R<Vec<u8>> {
                 FrameOptions {
                     canonical,
                     dedupe_strings: !canonical,
+                    tables: !canonical,
                     checksum: true,
                 },
             )
