@@ -334,7 +334,11 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
             if let Some((parent, Segment::Index(i))) = path.parent() {
                 if let Ok(Value::List(l)) = get_mut(root, &parent) {
                     let len = l.len();
-                    let idx = if *i == len as i64 { len } else { resolve_index(*i, len).ok_or(format!("index {i} is out of bounds for insert (len {len})"))? };
+                    let idx = if *i == len as i64 {
+                        len
+                    } else {
+                        resolve_index(*i, len).ok_or(format!("index {i} is out of bounds for insert (len {len})"))?
+                    };
                     l.insert(idx, v.clone());
                     return Ok(());
                 }

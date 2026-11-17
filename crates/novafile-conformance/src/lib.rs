@@ -33,7 +33,9 @@ fn files(dir: &Path, ext: &str) -> Vec<PathBuf> {
 }
 
 fn dirs(dir: &Path) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default();
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
+        .unwrap_or_default();
     v.sort();
     v
 }
@@ -57,7 +59,9 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
         out.push((expect_path(&f), value_expect(&v)));
     }
     for f in files(&root.join("text/invalid"), "nova") {
-        let e = novafile_text::parse(&read(&f)).err().unwrap_or_else(|| panic!("{} should be invalid", f.display()));
+        let e = novafile_text::parse(&read(&f))
+            .err()
+            .unwrap_or_else(|| panic!("{} should be invalid", f.display()));
         out.push((expect_path(&f), json!({"error": true, "line": e.line, "col": e.col, "message": e.message})));
     }
 
@@ -67,7 +71,9 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
         out.push((expect_path(&f), value_expect(&v)));
     }
     for f in files(&root.join("binary/invalid"), "bin") {
-        let e = novafile_value::decode(&std::fs::read(&f).unwrap()).err().unwrap_or_else(|| panic!("{} should be rejected", f.display()));
+        let e = novafile_value::decode(&std::fs::read(&f).unwrap())
+            .err()
+            .unwrap_or_else(|| panic!("{} should be rejected", f.display()));
         out.push((expect_path(&f), json!({"error": true, "message": e.to_string()})));
     }
 
@@ -98,7 +104,10 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
             novafile_schema::ChangeKind::Compatible => "compatible",
             novafile_schema::ChangeKind::Breaking => "breaking",
         };
-        out.push((d.join("expect.json"), json!({"kind": kind, "minimum": r.minimum.to_string(), "accepted": r.problems.is_empty()})));
+        out.push((
+            d.join("expect.json"),
+            json!({"kind": kind, "minimum": r.minimum.to_string(), "accepted": r.problems.is_empty()}),
+        ));
     }
 
     // queries: one result per line of queries.txt.
@@ -182,5 +191,7 @@ pub fn locate() -> Option<PathBuf> {
         return Some(PathBuf::from(p));
     }
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-    [here.join("../../spec/conformance"), here.join("../../../spec/conformance")].into_iter().find(|p| p.is_dir())
+    [here.join("../../spec/conformance"), here.join("../../../spec/conformance")]
+        .into_iter()
+        .find(|p| p.is_dir())
 }

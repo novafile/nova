@@ -13,6 +13,28 @@ fn conformance_suite() {
             failures.push(path.display().to_string());
         }
     }
-    assert!(failures.is_empty(), "{} of {} cases differ:\n  {}", failures.len(), exp.len(), failures.join("\n  "));
+    assert!(
+        failures.is_empty(),
+        "{} of {} cases differ:\n  {}",
+        failures.len(),
+        exp.len(),
+        failures.join("\n  ")
+    );
     eprintln!("{} conformance cases pass", exp.len());
+}
+
+/// The meta-schema embedded in `novafile-schema` is a verbatim copy of the
+/// normative one in the specification (Apache-2.0), and must stay identical.
+#[test]
+fn embedded_meta_schema_matches_spec() {
+    let Some(dir) = novafile_conformance::locate() else {
+        eprintln!("skipping: no spec checkout found");
+        return;
+    };
+    let spec = std::fs::read_to_string(dir.join("../meta/nova-schema.novs")).expect("spec meta/nova-schema.novs");
+    assert_eq!(
+        novafile_schema::META_SCHEMA_SRC,
+        spec,
+        "crates/novafile-schema/meta/nova-schema.novs drifted from the spec's meta/nova-schema.novs"
+    );
 }
