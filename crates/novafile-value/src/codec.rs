@@ -442,7 +442,8 @@ impl<'a> Decoder<'a> {
         let mut shift = 0;
         loop {
             let b = self.byte()?;
-            if shift >= 126 && (b & 0x7F) > 0x03 {
+            // The 19th byte holds bits 126-127 and must be the last.
+            if shift == 126 && (b & 0x7F > 0x03 || b & 0x80 != 0) {
                 return self.err("varint overflow");
             }
 
@@ -866,6 +867,11 @@ mod tests {
 
     #[test]
     fn rejects_bad_input() {
+        // Fuzzer find: a varint running past 19 bytes overflowed the shift.
+        let mut long = vec![0x11, 0x0A];
+        long.extend([0x82; 20]);
+        long.extend([0x00, 0xCC]);
+        assert!(decode(&long).is_err());
         assert!(decode(&[tag::RECORD, 2, 2, b'a', tag::NULL, 2, b'a', tag::NULL]).is_err());
         assert!(decode(&[tag::INT, 0x80, 0x00]).is_err());
         assert!(decode(&[tag::LIST, 0x7F]).is_err());
