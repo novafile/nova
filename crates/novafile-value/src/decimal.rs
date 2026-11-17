@@ -66,13 +66,26 @@ impl Decimal {
         }
 
         let mut coeff: i128 = 0;
+        // Zero digits not yet folded into `coeff`: trailing ones never are, so
+        // they cannot overflow it (the limit is on the normalized coefficient).
+        let mut zeros = 0u32;
         let mut digits = 0usize;
         let mut frac = 0i64;
-        let push = |c: u8, coeff: &mut i128| -> Result<(), String> {
-            *coeff = coeff
-                .checked_mul(10)
+        let mut push = |c: u8, coeff: &mut i128| -> Result<(), String> {
+            if c == b'0' {
+                zeros = zeros.saturating_add(1);
+                return Ok(());
+            }
+
+            let scaled = if *coeff == 0 {
+                Some(0)
+            } else {
+                10i128.checked_pow(zeros + 1).and_then(|p| coeff.checked_mul(p))
+            };
+            *coeff = scaled
                 .and_then(|v| v.checked_add(i128::from(c - b'0')))
                 .ok_or_else(|| format!("decimal {s:?} exceeds 38 significant digits"))?;
+            zeros = 0;
             Ok(())
         };
 
@@ -138,7 +151,7 @@ impl Decimal {
             return Err(err());
         }
 
-        let exp = i32::try_from(e - frac).map_err(|_| err())?;
+        let exp = i32::try_from(e - frac + i64::from(zeros)).map_err(|_| err())?;
         Ok(Decimal::new(if neg { -coeff } else { coeff }, exp))
     }
 
@@ -205,6 +218,11 @@ mod tests {
         assert_eq!(Decimal::parse("1500").unwrap().to_string(), "1500");
         assert_eq!(Decimal::parse("0.0001").unwrap().to_string(), "0.0001");
         assert_eq!(Decimal::parse("1e30").unwrap().to_string(), "1e30");
+        // Trailing zeros are not significant, so they do not count toward the 38-digit limit.
+        let wide = format!("{}00", "1".repeat(38));
+        assert_eq!(Decimal::parse(&wide).unwrap(), Decimal::new("1".repeat(38).parse().unwrap(), 2));
+        assert_eq!(Decimal::parse(&format!("1.{}", "0".repeat(50))).unwrap(), Decimal::from_int(1));
+        assert!(Decimal::parse(&"1".repeat(40)).is_err());
         assert_eq!(Decimal::parse("1.2e-20").unwrap().to_string(), "12e-21");
         for s in ["12.5", "-3", "0.000123", "123456789.123456789", "7e-30", "4e12"] {
             let d = Decimal::parse(s).unwrap();
