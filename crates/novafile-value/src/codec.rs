@@ -1,6 +1,6 @@
 //! NOVA binary value encoding (spec §5.1–5.3) and revisions.
 
-use crate::{Decimal, Duration, Rational, Timestamp, Value, ValueRef};
+use crate::{Decimal, DuplicateKey, Duration, Rational, Record, Timestamp, Value, ValueRef};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -512,7 +512,7 @@ impl<'a> Decoder<'a> {
     /// Decode one value, enforcing [`Limits`] and canonical-form invariants
     /// (normalized decimals and rationals, unique set elements, map keys and record keys).
     #[expect(clippy::too_many_lines, reason = "flat dispatcher over every wire tag")]
-    fn value(&mut self) -> Result<ValueRef<'a>, DecodeError> {
+    fn value<T: Build<'a>>(&mut self) -> Result<T, DecodeError> {
         let start = self.pos;
         let kind = self.byte()?;
         if self.depth >= self.limits.max_depth && matches!(kind, tag::LIST..=tag::MAP | tag::VARIANT) {
@@ -520,13 +520,13 @@ impl<'a> Decoder<'a> {
         }
 
         Ok(match kind {
-            tag::NULL => ValueRef::Null,
-            tag::FALSE => ValueRef::Bool(false),
-            tag::TRUE => ValueRef::Bool(true),
-            tag::INT => ValueRef::Int(unzigzag(self.varint()?)),
+            tag::NULL => T::scalar(Value::Null),
+            tag::FALSE => T::scalar(Value::Bool(false)),
+            tag::TRUE => T::scalar(Value::Bool(true)),
+            tag::INT => T::scalar(Value::Int(unzigzag(self.varint()?))),
             tag::FLOAT => {
                 let b = self.take(8)?;
-                ValueRef::Float(f64::from_bits(u64::from_be_bytes(b.try_into().unwrap())))
+                T::scalar(Value::Float(f64::from_bits(u64::from_be_bytes(b.try_into().unwrap()))))
             }
             tag::DECIMAL => {
                 let coeff = unzigzag(self.varint()?);
@@ -539,7 +539,7 @@ impl<'a> Decoder<'a> {
                     return self.err("decimal is not normalized");
                 }
 
-                ValueRef::Decimal(d)
+                T::scalar(Value::Decimal(d))
             }
             tag::RATIONAL => {
                 let num = unzigzag(self.varint()?);
@@ -549,15 +549,15 @@ impl<'a> Decoder<'a> {
                 };
 
                 match Rational::new(num, den) {
-                    Ok(r) if r.numerator() == num && r.denominator() == den => ValueRef::Rational(r),
+                    Ok(r) if r.numerator() == num && r.denominator() == den => T::scalar(Value::Rational(r)),
                     Ok(_) => return self.err("rational is not normalized"),
                     Err(e) => return self.err(e),
                 }
             }
-            tag::STRING => ValueRef::String(self.string()?),
+            tag::STRING => T::string(self.string()?),
             tag::BYTES => {
                 let n = self.count()?;
-                ValueRef::Bytes(self.take(n)?)
+                T::bytes(self.take(n)?)
             }
             tag::TIMESTAMP => {
                 let secs = i64::try_from(unzigzag(self.varint()?));
@@ -567,12 +567,12 @@ impl<'a> Decoder<'a> {
                 };
 
                 match Timestamp::new(secs, nanos) {
-                    Ok(t) => ValueRef::Timestamp(t),
+                    Ok(t) => T::scalar(Value::Timestamp(t)),
                     Err(e) => return self.err(e),
                 }
             }
             tag::DURATION => match Duration::from_nanos(unzigzag(self.varint()?)) {
-                Ok(d) => ValueRef::Duration(d),
+                Ok(d) => T::scalar(Value::Duration(d)),
                 Err(e) => return self.err(e),
             },
             tag::LIST | tag::TUPLE | tag::SET => {
@@ -581,8 +581,8 @@ impl<'a> Decoder<'a> {
                 let mut items = Vec::with_capacity(n);
                 let mut seen = HashSet::new();
                 for _ in 0..n {
-                    let v = self.value()?;
-                    if kind == tag::SET && !seen.insert(canonical_bytes(&v.to_value())) {
+                    let v = self.value::<T>()?;
+                    if kind == tag::SET && !seen.insert(v.canonical()) {
                         return Err(DecodeError {
                             offset: start,
                             message: "duplicate set element".into(),
@@ -593,43 +593,25 @@ impl<'a> Decoder<'a> {
                 }
 
                 self.depth -= 1;
-                match kind {
-                    tag::LIST => ValueRef::List(items),
-                    tag::TUPLE => ValueRef::Tuple(items),
-                    _ => ValueRef::Set(items),
-                }
+                T::seq(kind, items)
             }
             tag::RECORD => {
                 let n = self.count()?;
                 self.depth += 1;
-                let mut entries: Vec<(&str, ValueRef<'a>)> = Vec::with_capacity(n);
-                // Small records are scanned; past that, keys go into a set (as `Record` indexes them).
-                let mut keys = HashSet::new();
+                let mut r = T::record(n);
                 for _ in 0..n {
                     let k = self.string()?;
-                    let v = self.value()?;
-                    let duplicate = if entries.len() < RECORD_SCAN {
-                        entries.iter().any(|(e, _)| *e == k)
-                    } else {
-                        if keys.is_empty() {
-                            keys.extend(entries.iter().map(|(e, _)| *e));
-                        }
-
-                        !keys.insert(k)
-                    };
-
-                    if duplicate {
+                    let v = self.value::<T>()?;
+                    if let Err(e) = T::insert(&mut r, k, v) {
                         return Err(DecodeError {
                             offset: start,
-                            message: crate::DuplicateKey(k.to_owned()).to_string(),
+                            message: e.to_string(),
                         });
                     }
-
-                    entries.push((k, v));
                 }
 
                 self.depth -= 1;
-                ValueRef::Record(entries)
+                T::finish(r)
             }
             tag::MAP => {
                 let n = self.count()?;
@@ -637,20 +619,20 @@ impl<'a> Decoder<'a> {
                 let mut entries = Vec::with_capacity(n);
                 let mut seen = HashSet::new();
                 for _ in 0..n {
-                    let k = self.value()?;
-                    if !seen.insert(canonical_bytes(&k.to_value())) {
+                    let k = self.value::<T>()?;
+                    if !seen.insert(k.canonical()) {
                         return Err(DecodeError {
                             offset: start,
                             message: "duplicate map key".into(),
                         });
                     }
 
-                    let v = self.value()?;
+                    let v = self.value::<T>()?;
                     entries.push((k, v));
                 }
 
                 self.depth -= 1;
-                ValueRef::Map(entries)
+                T::map(entries)
             }
             tag::RECORD_LIST => {
                 let n = self.count()?;
@@ -689,27 +671,28 @@ impl<'a> Decoder<'a> {
                     };
 
                     // Only dense rows spend at least a byte per field, so only they bound the preallocation.
-                    let mut r = Vec::with_capacity(if dense { k } else { 0 });
+                    let mut r = T::record(if dense { k } else { 0 });
                     for (f, p) in fields.iter().zip(present) {
                         if p {
+                            let v = self.value::<T>()?;
                             // Field names were checked for duplicates above.
-                            r.push((*f, self.value()?));
+                            T::push(&mut r, f, v);
                         }
                     }
 
-                    rows.push(ValueRef::Record(r));
+                    rows.push(T::finish(r));
                 }
 
                 self.depth -= 2;
-                ValueRef::List(rows)
+                T::seq(tag::LIST, rows)
             }
-            tag::UNIT_VARIANT => ValueRef::Variant(self.string()?, None),
+            tag::UNIT_VARIANT => T::variant(self.string()?, None),
             tag::VARIANT => {
                 let name = self.string()?;
                 self.depth += 1;
-                let p = self.value()?;
+                let p = self.value::<T>()?;
                 self.depth -= 1;
-                ValueRef::Variant(name, Some(Box::new(p)))
+                T::variant(name, Some(p))
             }
             other => {
                 return Err(DecodeError {
@@ -721,6 +704,172 @@ impl<'a> Decoder<'a> {
     }
 }
 
+/// What the decoder builds: owned [`Value`]s or borrowed [`ValueRef`]s.
+///
+/// The decoder owns every check of the wire format; implementations only
+/// assemble the checked parts.
+pub(crate) trait Build<'a>: Sized {
+    /// A record under construction.
+    type Record;
+
+    /// A value of a kind without heap data (not a string, byte string or container).
+    fn scalar(v: Value) -> Self;
+    /// A string borrowed from the input.
+    fn string(s: &'a str) -> Self;
+    /// A byte string borrowed from the input.
+    fn bytes(b: &'a [u8]) -> Self;
+    /// A list, tuple or set, by its wire tag.
+    fn seq(kind: u8, items: Vec<Self>) -> Self;
+    /// A map whose keys were checked for duplicates.
+    fn map(entries: Vec<(Self, Self)>) -> Self;
+    /// A variant with an optional payload.
+    fn variant(name: &'a str, payload: Option<Self>) -> Self;
+    /// An empty record with room for `capacity` fields.
+    fn record(capacity: usize) -> Self::Record;
+    /// Add a field, failing if the key is already present.
+    fn insert(r: &mut Self::Record, key: &'a str, v: Self) -> Result<(), DuplicateKey>;
+    /// Add a field whose key is known to be new.
+    fn push(r: &mut Self::Record, key: &'a str, v: Self);
+    /// The finished record.
+    fn finish(r: Self::Record) -> Self;
+    /// The canonical encoding, for duplicate checks in sets and maps.
+    fn canonical(&self) -> Vec<u8>;
+}
+
+impl<'a> Build<'a> for Value {
+    type Record = Record;
+
+    fn scalar(v: Value) -> Self {
+        v
+    }
+
+    fn string(s: &'a str) -> Self {
+        Value::String(s.to_owned())
+    }
+
+    fn bytes(b: &'a [u8]) -> Self {
+        Value::Bytes(b.to_vec())
+    }
+
+    fn seq(kind: u8, items: Vec<Self>) -> Self {
+        match kind {
+            tag::LIST => Value::List(items),
+            tag::TUPLE => Value::Tuple(items),
+            _ => Value::Set(items),
+        }
+    }
+
+    fn map(entries: Vec<(Self, Self)>) -> Self {
+        Value::Map(entries)
+    }
+
+    fn variant(name: &'a str, payload: Option<Self>) -> Self {
+        Value::Variant(name.to_owned(), payload.map(Box::new))
+    }
+
+    fn record(capacity: usize) -> Record {
+        Record::with_capacity(capacity)
+    }
+
+    fn insert(r: &mut Record, key: &'a str, v: Self) -> Result<(), DuplicateKey> {
+        if r.contains_key(key) {
+            return Err(DuplicateKey(key.to_owned()));
+        }
+
+        r.push(key.to_owned(), v);
+        Ok(())
+    }
+
+    fn push(r: &mut Record, key: &'a str, v: Self) {
+        r.push(key.to_owned(), v);
+    }
+
+    fn finish(r: Record) -> Self {
+        Value::Record(r)
+    }
+
+    fn canonical(&self) -> Vec<u8> {
+        canonical_bytes(self)
+    }
+}
+
+/// A borrowed record under construction: its fields, and its keys once it outgrows scanning.
+pub(crate) type RecordRef<'a> = (Vec<(&'a str, ValueRef<'a>)>, Option<HashSet<&'a str>>);
+
+impl<'a> Build<'a> for ValueRef<'a> {
+    type Record = RecordRef<'a>;
+
+    fn scalar(v: Value) -> Self {
+        match v {
+            Value::Null => ValueRef::Null,
+            Value::Bool(b) => ValueRef::Bool(b),
+            Value::Int(i) => ValueRef::Int(i),
+            Value::Float(f) => ValueRef::Float(f),
+            Value::Decimal(d) => ValueRef::Decimal(d),
+            Value::Rational(r) => ValueRef::Rational(r),
+            Value::Timestamp(t) => ValueRef::Timestamp(t),
+            Value::Duration(d) => ValueRef::Duration(d),
+            _ => unreachable!("the decoder passes only heap-free kinds"),
+        }
+    }
+
+    fn string(s: &'a str) -> Self {
+        ValueRef::String(s)
+    }
+
+    fn bytes(b: &'a [u8]) -> Self {
+        ValueRef::Bytes(b)
+    }
+
+    fn seq(kind: u8, items: Vec<Self>) -> Self {
+        match kind {
+            tag::LIST => ValueRef::List(items),
+            tag::TUPLE => ValueRef::Tuple(items),
+            _ => ValueRef::Set(items),
+        }
+    }
+
+    fn map(entries: Vec<(Self, Self)>) -> Self {
+        ValueRef::Map(entries)
+    }
+
+    fn variant(name: &'a str, payload: Option<Self>) -> Self {
+        ValueRef::Variant(name, payload.map(Box::new))
+    }
+
+    fn record(capacity: usize) -> RecordRef<'a> {
+        (Vec::with_capacity(capacity), None)
+    }
+
+    fn insert((entries, keys): &mut RecordRef<'a>, key: &'a str, v: Self) -> Result<(), DuplicateKey> {
+        // Small records are scanned; past that, keys go into a set (as `Record` indexes them).
+        let duplicate = if entries.len() < RECORD_SCAN {
+            entries.iter().any(|(e, _)| *e == key)
+        } else {
+            !keys.get_or_insert_with(|| entries.iter().map(|(e, _)| *e).collect()).insert(key)
+        };
+
+        if duplicate {
+            return Err(DuplicateKey(key.to_owned()));
+        }
+
+        entries.push((key, v));
+        Ok(())
+    }
+
+    fn push((entries, _): &mut RecordRef<'a>, key: &'a str, v: Self) {
+        entries.push((key, v));
+    }
+
+    fn finish((entries, _): RecordRef<'a>) -> Self {
+        ValueRef::Record(entries)
+    }
+
+    fn canonical(&self) -> Vec<u8> {
+        canonical_bytes(&self.to_value())
+    }
+}
+
 /// Decode one value from the start of `buf`; returns the value and bytes consumed.
 ///
 /// # Errors
@@ -728,7 +877,7 @@ impl<'a> Decoder<'a> {
 /// Returns a [`DecodeError`] if the input is truncated or malformed, a value
 /// is out of range or not normalized, or a [`Limits`] bound is exceeded.
 pub fn decode_prefix(buf: &[u8], limits: Limits) -> Result<(Value, usize), DecodeError> {
-    decode_ref_prefix(buf, limits).map(|(v, n)| (v.to_value(), n))
+    decode_any(buf, limits)
 }
 
 /// Decode one value from the start of `buf` without copying its strings and
@@ -738,6 +887,11 @@ pub fn decode_prefix(buf: &[u8], limits: Limits) -> Result<(Value, usize), Decod
 ///
 /// As [`decode_prefix`].
 pub fn decode_ref_prefix(buf: &[u8], limits: Limits) -> Result<(ValueRef<'_>, usize), DecodeError> {
+    decode_any(buf, limits)
+}
+
+/// Decode one value from the start of `buf` as `T`; returns it and the bytes consumed.
+fn decode_any<'a, T: Build<'a>>(buf: &'a [u8], limits: Limits) -> Result<(T, usize), DecodeError> {
     let mut d = Decoder {
         buf,
         pos: 0,
@@ -757,7 +911,7 @@ pub fn decode_ref_prefix(buf: &[u8], limits: Limits) -> Result<(ValueRef<'_>, us
 /// As [`decode_prefix`] with default limits; also fails if bytes remain after
 /// the value.
 pub fn decode(buf: &[u8]) -> Result<Value, DecodeError> {
-    decode_ref(buf).map(|v| v.to_value())
+    decode_whole(buf)
 }
 
 /// Decode exactly one value occupying all of `buf`, borrowing its strings and
@@ -767,7 +921,12 @@ pub fn decode(buf: &[u8]) -> Result<Value, DecodeError> {
 ///
 /// As [`decode`].
 pub fn decode_ref(buf: &[u8]) -> Result<ValueRef<'_>, DecodeError> {
-    let (v, n) = decode_ref_prefix(buf, Limits::default())?;
+    decode_whole(buf)
+}
+
+/// Decode exactly one value occupying all of `buf` as `T`.
+fn decode_whole<'a, T: Build<'a>>(buf: &'a [u8]) -> Result<T, DecodeError> {
+    let (v, n) = decode_any(buf, Limits::default())?;
     if n != buf.len() {
         return Err(DecodeError {
             offset: n,
@@ -822,7 +981,6 @@ pub fn revision(v: &Value) -> Revision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Record;
 
     fn rec(entries: Vec<(&str, Value)>) -> Value {
         Value::Record(Record::from_entries(entries.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()).unwrap())
@@ -959,7 +1117,6 @@ mod tests {
 #[cfg(test)]
 mod table_tests {
     use super::*;
-    use crate::Record;
 
     fn rec(entries: Vec<(&str, Value)>) -> Value {
         Value::Record(Record::from_entries(entries.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()).unwrap())
