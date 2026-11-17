@@ -1,0 +1,54 @@
+# A schema exercising every Protobuf mapping of nova-proto.
+@schema acme.rich-test@3.2.1
+@root Doc
+
+type Percent = u8 @range(0..100)
+
+enum Color:
+  red
+  green
+  dark-blue
+
+enum Shape:
+  point
+  circle(float)
+  label(string)
+  rect(Rect)
+  tint(Color)
+  at(timestamp)
+
+record Rect:
+  w: u32 @id(1)
+  h: u32 @id(2)
+
+record Doc:
+  name: string @id(1)
+  count: i64 @id(2)
+  small: i8 @id(3)
+  big: u64 @id(4)
+  ratio: float @id(5)
+  price: decimal @id(6)
+  share: rational @id(7)
+  blob: bytes @id(8)
+  flag: bool @id(9) = true
+  when: timestamp @id(10)
+  took: duration @id(11)
+  color: Color @id(12)
+  shape: Shape @id(13)
+  shapes: list<Shape> @id(14)
+  nums: list<i32> @id(15)
+  floats: list<float> @id(16)
+  colors: list<Color> @id(17)
+  tags: set<string> @id(18)
+  attrs: map<string, string> @id(19)
+  rects: map<u32, Rect> @id(20)
+  nick?: string @id(21)
+  note: string? @id(22)
+  child: Rect? @id(23)
+  level: Percent @id(24) = 50
+  maybe_color?: Color @id(25)
+  huge: int @id(26)
+  history: list<Rect> @id(27)
+  old: u16 @id(28) @deprecated
+  weights: map<i64, float> @id(29)
+  wait: duration @id(536870911)
