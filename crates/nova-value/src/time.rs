@@ -5,6 +5,7 @@ use std::fmt;
 /// An instant on the UTC time line with nanosecond precision.
 /// Offsets in the text form are presentation only (spec §2.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "facet", derive(facet::Facet), facet(opaque, proxy = String))]
 pub struct Timestamp {
     secs: i64,
     nanos: u32,
@@ -137,6 +138,7 @@ impl fmt::Display for Timestamp {
 /// A signed, exact span of time in nanoseconds. Days are exactly 86 400 s;
 /// there are no calendar units (spec §2.7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "facet", derive(facet::Facet), facet(opaque, proxy = String))]
 pub struct Duration {
     nanos: i128,
 }

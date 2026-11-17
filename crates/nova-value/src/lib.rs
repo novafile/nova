@@ -8,6 +8,8 @@
 
 mod codec;
 mod decimal;
+#[cfg(feature = "facet")]
+mod facet_support;
 mod numeric;
 mod rational;
 mod record;
