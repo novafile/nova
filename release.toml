@@ -1,0 +1,10 @@
+# cargo-release: the whole workspace shares the version in [workspace.package],
+# and a release is one signed commit plus one signed tag on main.
+allow-branch = ["main"]
+shared-version = true
+consolidate-commits = true
+sign-commit = true
+sign-tag = true
+pre-release-commit-message = "Release {{version}}"
+tag-name = "v{{version}}"
+tag-message = "NOVA {{version}}"
