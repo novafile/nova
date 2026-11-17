@@ -156,6 +156,7 @@ pub struct Parser<'a> {
     depth: usize,
     spans: Option<Vec<Span>>,
     comments: Vec<(usize, usize)>,
+    bracket_depth: usize,
     cur: Vec<Segment>,
     last_end: usize,
 }
@@ -170,6 +171,7 @@ impl<'a> Parser<'a> {
             depth: 0,
             spans: None,
             comments: Vec::new(),
+            bracket_depth: 0,
             cur: Vec::new(),
             last_end: 0,
         }
@@ -522,23 +524,55 @@ impl<'a> Parser<'a> {
         match self.peek() {
             None => self.err("expected a value"),
             Some(b'"') => self.quoted_node(),
-            Some(b'[') => {
-                self.pos += 1;
-                Ok(Node::List(self.flow_items(b']')?))
-            }
-            Some(b'{') => {
-                self.pos += 1;
-                self.flow_record()
-            }
-            Some(b'(') => {
-                self.pos += 1;
-                self.flow_tuple()
-            }
-            Some(b'@') => self.typed(),
+            Some(b'[') => self.bracketed(|p| {
+                p.pos += 1;
+                Ok(Node::List(p.flow_items(b']')?))
+            }),
+            Some(b'{') => self.bracketed(|p| {
+                p.pos += 1;
+                p.flow_record()
+            }),
+            Some(b'(') => self.bracketed(|p| {
+                p.pos += 1;
+                p.flow_tuple()
+            }),
+            Some(b'@') => self.bracketed(|p| p.typed()),
             Some(b'!') => self.variant_flow(),
             Some(b'$') => self.reference(),
             _ => self.word(),
         }
+    }
+
+    /// Parse a bracketed flow value. For the outermost bracket, check that
+    /// continuation lines are indented deeper than the line the value starts
+    /// on (closing brackets and comment lines excepted, spec §4.7), so that a
+    /// `---` line at column 1 can only ever separate documents (§4.11).
+    fn bracketed(&mut self, f: impl FnOnce(&mut Self) -> R<Node>) -> R<Node> {
+        let outer = self.bracket_depth == 0;
+        let start = self.pos;
+        self.bracket_depth += 1;
+        let r = f(self);
+        self.bracket_depth -= 1;
+        let node = r?;
+        if outer {
+            let ls = self.src[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let base = self.src[ls..].bytes().take_while(|&c| c == b' ').count();
+            let mut off = self.src[start..self.pos].find('\n').map(|i| start + i + 1);
+            while let Some(line) = off.filter(|&o| o < self.pos) {
+                let end = self.src[line..].find('\n').map(|i| line + i).unwrap_or(self.src.len());
+                let text = &self.src[line..end];
+                let ind = text.bytes().take_while(|&c| c == b' ').count();
+                let first = text.trim_start().as_bytes().first().copied();
+                if !matches!(first, None | Some(b'#' | b']' | b'}' | b')' | b'\r')) && ind <= base {
+                    return Err(self.error_at(
+                        line + ind,
+                        "continuation lines of a multi-line value must be indented deeper than the line it starts on",
+                    ));
+                }
+                off = (end < self.src.len()).then_some(end + 1);
+            }
+        }
+        Ok(node)
     }
 
     fn reference(&mut self) -> R<Node> {
@@ -604,6 +638,7 @@ impl<'a> Parser<'a> {
 
     fn flow_record(&mut self) -> R<Node> {
         let mut entries: Vec<Entry> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         loop {
             self.skip_ws_multi();
             if self.peek() == Some(b'}') {
@@ -624,7 +659,7 @@ impl<'a> Parser<'a> {
                 self.expect(b':', "`:` after key")?;
                 self.skip_ws_multi();
                 let v = self.spanned(SpanKind::FlowEntry, seg_of(&k), kpos, Some((kpos, kend)), |p| p.parse_flow())?;
-                self.push_entry(&mut entries, k, v, kpos)?;
+                self.push_entry(&mut entries, &mut seen, k, v, kpos)?;
             }
             self.skip_ws_multi();
             match self.peek() {
@@ -638,9 +673,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn push_entry(&self, entries: &mut Vec<Entry>, k: Key, v: Node, kpos: usize) -> R<()> {
+    fn push_entry(&self, entries: &mut Vec<Entry>, seen: &mut std::collections::HashSet<String>, k: Key, v: Node, kpos: usize) -> R<()> {
         if let Key::Lit(name) = &k {
-            if entries.iter().any(|e| matches!(e, Entry::Field(Key::Lit(n), _) if n == name)) {
+            if !seen.insert(name.clone()) {
                 return Err(self.error_at(kpos, format!("duplicate key {name:?}")));
             }
         }
@@ -884,6 +919,7 @@ impl<'a> Parser<'a> {
 
     fn block_record(&mut self, indent: usize, mut inline_first: bool) -> R<Vec<Entry>> {
         let mut entries: Vec<Entry> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         loop {
             let line_start = self.pos;
             if !inline_first && !self.next_block_line(indent)? {
@@ -939,13 +975,14 @@ impl<'a> Parser<'a> {
                     p.block_value(indent)
                 }
             })?;
-            self.push_entry(&mut entries, key, value, kpos)?;
+            self.push_entry(&mut entries, &mut seen, key, value, kpos)?;
         }
         Ok(entries)
     }
 
     fn block_list(&mut self, indent: usize) -> R<Vec<Item>> {
         let mut items = Vec::new();
+        let mut node_count: i64 = 0;
         loop {
             let line_start = self.pos;
             if !self.next_block_line(indent)? {
@@ -986,7 +1023,8 @@ impl<'a> Parser<'a> {
             if self.is_list_marker() {
                 return self.err("nested list items must start on their own line (`-` then an indented block) or use [flow]");
             }
-            let idx = items.iter().filter(|i| matches!(i, Item::Node(_))).count() as i64;
+            let idx = node_count;
+            node_count += 1;
             let node = self.spanned(SpanKind::BlockItem, Segment::Index(idx), start, None, |p| {
                 if p.looks_like_key() || (p.template && p.starts_with("...")) {
                     Ok(Node::Record(p.block_record(indent + 2, true)?))

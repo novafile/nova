@@ -1,11 +1,19 @@
 use crate::Value;
+use std::collections::HashMap;
 
 /// A record: string keys mapped to values. Keys are unique. Entry order is
 /// retained for presentation but is not part of the value (spec §2.10).
-#[derive(Clone, Debug, Default)]
+///
+/// Lookups are O(1): small records scan their entries, larger ones keep a
+/// key index.
+#[derive(Clone, Default)]
 pub struct Record {
     entries: Vec<(String, Value)>,
+    index: Option<HashMap<String, usize>>,
 }
+
+/// Records with more entries than this keep a hash index.
+const INDEX_THRESHOLD: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DuplicateKey(pub String);
@@ -18,13 +26,26 @@ impl std::fmt::Display for DuplicateKey {
 
 impl std::error::Error for DuplicateKey {}
 
+impl std::fmt::Debug for Record {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Record").field("entries", &self.entries).finish()
+    }
+}
+
 impl Record {
     pub fn new() -> Self {
         Record::default()
     }
 
+    pub fn with_capacity(n: usize) -> Self {
+        Record {
+            entries: Vec::with_capacity(n),
+            index: None,
+        }
+    }
+
     pub fn from_entries(entries: Vec<(String, Value)>) -> Result<Self, DuplicateKey> {
-        let mut r = Record::new();
+        let mut r = Record::with_capacity(entries.len());
         for (k, v) in entries {
             r.insert(k, v)?;
         }
@@ -39,16 +60,42 @@ impl Record {
         self.entries.is_empty()
     }
 
+    fn position(&self, key: &str) -> Option<usize> {
+        match &self.index {
+            Some(ix) => ix.get(key).copied(),
+            None => self.entries.iter().position(|(k, _)| k == key),
+        }
+    }
+
+    fn reindex(&mut self) {
+        self.index = (self.entries.len() > INDEX_THRESHOLD).then(|| self.entries.iter().enumerate().map(|(i, (k, _))| (k.clone(), i)).collect());
+    }
+
+    fn push(&mut self, key: String, value: Value) {
+        match &mut self.index {
+            Some(ix) => {
+                ix.insert(key.clone(), self.entries.len());
+                self.entries.push((key, value));
+            }
+            None => {
+                self.entries.push((key, value));
+                if self.entries.len() > INDEX_THRESHOLD {
+                    self.reindex();
+                }
+            }
+        }
+    }
+
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+        self.position(key).map(|i| &self.entries[i].1)
     }
 
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
-        self.entries.iter_mut().find(|(k, _)| k == key).map(|(_, v)| v)
+        self.position(key).map(move |i| &mut self.entries[i].1)
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
-        self.get(key).is_some()
+        self.position(key).is_some()
     }
 
     /// Insert a new key; fails if the key already exists.
@@ -57,25 +104,29 @@ impl Record {
         if self.contains_key(&key) {
             return Err(DuplicateKey(key));
         }
-        self.entries.push((key, value));
+        self.push(key, value);
         Ok(())
     }
 
     /// Insert or replace; returns the previous value.
     pub fn set(&mut self, key: impl Into<String>, value: Value) -> Option<Value> {
         let key = key.into();
-        match self.get_mut(&key) {
-            Some(slot) => Some(std::mem::replace(slot, value)),
+        match self.position(&key) {
+            Some(i) => Some(std::mem::replace(&mut self.entries[i].1, value)),
             None => {
-                self.entries.push((key, value));
+                self.push(key, value);
                 None
             }
         }
     }
 
     pub fn remove(&mut self, key: &str) -> Option<Value> {
-        let idx = self.entries.iter().position(|(k, _)| k == key)?;
-        Some(self.entries.remove(idx).1)
+        let idx = self.position(key)?;
+        let v = self.entries.remove(idx).1;
+        if self.index.is_some() {
+            self.reindex();
+        }
+        Some(v)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
@@ -92,9 +143,34 @@ impl Record {
 
     pub fn sort_keys(&mut self) {
         self.entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+        if self.index.is_some() {
+            self.reindex();
+        }
     }
 
     pub fn into_entries(self) -> Vec<(String, Value)> {
         self.entries
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn index_stays_consistent() {
+        let mut r = Record::new();
+        for i in 0..100 {
+            r.insert(format!("k{i}"), Value::Int(i)).unwrap();
+        }
+        assert!(r.insert("k5", Value::Null).is_err());
+        assert_eq!(r.remove("k3"), Some(Value::Int(3)));
+        assert_eq!(r.get("k99"), Some(&Value::Int(99)));
+        r.set("k99", Value::Int(0));
+        assert_eq!(r.get("k99"), Some(&Value::Int(0)));
+        r.sort_keys();
+        assert_eq!(r.get("k10"), Some(&Value::Int(10)));
+        assert!(!r.contains_key("k3"));
+        assert_eq!(r.len(), 99);
     }
 }

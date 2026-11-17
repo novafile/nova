@@ -316,3 +316,34 @@ fn language_versions() {
         .contains("template language 7.0"));
     assert!(parse_document("@template\na: 1\n").is_ok());
 }
+
+#[test]
+fn large_inputs_parse_in_linear_time() {
+    // Regression test for quadratic list-item counting and duplicate-key checks:
+    // with those bugs these took minutes; now they take well under a second.
+    let start = std::time::Instant::now();
+    let wide: String = (0..30_000).map(|i| format!("key_{i}: {i}\n")).collect();
+    let long: String = std::iter::once("items:\n".to_string())
+        .chain((0..30_000).map(|i| format!("  - id: x{i}\n    n: {i}\n")))
+        .collect();
+    let flow = format!("{{{}}}\n", (0..30_000).map(|i| format!("k{i}: {i}")).collect::<Vec<_>>().join(", "));
+    for src in [&wide, &long, &flow] {
+        let v = parse(src).unwrap();
+        nova_value::revision(&v);
+        nova_text::format_preserving(src, Profile::Human).unwrap();
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(20), "took {:?}", start.elapsed());
+}
+
+#[test]
+fn flow_continuation_lines_and_stream_splitting() {
+    // Continuation lines must be indented; closing brackets may sit at the start column.
+    assert!(parse("a: [\n  1,\n  2,\n]\nb: {\n  x: 1\n}\n").is_ok());
+    assert!(parse("- [1,\n   2]\n").is_ok());
+    let e = parse("a: [x,\n---\n]\n").unwrap_err().to_string();
+    assert!(e.contains("indented deeper"), "{e}");
+    // So `---` at column 1 always separates documents.
+    let docs = split_stream("a: [x,\n  y]\n---\nb: 1\n");
+    assert_eq!(docs.len(), 2);
+    assert_eq!(parse(docs[0]).unwrap(), parse("a: [x, y]\n").unwrap());
+}

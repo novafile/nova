@@ -124,8 +124,11 @@ impl Encoder {
         }
         put_varint(out, (s.len() as u128) << 1);
         out.extend_from_slice(s.as_bytes());
-        // Every literal string enters the table; decoders mirror this.
-        self.table.insert(s.to_owned(), self.next_index);
+        // Every literal string enters the table; decoders mirror this. The
+        // encoder only needs to track it when it may emit back-references.
+        if self.opts.dedupe_strings && !self.opts.canonical {
+            self.table.insert(s.to_owned(), self.next_index);
+        }
         self.next_index += 1;
     }
 

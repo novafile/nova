@@ -326,7 +326,7 @@ Strings that cannot be represented this way — for example, ones with several t
 
 ### 4.7 Flow values
 
-Flow values can appear anywhere a value can. Inside brackets, newlines and comments are whitespace, so flow values can span lines.
+Flow values can appear anywhere a value can. Inside brackets, newlines and comments are whitespace, so flow values can span lines. Every continuation line of a multi-line flow value MUST be indented deeper than the line on which the value starts. The only exceptions are lines that begin with a closing bracket (`]`, `}`, `)`) and comment lines.
 
 ```
 [1, two, "three"]              list          (trailing comma allowed)
@@ -410,7 +410,7 @@ Canonical scalar spellings, which all writers SHOULD use:
 
 ### 4.11 Text streams
 
-A text stream is a sequence of documents separated by lines consisting exactly of `---`. Each document is parsed independently; an error in one document does not prevent reading the others.
+A text stream is a sequence of documents separated by lines consisting exactly of `---`. Because block content is indented, and flow continuation lines are indented (§4.7), a `---` line at column 1 can never be part of a document, so streams can be split without parsing. Each document is parsed independently; an error in one document does not prevent reading the others.
 
 ### 4.12 Positional profile
 

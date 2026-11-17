@@ -55,7 +55,14 @@ impl Trivia {
     pub fn collect(src: &str, spans: &SpanMap, value: &Value) -> Trivia {
         let mut t = Trivia::default();
         let body_start = spans.iter().find(|s| s.kind == SpanKind::Root).map(|s| s.start).unwrap_or(src.len());
-        let blocks: Vec<_> = spans.iter().filter(|s| s.kind.is_block() && s.kind != SpanKind::Root).collect();
+        let mut blocks: Vec<_> = spans.iter().filter(|s| s.kind.is_block() && s.kind != SpanKind::Root).collect();
+        blocks.sort_by_key(|s| (s.start, s.path.0.len()));
+        // Containers written as tables: parents of table rows, found in one pass.
+        let table_parents: HashSet<String> = spans
+            .iter()
+            .filter(|s| s.kind == SpanKind::TableRow)
+            .filter_map(|s| s.path.parent().map(|(p, _)| p.to_string()))
+            .collect();
         for (i, s) in spans.iter().enumerate() {
             t.order.entry(s.path.to_string()).or_insert(i);
         }
@@ -69,7 +76,9 @@ impl Trivia {
             let ls = line_start(src, cs);
             if !src[ls..cs].trim().is_empty() {
                 // Trailing: the innermost line-level construct that starts on this line.
-                if let Some(s) = blocks.iter().filter(|s| s.start >= ls && s.start < cs).max_by_key(|s| s.path.0.len()) {
+                let from = blocks.partition_point(|s| s.start < ls);
+                let to = blocks.partition_point(|s| s.start < cs);
+                if let Some(s) = blocks[from..to].iter().max_by_key(|s| s.path.0.len()) {
                     let e = t.trailing.entry(s.path.to_string()).or_default();
                     if !e.is_empty() {
                         e.push(' ');
@@ -79,7 +88,8 @@ impl Trivia {
                 }
             }
             // Leading: the next line-level construct (outermost when several start together).
-            match blocks.iter().filter(|s| s.start >= ce).min_by_key(|s| (s.start, s.path.0.len())) {
+            // Blocks are sorted by (start, depth): the first one at or after the comment is the outermost next construct.
+            match blocks.get(blocks.partition_point(|s| s.start < ce)) {
                 Some(s) => {
                     let p = s.path.to_string();
                     leading_start.entry(p.clone()).or_insert(cs);
@@ -94,11 +104,11 @@ impl Trivia {
             if line_start(src, first) > body_start && prev_line_blank(src, first) {
                 t.blank_before.insert(p.clone());
             }
-            if matches!(s.kind, SpanKind::BlockEntry | SpanKind::BlockItem) && spans.children(&s.path).next().is_some_and(|c| c.kind == SpanKind::TableRow) {
+            if matches!(s.kind, SpanKind::BlockEntry | SpanKind::BlockItem) && table_parents.contains(&p) {
                 t.tables.insert(p.clone());
             }
         }
-        if spans.children(&Path::root()).next().is_some_and(|c| c.kind == SpanKind::TableRow) {
+        if table_parents.contains(&Path::root().to_string()) {
             t.tables.insert(Path::root().to_string());
         }
         for s in spans
@@ -125,7 +135,7 @@ impl Trivia {
 /// (except in the compact profile, which is meant for machines and LLMs, and
 /// the canonical profile, which mandates canonical spellings).
 pub fn format_preserving(src: &str, profile: Profile) -> Result<String, ParseError> {
-    let (doc, _) = crate::parse_with_spans(src)?;
+    let (doc, spans) = crate::parse_with_spans(src)?;
     if doc.is_template() {
         return Err(ParseError {
             line: 1,
@@ -140,14 +150,18 @@ pub fn format_preserving(src: &str, profile: Profile) -> Result<String, ParseErr
         offset: 0,
         message: m,
     })?;
-    render_preserving(src, &value, profile)
+    render_parsed(src, &doc, &spans, &value, &value, profile)
 }
 
 /// Render `value` with the directives, comments and layout of `src`.
 pub fn render_preserving(src: &str, value: &Value, profile: Profile) -> Result<String, ParseError> {
     let (doc, spans) = crate::parse_with_spans(src)?;
     let orig = doc.body.to_value().unwrap_or(Value::Null);
-    let mut trivia = Trivia::collect(src, &spans, &orig);
+    render_parsed(src, &doc, &spans, &orig, value, profile)
+}
+
+fn render_parsed(src: &str, doc: &crate::Document, spans: &SpanMap, orig: &Value, value: &Value, profile: Profile) -> Result<String, ParseError> {
+    let mut trivia = Trivia::collect(src, spans, orig);
     trivia.keep_spelling = profile == Profile::Human;
     let keep = profile != Profile::Compact;
 
