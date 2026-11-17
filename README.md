@@ -96,7 +96,7 @@ let bytes = nova_serde::to_vec(&svc)?;         // binary frame
 | --- | --- |
 | [`nova-value`](crates/nova-value) | Value model (incl. decimals, rationals, timestamps, durations), canonical encoding, revisions |
 | [`nova-binary`](crates/nova-binary) | Framed binary representation, CRC-32, recovering stream reader |
-| [`nova-text`](crates/nova-text) | Text parser; human, compact and canonical writers; paths; template syntax; token heuristics |
+| [`nova-text`](crates/nova-text) | Text parser; human, compact and canonical writers; paths; source spans; template syntax; token heuristics; [miette](https://docs.rs/miette) diagnostics (feature `miette`) |
 | [`nova-schema`](crates/nova-schema) | Schema language, schema-directed resolution, `@key`, compatibility checks, fingerprints |
 | [`nova-patch`](crates/nova-patch) | `@get` queries and projections; the patch language; atomic apply; diff |
 | [`nova-template`](crates/nova-template) | Template rendering with typed parameters, output budget and sandboxed imports |

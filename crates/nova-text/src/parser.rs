@@ -1,7 +1,8 @@
 //! Recursive-descent parser for NOVA text (spec §4) and templates (spec §9).
 
 use crate::ast::*;
-use crate::path::{is_ident_char, is_ident_start, Path};
+use crate::path::{is_ident_char, is_ident_start, Path, Segment};
+use crate::spans::Span;
 use base64::Engine;
 use nova_value::{Decimal, Duration, Rational, Timestamp, Value};
 use std::fmt;
@@ -12,6 +13,8 @@ pub const MAX_DEPTH: usize = 128;
 pub struct ParseError {
     pub line: usize,
     pub col: usize,
+    /// Byte offset into the source.
+    pub offset: usize,
     pub message: String,
 }
 
@@ -151,6 +154,9 @@ pub struct Parser<'a> {
     pub pos: usize,
     pub template: bool,
     depth: usize,
+    spans: Option<Vec<Span>>,
+    cur: Vec<Segment>,
+    last_end: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -161,7 +167,38 @@ impl<'a> Parser<'a> {
             pos: 0,
             template,
             depth: 0,
+            spans: None,
+            cur: Vec::new(),
+            last_end: 0,
         }
+    }
+
+    /// Record the source span of every value (see [`crate::spans`]).
+    pub fn with_spans(mut self) -> Self {
+        self.spans = Some(Vec::new());
+        self
+    }
+
+    pub fn take_spans(&mut self) -> Vec<Span> {
+        self.spans.take().unwrap_or_default()
+    }
+
+    /// Run `f` with `seg` appended to the current path and record the span of what it parsed.
+    fn spanned<T>(&mut self, seg: Segment, start: usize, key: Option<(usize, usize)>, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        self.cur.push(seg);
+        let r = f(self);
+        if r.is_ok() && !self.template {
+            if let Some(spans) = self.spans.as_mut() {
+                spans.push(Span {
+                    path: Path(self.cur.clone()),
+                    start,
+                    end: self.last_end.max(start),
+                    key,
+                });
+            }
+        }
+        self.cur.pop();
+        r
     }
 
     pub fn error_at(&self, pos: usize, msg: impl Into<String>) -> ParseError {
@@ -172,6 +209,7 @@ impl<'a> Parser<'a> {
         ParseError {
             line,
             col,
+            offset: pos,
             message: msg.into(),
         }
     }
@@ -458,6 +496,9 @@ impl<'a> Parser<'a> {
         }
         let r = self.parse_flow_inner();
         self.depth -= 1;
+        if r.is_ok() {
+            self.last_end = self.pos;
+        }
         r
     }
 
@@ -512,7 +553,9 @@ impl<'a> Parser<'a> {
                 self.pos += 3;
                 items.push(Item::Spread(self.parse_flow()?));
             } else {
-                items.push(Item::Node(self.parse_flow()?));
+                let (i, start) = (items.len() as i64, self.pos);
+                let n = self.spanned(Segment::Index(i), start, None, |p| p.parse_flow())?;
+                items.push(Item::Node(n));
             }
             self.skip_ws_multi();
             match self.peek() {
@@ -560,10 +603,11 @@ impl<'a> Parser<'a> {
             } else {
                 let kpos = self.pos;
                 let k = self.key()?;
+                let kend = self.pos;
                 self.skip_ws_multi();
                 self.expect(b':', "`:` after key")?;
                 self.skip_ws_multi();
-                let v = self.parse_flow()?;
+                let v = self.spanned(seg_of(&k), kpos, Some((kpos, kend)), |p| p.parse_flow())?;
                 self.push_entry(&mut entries, k, v, kpos)?;
             }
             self.skip_ws_multi();
@@ -598,7 +642,8 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 break;
             }
-            items.push(self.parse_flow()?);
+            let (i, start) = (items.len() as i64, self.pos);
+            items.push(self.spanned(Segment::Index(i), start, None, |p| p.parse_flow())?);
             self.skip_ws_multi();
             match self.peek() {
                 Some(b',') => {
@@ -866,15 +911,18 @@ impl<'a> Parser<'a> {
             }
             let kpos = self.pos;
             let key = self.key()?;
-            let value = if self.peek() == Some(b'[') {
-                let (n, fields) = self.table_header()?;
-                self.expect(b':', "`:` after table header")?;
-                self.end_line()?;
-                self.table_rows(indent + 2, n, &fields)?
-            } else {
-                self.expect(b':', "`:` after key")?;
-                self.block_value(indent)?
-            };
+            let kend = self.pos;
+            let value = self.spanned(seg_of(&key), kpos, Some((kpos, kend)), |p| {
+                if p.peek() == Some(b'[') {
+                    let (n, fields) = p.table_header()?;
+                    p.expect(b':', "`:` after table header")?;
+                    p.end_line()?;
+                    p.table_rows(indent + 2, n, &fields)
+                } else {
+                    p.expect(b':', "`:` after key")?;
+                    p.block_value(indent)
+                }
+            })?;
             self.push_entry(&mut entries, key, value, kpos)?;
         }
         Ok(entries)
@@ -916,16 +964,21 @@ impl<'a> Parser<'a> {
             if !self.is_list_marker() {
                 return self.err("expected a list item `- ...`");
             }
+            let start = self.pos;
             self.pos += 1;
             self.skip_inline_ws();
             if self.is_list_marker() {
                 return self.err("nested list items must start on their own line (`-` then an indented block) or use [flow]");
             }
-            if self.looks_like_key() || (self.template && self.starts_with("...")) {
-                items.push(Item::Node(Node::Record(self.block_record(indent + 2, true)?)));
-            } else {
-                items.push(Item::Node(self.block_value(indent)?));
-            }
+            let idx = items.iter().filter(|i| matches!(i, Item::Node(_))).count() as i64;
+            let node = self.spanned(Segment::Index(idx), start, None, |p| {
+                if p.looks_like_key() || (p.template && p.starts_with("...")) {
+                    Ok(Node::Record(p.block_record(indent + 2, true)?))
+                } else {
+                    p.block_value(indent)
+                }
+            })?;
+            items.push(Item::Node(node));
         }
         Ok(items)
     }
@@ -1002,6 +1055,7 @@ impl<'a> Parser<'a> {
             return self.err("control character in plain value");
         }
         let v = classify(text).map_err(|m| self.error_at(start, m))?;
+        self.last_end = start + text.len();
         self.pos = line_end;
         if self.peek() == Some(b'\n') {
             self.pos += 1;
@@ -1031,6 +1085,7 @@ impl<'a> Parser<'a> {
                 break;
             } else {
                 lines.push(&raw[indent..]);
+                self.last_end = self.pos + raw.len();
             }
             self.pos = (end + 1).min(self.src.len());
         }
@@ -1127,6 +1182,8 @@ impl<'a> Parser<'a> {
                 Some(i) if i == indent => self.pos += i,
                 _ => return self.err(format!("table declares {n} rows but only {r} were found (rows are indented {indent} spaces)")),
             }
+            let row_start = self.pos;
+            self.cur.push(Segment::Index(r as i64));
             let mut cells: Vec<Option<Node>> = Vec::new();
             loop {
                 self.skip_inline_ws();
@@ -1141,7 +1198,9 @@ impl<'a> Parser<'a> {
                     }
                     break;
                 }
-                cells.push(Some(self.parse_flow()?));
+                let field = fields.get(cells.len()).cloned().unwrap_or_default();
+                let start = self.pos;
+                cells.push(Some(self.spanned(Segment::Field(field), start, None, |p| p.parse_flow())?));
                 self.skip_inline_ws();
                 match self.peek() {
                     Some(b',') => self.pos += 1,
@@ -1153,6 +1212,17 @@ impl<'a> Parser<'a> {
             if cells.len() != fields.len() {
                 return self.err(format!("table row has {} cells; the header declares {}", cells.len(), fields.len()));
             }
+            if !self.template {
+                if let Some(spans) = self.spans.as_mut() {
+                    spans.push(Span {
+                        path: Path(self.cur.clone()),
+                        start: row_start,
+                        end: self.last_end.max(row_start),
+                        key: None,
+                    });
+                }
+            }
+            self.cur.pop();
             let entries = fields
                 .iter()
                 .zip(cells)
@@ -1469,6 +1539,7 @@ impl<'a> Parser<'a> {
 
     fn parse_body(&mut self) -> R<Node> {
         self.skip_blank_lines();
+        let body_start = self.pos;
         let body = match self.line_indent()? {
             None => Node::Record(Vec::new()),
             Some(i) if i > 0 => return Err(self.error_at(self.pos + i, "the document body must start at column 1")),
@@ -1494,7 +1565,24 @@ impl<'a> Parser<'a> {
         if !self.at_eof() {
             return self.err("unexpected content after the document body");
         }
+        if !self.template {
+            if let Some(spans) = self.spans.as_mut() {
+                spans.push(Span {
+                    path: Path::root(),
+                    start: body_start,
+                    end: self.last_end.max(body_start),
+                    key: None,
+                });
+            }
+        }
         Ok(body)
+    }
+}
+
+fn seg_of(k: &Key) -> Segment {
+    match k {
+        Key::Lit(s) => Segment::Field(s.clone()),
+        Key::Interp(_) => Segment::Field(String::new()),
     }
 }
 

@@ -1051,7 +1051,7 @@ The Rust workspace in this repository implements the specification.
 | --- | --- |
 | `nova-value` | §2, §5.1–5.3: value model, decimals, rationals, time types, canonical encoding, decoding, revisions |
 | `nova-binary` | §5.4–5.5: frames, CRC-32, recovering stream reader |
-| `nova-text` | §4, §7.1: parser, writer profiles, paths, template syntax tree, token heuristics (§10) |
+| `nova-text` | §4, §7.1: parser, writer profiles, paths, template syntax tree, source spans, token heuristics (§10); `miette` diagnostics behind a feature |
 | `nova-schema` | §6: schema parser, resolution and validation, compatibility checks, fingerprints |
 | `nova-patch` | §7: queries and projections, the patch language, atomic application, diffs |
 | `nova-template` | §9: rendering, sandboxed file loader, limits |

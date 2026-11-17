@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use nova_binary::{decode_frame, encode_frame, Frame, FrameOptions, MAGIC};
 use nova_schema::{check_versions, parse_schema, Schema};
+use nova_text::diagnostic::SourceDiagnostic;
 use nova_text::tokens::{HeuristicCounter, TokenCounter};
 use nova_text::{document_to_text, parse_document, Profile};
 use nova_value::{revision, Record, Value};
@@ -117,7 +118,32 @@ enum SchemaCmd {
     Check { old: PathBuf, new: PathBuf },
 }
 
-type R<T> = Result<T, String>;
+/// CLI error: a miette report, so diagnostics with source spans render nicely.
+struct E(miette::Report);
+
+impl From<String> for E {
+    fn from(s: String) -> Self {
+        E(miette::miette!("{s}"))
+    }
+}
+
+impl From<&str> for E {
+    fn from(s: &str) -> Self {
+        E(miette::miette!("{s}"))
+    }
+}
+
+impl From<SourceDiagnostic> for E {
+    fn from(d: SourceDiagnostic) -> Self {
+        E(miette::Report::new(d))
+    }
+}
+
+type R<T> = Result<T, E>;
+
+fn name_of(p: &Path) -> String {
+    p.display().to_string()
+}
 
 fn read_bytes(p: &Path) -> R<Vec<u8>> {
     if p.as_os_str() == "-" {
@@ -125,11 +151,11 @@ fn read_bytes(p: &Path) -> R<Vec<u8>> {
         std::io::stdin().read_to_end(&mut b).map_err(|e| e.to_string())?;
         return Ok(b);
     }
-    std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))
+    Ok(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?)
 }
 
 fn read_text(p: &Path) -> R<String> {
-    String::from_utf8(read_bytes(p)?).map_err(|_| format!("{}: not UTF-8", p.display()))
+    Ok(String::from_utf8(read_bytes(p)?).map_err(|_| format!("{}: not UTF-8", p.display()))?)
 }
 
 struct Loaded {
@@ -143,7 +169,7 @@ fn load(p: &Path) -> R<Loaded> {
     if bytes.starts_with(MAGIC) {
         let (f, n) = decode_frame(&bytes).map_err(|e| ctx(e.to_string()))?;
         if n != bytes.len() {
-            return Err(ctx("trailing bytes after the first frame".into()));
+            return Err(ctx("trailing bytes after the first frame".into()).into());
         }
         let directives = f.schema.map(|s| vec![("schema".to_owned(), s)]).unwrap_or_default();
         return Ok(Loaded { directives, value: f.value });
@@ -162,9 +188,9 @@ fn load(p: &Path) -> R<Loaded> {
             value: nova_json::from_json_str(&text).map_err(ctx)?,
         });
     }
-    let doc = parse_document(&text).map_err(|e| ctx(e.to_string()))?;
+    let doc = parse_document(&text).map_err(|e| e.to_diagnostic(&name_of(p), &text))?;
     if doc.is_template() {
-        return Err(ctx("this is a @template; use `nova render`".into()));
+        return Err(ctx("this is a @template; use `nova render`".into()).into());
     }
     let value = doc.body.to_value().map_err(ctx)?;
     Ok(Loaded {
@@ -174,7 +200,14 @@ fn load(p: &Path) -> R<Loaded> {
 }
 
 fn load_schema(p: &Path) -> R<Schema> {
-    parse_schema(&read_text(p)?).map_err(|e| format!("{}: {e}", p.display()))
+    let src = read_text(p)?;
+    parse_schema(&src).map_err(|e| {
+        if e.line == 0 {
+            E::from(format!("{}: {}", p.display(), e.message))
+        } else {
+            E::from(SourceDiagnostic::new("nova::schema", e.message.clone(), &name_of(p), &src).with_line_col(e.line, 1, "in this definition"))
+        }
+    })
 }
 
 fn render_as(l: &Loaded, f: Format, strict: bool) -> R<Vec<u8>> {
@@ -189,7 +222,7 @@ fn render_as(l: &Loaded, f: Format, strict: bool) -> R<Vec<u8>> {
             if !warnings.is_empty() {
                 let msg = warnings.iter().map(|w| format!("  {w}")).collect::<Vec<_>>().join("\n");
                 if strict {
-                    return Err(format!("conversion to JSON is lossy:\n{msg}"));
+                    return Err(format!("conversion to JSON is lossy:\n{msg}").into());
                 }
                 eprintln!("warning: conversion to JSON is lossy:\n{msg}");
             }
@@ -215,13 +248,46 @@ fn render_as(l: &Loaded, f: Format, strict: bool) -> R<Vec<u8>> {
 
 fn out(bytes: &[u8], to: Option<&Path>) -> R<()> {
     match to {
-        Some(p) => std::fs::write(p, bytes).map_err(|e| format!("{}: {e}", p.display())),
-        None => std::io::stdout().write_all(bytes).map_err(|e| e.to_string()),
+        Some(p) => Ok(std::fs::write(p, bytes).map_err(|e| format!("{}: {e}", p.display()))?),
+        None => Ok(std::io::stdout().write_all(bytes).map_err(|e| e.to_string())?),
     }
 }
 
 fn issues(i: Vec<nova_schema::Issue>) -> String {
     i.iter().map(|i| format!("  {i}")).collect::<Vec<_>>().join("\n")
+}
+
+fn patch_error(e: &nova_patch::PatchError, file: &Path, src: &str) -> E {
+    use nova_patch::PatchError as P;
+    match e {
+        P::Syntax { line, col, message } => {
+            let (m, h) = message
+                .split_once("; ")
+                .map(|(a, b)| (a.to_owned(), Some(b.to_owned())))
+                .unwrap_or((message.clone(), None));
+            let mut d = SourceDiagnostic::new("nova::patch::syntax", m, &name_of(file), src).with_line_col(*line, *col, "here");
+            if let Some(h) = h {
+                d = d.with_help(h);
+            }
+            d.into()
+        }
+        P::Op { index, line, message, .. } => {
+            let off = src.split_inclusive('\n').take(line.saturating_sub(1)).map(str::len).sum::<usize>();
+            let len = src[off..].find('\n').unwrap_or(src.len() - off);
+            SourceDiagnostic::new(
+                "nova::patch::conflict",
+                format!("patch rejected: operation {} failed; nothing was applied", index + 1),
+                &name_of(file),
+                src,
+            )
+            .with_label(off, len, message.clone())
+            .into()
+        }
+        P::StaleBase { .. } => SourceDiagnostic::new("nova::patch::stale", e.to_string(), &name_of(file), src)
+            .with_help("fetch the document again (`nova get`) and rebase the patch on the new revision")
+            .into(),
+        other => other.to_string().into(),
+    }
 }
 
 fn run(cli: Cli) -> R<ExitCode> {
@@ -256,7 +322,30 @@ fn run(cli: Cli) -> R<ExitCode> {
                         eprintln!("ok: valid against {}", s.fingerprint());
                     }
                 }
-                Err(i) => return Err(format!("{} is invalid:\n{}", file.display(), issues(i))),
+                Err(i) => {
+                    // Point at each offending value when the input is NOVA text.
+                    let src = read_text(&file).ok();
+                    if let Some((_, spans)) = src.as_deref().and_then(|t| nova_text::parse_with_spans(t).ok()) {
+                        let src = src.unwrap();
+                        let title = format!(
+                            "{} is invalid against {} ({} issue{})",
+                            file.display(),
+                            s.fingerprint(),
+                            i.len(),
+                            if i.len() == 1 { "" } else { "s" }
+                        );
+                        return Err(SourceDiagnostic::from_path_issues(
+                            "nova::invalid",
+                            title,
+                            &name_of(&file),
+                            &src,
+                            &spans,
+                            i.iter().map(|x| (&x.path, x.message.clone())),
+                        )
+                        .into());
+                    }
+                    return Err(format!("{} is invalid:\n{}", file.display(), issues(i)).into());
+                }
             }
         }
         Cmd::Get { file, path, to } => {
@@ -271,7 +360,8 @@ fn run(cli: Cli) -> R<ExitCode> {
         }
         Cmd::Patch { file, patch, schema, write } => {
             let l = load(&file)?;
-            let p = nova_patch::parse_patch(&read_text(&patch)?).map_err(|e| format!("{}: {e}", patch.display()))?;
+            let patch_src = read_text(&patch)?;
+            let p = nova_patch::parse_patch(&patch_src).map_err(|e| patch_error(&e, &patch, &patch_src))?;
             let s = schema.as_deref().map(load_schema).transpose()?;
             if let (Some(s), Some(r)) = (&s, &p.schema) {
                 if s.reference().is_some() {
@@ -282,7 +372,7 @@ fn run(cli: Cli) -> R<ExitCode> {
                 Some(s) => s.validate(v).map_err(|i| i.iter().map(|i| i.to_string()).collect()),
                 None => Ok(()),
             };
-            let applied = nova_patch::apply(&l.value, &p, &validate).map_err(|e| e.to_string())?;
+            let applied = nova_patch::apply(&l.value, &p, &validate).map_err(|e| patch_error(&e, &patch, &patch_src))?;
             let result = Loaded {
                 directives: l.directives,
                 value: applied.value,
@@ -382,8 +472,8 @@ fn run(cli: Cli) -> R<ExitCode> {
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
+        Err(E(report)) => {
+            eprintln!("{report:?}");
             ExitCode::from(2)
         }
     }

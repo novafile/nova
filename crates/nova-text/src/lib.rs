@@ -7,8 +7,11 @@
 //! * [`path`] — the path/selector language shared by queries, patches and templates.
 
 pub mod ast;
+#[cfg(feature = "miette")]
+pub mod diagnostic;
 mod parser;
 pub mod path;
+pub mod spans;
 pub mod tokens;
 mod writer;
 
@@ -37,10 +40,23 @@ pub fn parse(src: &str) -> Result<Value, ParseError> {
         return Err(ParseError {
             line: 1,
             col: 1,
+            offset: 0,
             message: "this is a @template document; render it first".into(),
         });
     }
-    doc.body.to_value().map_err(|m| ParseError { line: 1, col: 1, message: m })
+    doc.body.to_value().map_err(|m| ParseError {
+        line: 1,
+        col: 1,
+        offset: 0,
+        message: m,
+    })
+}
+
+/// Parse a data document and also return the source span of every value.
+pub fn parse_with_spans(src: &str) -> Result<(Document, spans::SpanMap), ParseError> {
+    let mut p = Parser::new(src, false).with_spans();
+    let doc = p.parse_document(&is_data_directive)?;
+    Ok((doc, spans::SpanMap::new(p.take_spans())))
 }
 
 /// Parse a single flow value occupying all of `src` (surrounding whitespace allowed).

@@ -240,3 +240,26 @@ fn paths() {
 fn show() {
     println!("{}", to_text(&zoo(), Profile::Human));
 }
+
+#[test]
+fn spans_locate_values() {
+    let src = HUMAN;
+    let (_, spans) = nova_text::parse_with_spans(src).unwrap();
+    let text = |p: &str| {
+        let s = spans.get(&Path::parse(p).unwrap()).unwrap_or_else(|| panic!("no span for {p}"));
+        &src[s.start..s.end]
+    };
+    assert_eq!(text("region"), "region: eu-central-1");
+    assert_eq!(text("services[1].port"), "port: 3000");
+    assert!(text("services[1]").starts_with("- id: api") && text("services[1]").ends_with("enabled: true"));
+    assert_eq!(text("services[0].enabled"), "enabled: true");
+    let off = src.find("3000").unwrap() + 1;
+    assert_eq!(spans.at(off).unwrap().path.to_string(), "services[1].port");
+    // Tables and flow values too.
+    let (_, spans) = nova_text::parse_with_spans(COMPACT).unwrap();
+    let s = spans.get(&Path::parse("services[1].port").unwrap()).unwrap();
+    assert_eq!(&COMPACT[s.start..s.end], "3000");
+    let (_, spans) = nova_text::parse_with_spans("a: {b: [1, {c: x}]}\n").unwrap();
+    let s = spans.get(&Path::parse("a.b[1].c").unwrap()).unwrap();
+    assert_eq!(s.end - s.start, "c: x".len());
+}
