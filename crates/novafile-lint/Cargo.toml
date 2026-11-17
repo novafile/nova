@@ -3,6 +3,7 @@ name = "novafile-lint"
 description = "Style and correctness lints for NOVA documents and schemas, with fixes"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
@@ -10,4 +11,4 @@ novafile-value.workspace = true
 novafile-text.workspace = true
 novafile-schema.workspace = true
 novafile-json.workspace = true
-novafile-formats = { path = "../novafile-formats" }
+novafile-formats.workspace = true

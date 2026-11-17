@@ -3,6 +3,7 @@ name = "novafile-text"
 description = "NOVA text syntax: parser, writer profiles, paths and template AST"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [features]

@@ -3,19 +3,20 @@ name = "novafile-derive"
 description = "#[derive(NovaSchema)]: NOVA schemas from Rust types"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [lib]
 proc-macro = true
 
 [dependencies]
-syn = "2"
-quote = "1"
-proc-macro2 = "1"
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true
 
 [dev-dependencies]
-novafile-schema = { path = "../novafile-schema", features = ["derive"] }
-novafile-value = { path = "../novafile-value" }
-novafile-text = { path = "../novafile-text" }
-novafile-serde = { path = "../novafile-serde" }
+novafile-schema = { workspace = true, features = ["derive"] }
+novafile-value.workspace = true
+novafile-text.workspace = true
+novafile-serde.workspace = true
 serde.workspace = true

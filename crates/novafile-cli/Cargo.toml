@@ -3,6 +3,7 @@ name = "novafile-cli"
 description = "The `nova` command-line tool"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
@@ -17,11 +18,11 @@ novafile-schema.workspace = true
 novafile-patch.workspace = true
 novafile-template.workspace = true
 novafile-json.workspace = true
-novafile-formats = { path = "../novafile-formats" }
-novafile-proto = { path = "../novafile-proto" }
-novafile-lint = { path = "../novafile-lint" }
-novafile-schemars = { path = "../novafile-schemars" }
+novafile-formats.workspace = true
+novafile-proto.workspace = true
+novafile-lint.workspace = true
+novafile-schemars.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 miette = { workspace = true, features = ["fancy"] }
-detect-coding-agent = "0.2"
+detect-coding-agent.workspace = true

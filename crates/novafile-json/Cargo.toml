@@ -3,6 +3,7 @@ name = "novafile-json"
 description = "JSON <-> NOVA value mapping with explicit loss reporting"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

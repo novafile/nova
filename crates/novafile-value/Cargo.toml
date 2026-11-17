@@ -3,6 +3,7 @@ name = "novafile-value"
 description = "NOVA semantic value model, canonical encoding and revisions"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [features]
@@ -14,8 +15,8 @@ schemars = ["dep:schemars", "dep:serde_json"]
 
 [dependencies]
 sha2.workspace = true
-num-bigint = "0.4"
+num-bigint.workspace = true
 serde = { workspace = true, optional = true }
-facet = { version = "=0.46.5", optional = true }
-schemars = { version = "1", optional = true, default-features = false, features = ["std"] }
+facet = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

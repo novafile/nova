@@ -3,6 +3,7 @@ name = "novafile-conformance"
 description = "Generator and runner for the NOVA conformance suite (github.com/novafile/spec)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish = false
 

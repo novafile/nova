@@ -3,6 +3,7 @@ name = "novafile-binary"
 description = "NOVA framed binary representation and streams"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

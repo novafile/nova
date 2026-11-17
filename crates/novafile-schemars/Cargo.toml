@@ -3,6 +3,7 @@ name = "novafile-schemars"
 description = "JSON Schema and schemars integration for NOVA schemas"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
@@ -10,7 +11,7 @@ license.workspace = true
 novafile-value = { workspace = true, features = ["schemars"] }
 novafile-schema.workspace = true
 novafile-json.workspace = true
-schemars = "1"
+schemars = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [dev-dependencies]
@@ -18,4 +19,4 @@ novafile-value = { workspace = true, features = ["serde", "schemars"] }
 novafile-text.workspace = true
 novafile-serde.workspace = true
 serde.workspace = true
-jsonschema = { version = "0.61", default-features = false }
+jsonschema.workspace = true

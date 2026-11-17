@@ -3,6 +3,7 @@ name = "novafile"
 description = "NOVA, the Notation for Objects, Values & Agents: one semantic model, several representations (umbrella crate)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 readme = "../../README.md"
 
@@ -19,16 +20,16 @@ schemars = ["dep:novafile-schemars"]
 full = ["serde", "derive", "facet", "formats", "proto", "template", "lint", "schemars"]
 
 [dependencies]
-novafile-value = { path = "../novafile-value" }
-novafile-text = { path = "../novafile-text" }
-novafile-binary = { path = "../novafile-binary" }
-novafile-schema = { path = "../novafile-schema" }
-novafile-patch = { path = "../novafile-patch" }
-novafile-serde = { path = "../novafile-serde", optional = true }
-novafile-facet = { path = "../novafile-facet", optional = true }
-novafile-json = { path = "../novafile-json", optional = true }
-novafile-formats = { path = "../novafile-formats", optional = true }
-novafile-proto = { path = "../novafile-proto", optional = true }
-novafile-template = { path = "../novafile-template", optional = true }
-novafile-lint = { path = "../novafile-lint", optional = true }
-novafile-schemars = { path = "../novafile-schemars", optional = true }
+novafile-value.workspace = true
+novafile-text.workspace = true
+novafile-binary.workspace = true
+novafile-schema.workspace = true
+novafile-patch.workspace = true
+novafile-serde = { workspace = true, optional = true }
+novafile-facet = { workspace = true, optional = true }
+novafile-json = { workspace = true, optional = true }
+novafile-formats = { workspace = true, optional = true }
+novafile-proto = { workspace = true, optional = true }
+novafile-template = { workspace = true, optional = true }
+novafile-lint = { workspace = true, optional = true }
+novafile-schemars = { workspace = true, optional = true }
