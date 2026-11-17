@@ -209,7 +209,7 @@ vim.lsp.config("novafile_lsp", { cmd = { "nvf-lsp" }, filetypes = { "nova" }, ro
 vim.lsp.enable("novafile_lsp")
 ```
 
-A VS Code extension, with a TextMate grammar for syntax highlighting, is not written yet.
+VS Code: [novafile/vscode-novafile](https://github.com/novafile/vscode-novafile) adds syntax highlighting for documents, templates, patches and schemas, and starts `nvf-lsp` (configurable via `novafile.server.path`).
 
 ## Status
 
