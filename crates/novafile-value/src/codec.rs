@@ -139,22 +139,22 @@ fn unzigzag(v: u128) -> i128 {
     (v >> 1).cast_signed() ^ -(v & 1).cast_signed()
 }
 
-/// Encoder state for one [`encode`] call.
-struct Encoder {
+/// Encoder state for one [`encode`] call over a value borrowed for `'v`.
+struct Encoder<'v> {
     /// Output switches.
     opts: EncodeOptions,
     /// Strings already written as literals, mapped to their string-table index.
     /// Only populated when back-references may be emitted.
-    table: HashMap<String, usize>,
+    table: HashMap<&'v str, usize>,
     /// Index the next literal string receives in the string table.
     next_index: usize,
 }
 
-impl Encoder {
+impl<'v> Encoder<'v> {
     /// Write a string header and body, or a back-reference when it is shorter.
     ///
     /// Every literal advances the string-table index, matching the decoder.
-    fn string(&mut self, out: &mut Vec<u8>, s: &str) {
+    fn string(&mut self, out: &mut Vec<u8>, s: &'v str) {
         if self.opts.dedupe_strings
             && !self.opts.canonical
             && let Some(&idx) = self.table.get(s)
@@ -172,7 +172,7 @@ impl Encoder {
         // Every literal string enters the table; decoders mirror this. The
         // encoder only needs to track it when it may emit back-references.
         if self.opts.dedupe_strings && !self.opts.canonical {
-            self.table.insert(s.to_owned(), self.next_index);
+            self.table.insert(s, self.next_index);
         }
 
         self.next_index += 1;
@@ -187,7 +187,7 @@ impl Encoder {
 
     /// Append the encoding of `v` to `out`.
     #[expect(clippy::too_many_lines, reason = "flat dispatcher over every Value variant")]
-    fn value(&mut self, out: &mut Vec<u8>, v: &Value) {
+    fn value(&mut self, out: &mut Vec<u8>, v: &'v Value) {
         match v {
             Value::Null => out.push(tag::NULL),
             Value::Bool(false) => out.push(tag::FALSE),
@@ -229,8 +229,7 @@ impl Encoder {
                 out.push(tag::DURATION);
                 put_varint(out, zigzag(d.as_nanos()));
             }
-            Value::List(items) if self.opts.tables && !self.opts.canonical && table_shape(items).is_some() => {
-                let fields = table_shape(items).unwrap();
+            Value::List(items) if let Some(fields) = (self.opts.tables && !self.opts.canonical).then(|| table_shape(items)).flatten() => {
                 out.push(tag::RECORD_LIST);
                 put_varint(out, items.len() as u128);
                 put_varint(out, fields.len() as u128);
@@ -399,8 +398,8 @@ struct Decoder<'a> {
     depth: usize,
     /// Bounds checked while decoding.
     limits: Limits,
-    /// Literal strings seen so far, indexed by back-references.
-    strings: Vec<String>,
+    /// Literal strings seen so far, indexed by back-references; borrowed from `buf`.
+    strings: Vec<&'a str>,
 }
 
 impl<'a> Decoder<'a> {
@@ -442,6 +441,11 @@ impl<'a> Decoder<'a> {
         let mut shift = 0;
         loop {
             let b = self.byte()?;
+            // Fast path: most lengths, counts and small integers fit one byte.
+            if shift == 0 && b & 0x80 == 0 {
+                return Ok(u128::from(b));
+            }
+
             // The 19th byte holds bits 126-127 and must be the last.
             if shift == 126 && (b & 0x7F > 0x03 || b & 0x80 != 0) {
                 return self.err("varint overflow");
@@ -478,7 +482,7 @@ impl<'a> Decoder<'a> {
         if h & 1 == 1 {
             let idx = (h >> 1) as usize;
             return match self.strings.get(idx) {
-                Some(s) => Ok(s.clone()),
+                Some(s) => Ok((*s).to_owned()),
                 None => self.err(format!("string back-reference {idx} out of range")),
             };
         }
@@ -490,18 +494,16 @@ impl<'a> Decoder<'a> {
 
         let start = self.pos;
         let bytes = self.take(len as usize)?;
-        let s = std::str::from_utf8(bytes)
-            .map_err(|_| DecodeError {
-                offset: start,
-                message: "invalid UTF-8".into(),
-            })?
-            .to_owned();
+        let s = std::str::from_utf8(bytes).map_err(|_| DecodeError {
+            offset: start,
+            message: "invalid UTF-8".into(),
+        })?;
         if self.strings.len() >= self.limits.max_strings {
             return self.err("string table limit exceeded");
         }
 
-        self.strings.push(s.clone());
-        Ok(s)
+        self.strings.push(s);
+        Ok(s.to_owned())
     }
 
     /// Decode one value, enforcing [`Limits`] and canonical-form invariants
@@ -597,7 +599,7 @@ impl<'a> Decoder<'a> {
             tag::RECORD => {
                 let n = self.count()?;
                 self.depth += 1;
-                let mut r = Record::new();
+                let mut r = Record::with_capacity(n);
                 for _ in 0..n {
                     let k = self.string()?;
                     let v = self.value()?;
@@ -669,11 +671,13 @@ impl<'a> Decoder<'a> {
                         (0..k).map(|i| bits[i / 8] & (1 << (i % 8)) != 0).collect()
                     };
 
-                    let mut r = Record::new();
+                    // Only dense rows spend at least a byte per field, so only they bound the preallocation.
+                    let mut r = Record::with_capacity(if dense { k } else { 0 });
                     for (f, p) in fields.iter().zip(present) {
                         if p {
                             let v = self.value()?;
-                            r.insert(f.clone(), v).expect("field names are unique");
+                            // Field names were checked for duplicates above.
+                            r.push(f.clone(), v);
                         }
                     }
 

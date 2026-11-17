@@ -94,7 +94,7 @@ impl Record {
     }
 
     /// Append an entry without a duplicate check, keeping the index in sync.
-    fn push(&mut self, key: String, value: Value) {
+    pub(crate) fn push(&mut self, key: String, value: Value) {
         if let Some(ix) = &mut self.index {
             ix.insert(key.clone(), self.entries.len());
             self.entries.push((key, value));
