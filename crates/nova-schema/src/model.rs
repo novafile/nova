@@ -233,6 +233,7 @@ pub struct VariantDef {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // definitions are few; boxing would only add indirection
 pub enum Def {
     Record(RecordDef),
     Enum(Vec<VariantDef>),
