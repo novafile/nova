@@ -4,6 +4,7 @@
 
 mod compat;
 pub mod derive;
+mod descriptor;
 mod model;
 mod parse;
 mod positional;
@@ -12,6 +13,7 @@ mod version;
 
 pub use compat::{check_compatibility, widens, Change};
 pub use derive::{schema_for, NovaSchema, SchemaGen};
+pub use descriptor::{meta_schema, META_SCHEMA_SRC};
 pub use model::*;
 #[cfg(feature = "derive")]
 pub use nova_derive::NovaSchema;

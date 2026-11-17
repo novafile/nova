@@ -225,6 +225,12 @@ enum SchemaCmd {
     Check { old: PathBuf, new: PathBuf },
     /// Print the proto3 `.proto` file for a schema (fields need `@id`).
     Proto { file: PathBuf },
+    /// Print a schema as NOVA data (its descriptor, validated by `nova schema meta`).
+    ToNova { file: PathBuf },
+    /// Convert a schema descriptor (NOVA data) back to the schema language.
+    FromNova { file: PathBuf },
+    /// Print the meta-schema `nova-schema@0.1.0`, which describes schema descriptors.
+    Meta,
     /// Print a JSON Schema (2020-12) describing the JSON form of valid documents.
     JsonSchema { file: PathBuf },
     /// Convert a JSON Schema (2020-12 or draft-07) into a NOVA schema.
@@ -304,10 +310,19 @@ fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
     load_with(p, from, None)
 }
 
+const META_REF: &str = "nova-schema@0.1.0";
+
 fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> {
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext == "novs" && from == InputFormat::Auto {
+        // Schema files load as their descriptor (spec §6.8), so every data tool works on them.
+        return Ok(Loaded {
+            directives: vec![("schema".into(), META_REF.into())],
+            value: load_schema(p)?.to_value(),
+        });
+    }
     let bytes = read_bytes(p)?;
     let ctx = |e: String| format!("{}: {e}", p.display());
-    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
     let from = match from {
         InputFormat::Auto if bytes.starts_with(MAGIC) => InputFormat::Binary,
         InputFormat::Auto if ext == "jsonl" || ext == "ndjson" => InputFormat::Jsonl,
@@ -390,6 +405,16 @@ fn is_nova_text(p: &Path, text: &str) -> bool {
 
 fn load_schema(p: &Path) -> R<Schema> {
     let src = read_text(p)?;
+    // A schema descriptor (NOVA data, spec §6.8) is accepted wherever a schema is.
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext != "novs" {
+        if let Ok(doc) = nova_text::parse_document(&src) {
+            if doc.directive("schema").is_some_and(|r| r.starts_with("nova-schema@")) {
+                let v = doc.body.to_value().map_err(|e| format!("{}: {e}", p.display()))?;
+                return Ok(Schema::from_value(&v).map_err(|e| format!("{}: {e}", p.display()))?);
+            }
+        }
+    }
     parse_schema(&src).map_err(|e| {
         if e.line == 0 {
             E::from(format!("{}: {}", p.display(), e.message))
@@ -540,7 +565,13 @@ fn run(cli: Cli) -> R<ExitCode> {
                 Format::Compact => Some(Profile::Compact),
                 _ => None,
             };
-            let text = read_text(&file).ok().filter(|t| is_nova_text(&file, t));
+            let text = read_text(&file)
+                .ok()
+                .filter(|t| is_nova_text(&file, t) && !file.extension().is_some_and(|e| e == "novs"));
+            if file.extension().is_some_and(|e| e == "novs") && matches!(to, Format::Nova | Format::Canonical) {
+                out(load_schema(&file)?.to_canonical_text().as_bytes(), write.then_some(file.as_path()))?;
+                return Ok(ExitCode::SUCCESS);
+            }
             let bytes = match (profile, text) {
                 (Some(p), Some(t)) => nova_text::format_preserving(&t, p)
                     .map_err(|e| e.to_diagnostic(&name_of(&file), &t))?
@@ -681,12 +712,23 @@ fn run(cli: Cli) -> R<ExitCode> {
                     (r.text.into_bytes(), r.applied)
                 }
                 None => {
-                    let applied = nova_patch::apply(&l.value, &p, &validate).map_err(|e| patch_error(&e, &patch, &patch_src))?;
-                    let result = Loaded {
-                        directives: l.directives,
-                        value: applied.value.clone(),
-                    };
-                    (render_as(&result, Format::Nova, false)?, applied)
+                    let is_schema = file.extension().is_some_and(|e| e == "novs");
+                    let meta = nova_schema::meta_schema();
+                    let meta_check = |v: &Value| meta.validate(v).map_err(|i| i.iter().map(|i| i.to_string()).collect());
+                    let check: &dyn Fn(&Value) -> Result<(), Vec<String>> = if is_schema { &meta_check } else { &validate };
+                    let applied = nova_patch::apply(&l.value, &p, check).map_err(|e| patch_error(&e, &patch, &patch_src))?;
+                    if is_schema {
+                        // Patched schema descriptors are written back in the schema language.
+                        let s = Schema::from_value(&applied.value)?;
+                        eprintln!("note: {} is rewritten in canonical form (comments are not kept)", file.display());
+                        (s.to_canonical_text().into_bytes(), applied)
+                    } else {
+                        let result = Loaded {
+                            directives: l.directives,
+                            value: applied.value.clone(),
+                        };
+                        (render_as(&result, Format::Nova, false)?, applied)
+                    }
                 }
             };
             out(&bytes, write.then_some(file.as_path()))?;
@@ -767,6 +809,12 @@ fn run(cli: Cli) -> R<ExitCode> {
             SchemaCmd::Fmt { file } => print!("{}", load_schema(&file)?.to_canonical_text()),
             SchemaCmd::Fingerprint { file } => println!("{}", load_schema(&file)?.fingerprint()),
             SchemaCmd::Proto { file } => print!("{}", nova_proto::proto_file(&load_schema(&file)?)?),
+            SchemaCmd::ToNova { file } => {
+                let v = load_schema(&file)?.to_value();
+                print!("{}", document_to_text(&[("schema", META_REF)], &v, Profile::Human));
+            }
+            SchemaCmd::FromNova { file } => print!("{}", load_schema(&file)?.to_canonical_text()),
+            SchemaCmd::Meta => print!("{}", nova_schema::META_SCHEMA_SRC),
             SchemaCmd::JsonSchema { file } => {
                 let j = nova_schemars::to_json_schema(&load_schema(&file)?);
                 println!("{}", serde_json::to_string_pretty(&j).map_err(|e| e.to_string())?);

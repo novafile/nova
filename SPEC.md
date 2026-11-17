@@ -722,6 +722,45 @@ In every case *new* MUST have greater precedence than *old*. A breaking release 
 
 > *Rationale (non-normative).* Because compatibility is decided by the schema diff (§6.5), a version number is a *checked claim*, not a convention. A consumer that pins `infrastructure@1.4.0` can rely on every `1.x` release at or above it to read its data.
 
+### 6.8 Schemas as data
+
+Every schema has a **descriptor**: an ordinary NOVA value described by the meta-schema `nova-schema@0.1.0`. The meta-schema is itself written in the schema language, and its own descriptor validates against it. Descriptors let every data tool work on schemas: queries, conditional patches, diffs, templates, binary frames and the language server.
+
+```
+@schema nova-schema@0.1.0
+name: infrastructure
+version: 1.0.0
+root: Infrastructure
+defs:
+  - name: Port
+    alias: {kind: !u16, range: {min: 1, max: 65535}}
+  - name: Service
+    record:
+      fields:
+        - {name: id, type: {kind: !string}, key: true, id: 1}
+        - {name: port, type: {kind: !named, ref: Port}, id: 3}
+        - {name: enabled, type: {kind: !bool}, default: true, id: 5}
+  - name: Status
+    enum: [{name: active}, {name: failed, payload: {kind: !string}}]
+```
+
+**Structure of a descriptor:**
+- Definitions are listed in name order, keyed by `name`. Each has exactly one of `record`, `enum` or `alias`.
+- A type is a record with a `kind` and the parts that kind needs:
+  - `ref` for `named`;
+  - `item` for `list` and `set`;
+  - `key` and `value` for `map`;
+  - `items` for `tuple`.
+- A type can also carry `nullable`, `range` (exact bounds) and `len` (with an optional `unit`).
+- Boolean flags that are false, and absent optional parts, are omitted.
+
+**Conversion:**
+- A schema and its descriptor convert into each other without loss: the fingerprint (§6.6) of the converted schema is unchanged.
+- An implementation MUST validate a descriptor against the meta-schema, and then apply every rule that applies to schema text: names, references, alias cycles, `@id` uniqueness and defaults.
+- The meta-schema can't express "exactly one of `record`, `enum`, `alias`"; that rule is enforced when converting a descriptor back to a schema.
+
+**Tooling.** Tools SHOULD accept a descriptor wherever a schema is accepted. The reference CLI also loads `.novs` files as their descriptors for `get`, `diff`, `hash` and `convert`. A patched `.novs` file is written back in the schema language.
+
 ---
 
 ## 7. Paths, queries and patches

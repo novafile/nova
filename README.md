@@ -152,6 +152,8 @@ nova convert config.yaml --to nova                 # also toml, cbor; --to yaml/
 nova convert infrastructure.nova --to protobuf --schema infrastructure.novs -o infra.pb
 nova schema proto infrastructure.novs              # the matching .proto
 nova schema json-schema infrastructure.novs        # JSON Schema 2020-12 (and back: schema from-json-schema)
+nova get infrastructure.novs 'defs[name=Service].record.fields[*].name'   # schemas are data too
+nova schema to-nova infrastructure.novs           # the schema's descriptor (validated by `nova schema meta`)
 nova convert infrastructure.nova --to positional --schema infrastructure.novs   # field names omitted
 nova hash infrastructure.novb          # same revision as the text form
 nova stats infrastructure.nova         # bytes and estimated tokens per representation

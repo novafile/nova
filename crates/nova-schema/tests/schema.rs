@@ -234,3 +234,39 @@ fn constraints_on_type_arguments() {
     let msgs: Vec<String> = issues.iter().map(|i| i.to_string()).collect();
     assert_eq!(msgs, ["ports[1]: 2000 is outside @range(1..1024)", "m.abc[0]: -1 is outside @range(0..)"]);
 }
+
+#[test]
+fn schemas_as_data() {
+    use nova_schema::meta_schema;
+    let meta = meta_schema();
+    for src in [SCHEMA, nova_schema::META_SCHEMA_SRC, "@root R\nrecord R @open:\n  ports: list<u16 @range(1..1024)>?\n  m: map<string @len(1..8, utf8), (int @range(1/3..), string)>\n  r?: rational @range(-1.5..) @deprecated = 1/2\n"] {
+        let s = parse_schema(src).unwrap();
+        let d = s.to_value();
+        // The descriptor is valid data under the meta-schema …
+        meta.validate(&d).unwrap_or_else(|e| panic!("{e:?}"));
+        // … and converts back to the same schema.
+        let back = nova_schema::Schema::from_value(&d).unwrap();
+        assert_eq!(back.fingerprint(), s.fingerprint(), "{}", back.to_canonical_text());
+        // It also survives NOVA text.
+        let text = nova_text::to_text(&d, nova_text::Profile::Human);
+        let reparsed = nova_schema::Schema::from_value(&nova_text::parse(&text).unwrap()).unwrap();
+        assert_eq!(reparsed.fingerprint(), s.fingerprint(), "{text}");
+    }
+    // The meta-schema describes itself.
+    meta.validate(&meta.to_value()).unwrap();
+    // Queries work on descriptors.
+    let d = parse_schema(SCHEMA).unwrap().to_value();
+    let names = nova_patch_free_select(&d, "defs[name=Service].record.fields");
+    assert!(names.contains("port") && names.contains("replicas"), "{names}");
+    // Invalid descriptors are rejected with useful messages.
+    let bad = nova_text::parse("defs:\n  - name: A\n    alias: {kind: !named, ref: Missing}\n").unwrap();
+    assert!(nova_schema::Schema::from_value(&bad).unwrap_err().contains("unknown type Missing"));
+    let bad = nova_text::parse("defs:\n  - name: A\n").unwrap();
+    assert!(nova_schema::Schema::from_value(&bad).unwrap_err().contains("exactly one"));
+    let bad = nova_text::parse("defs:\n  - name: A\n    alias: {kind: !u17}\n").unwrap();
+    assert!(nova_schema::Schema::from_value(&bad).unwrap_err().contains("invalid schema descriptor"));
+}
+
+fn nova_patch_free_select(v: &Value, path: &str) -> String {
+    nova_text::flow_string(nova_text::Path::parse(path).unwrap().get(v).unwrap())
+}
