@@ -132,7 +132,7 @@ enum Cmd {
         #[arg(short, long)]
         write: bool,
     },
-    /// Convert between NOVA text, JSON/JSONL and binary (input format is detected).
+    /// Convert between NOVA text and binary, JSON/JSONL, YAML, TOML, CBOR and Protobuf (input format is detected unless `--from` is given).
     Convert {
         /// Input file.
         file: PathBuf,
