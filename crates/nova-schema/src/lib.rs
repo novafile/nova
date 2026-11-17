@@ -133,3 +133,49 @@ pub fn check_versions(old: &Schema, new: &Schema) -> Result<VersionCheck, String
         problems,
     })
 }
+
+impl Schema {
+    /// Follow aliases to the underlying type (and the definition, if named).
+    pub fn deref<'a>(&'a self, t: &'a TypeRef) -> (&'a TypeRef, Option<&'a Def>) {
+        let mut cur = t;
+        for _ in 0..64 {
+            match &cur.kind {
+                TypeKind::Named(n) => match self.def(n) {
+                    Some(Def::Alias(a)) => cur = a,
+                    Some(d) => return (cur, Some(d)),
+                    None => return (cur, None),
+                },
+                _ => return (cur, None),
+            }
+        }
+        (cur, None)
+    }
+
+    /// The declared type at a concrete path below the root type (fields and
+    /// indices only), together with the field definition when the last
+    /// segment names a record field. Used by editors for hover and completion.
+    pub fn type_at(&self, path: &nova_text::Path) -> Option<(TypeRef, Option<FieldDef>)> {
+        use nova_text::Segment;
+        let mut cur = self.root_type()?;
+        let mut field = None;
+        for seg in &path.0 {
+            let (t, def) = self.deref(&cur);
+            let (t, def) = (t.clone(), def.cloned());
+            field = None;
+            cur = match (seg, &t.kind, def) {
+                (Segment::Field(name), _, Some(Def::Record(r))) => {
+                    let f = r.field(name)?.clone();
+                    let ty = f.ty.clone();
+                    field = Some(f);
+                    ty
+                }
+                (Segment::Field(_) | Segment::Key(_), TypeKind::Map(_, v), _) => (**v).clone(),
+                (Segment::Index(_) | Segment::Match(..) | Segment::Key(_) | Segment::All, TypeKind::List(e) | TypeKind::Set(e), _) => (**e).clone(),
+                (Segment::Index(i), TypeKind::Tuple(ts), _) => ts.get(usize::try_from(*i).ok()?)?.clone(),
+                (_, TypeKind::Any, _) => TypeRef::new(TypeKind::Any),
+                _ => return None,
+            };
+        }
+        Some((cur, field))
+    }
+}

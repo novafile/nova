@@ -103,6 +103,7 @@ let bytes = nova_serde::to_vec(&svc)?;         // binary frame
 | [`nova-json`](crates/nova-json) | JSON and JSONL mapping with explicit loss reporting |
 | [`nova-serde`](crates/nova-serde) | Serde integration: `to_string`/`from_str`, `to_vec`/`from_slice`, `to_value`/`from_value` |
 | [`nova-cli`](crates/nova-cli) | The `nova` command |
+| [`nova-lsp`](crates/nova-lsp) | Language server: diagnostics with workspace schemas, outline, hover, completion, formatting |
 
 ## CLI
 
@@ -123,6 +124,41 @@ nova hash infrastructure.novb          # same revision as the text form
 nova stats infrastructure.nova         # bytes and estimated tokens per representation
 nova schema check old.novs new.novs    # exits 1 on breaking changes
 ```
+
+## Editor support
+
+`nova-lsp` speaks the Language Server Protocol over stdio:
+
+```bash
+cargo install --path crates/nova-lsp
+```
+
+It reports syntax errors in documents, templates, patches and `.novs` schemas. A document that declares `@schema name@version` is validated against the newest `.novs` file in the workspace that can read that version. Hover shows the path, value and declared type. Completion offers missing record fields and enum variants. Formatting is only offered for documents without comments.
+
+Helix (`languages.toml`):
+
+```toml
+[language-server.nova-lsp]
+command = "nova-lsp"
+
+[[language]]
+name = "nova"
+scope = "source.nova"
+file-types = ["nova", "novs", "patch"]
+comment-token = "#"
+indent = { tab-width = 2, unit = "  " }
+language-servers = ["nova-lsp"]
+```
+
+Neovim (0.11+):
+
+```lua
+vim.filetype.add({ extension = { nova = "nova", novs = "nova" } })
+vim.lsp.config("nova_lsp", { cmd = { "nova-lsp" }, filetypes = { "nova" }, root_markers = { ".git" } })
+vim.lsp.enable("nova_lsp")
+```
+
+A VS Code extension, with a TextMate grammar for syntax highlighting, is not written yet.
 
 ## Status
 

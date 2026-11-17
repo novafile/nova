@@ -139,3 +139,13 @@ fn document_references() {
         .contains("name@MAJOR.MINOR.PATCH"));
     assert!(parse_schema("@schema infrastructure@1.0\n").is_err());
 }
+
+#[test]
+fn type_lookup_by_path() {
+    let s = parse_schema(SCHEMA).unwrap();
+    let t = |p: &str| s.type_at(&nova_text::Path::parse(p).unwrap()).map(|(t, f)| (t.to_string(), f.map(|f| f.name)));
+    assert_eq!(t("services[3].port"), Some(("Port".into(), Some("port".into()))));
+    assert_eq!(t("services"), Some(("list<Service>".into(), Some("services".into()))));
+    assert_eq!(t("services[0]"), Some(("Service".into(), None)));
+    assert_eq!(t("nope"), None);
+}

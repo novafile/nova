@@ -1057,6 +1057,7 @@ The Rust workspace in this repository implements the specification.
 | `nova-template` | §9: rendering, sandboxed file loader, limits |
 | `nova-json` | §11.1: JSON and JSON Lines mapping with loss reporting |
 | `nova-serde` | §11.3: Serde serializer/deserializer, text and binary helpers, `with::` adapters |
+| `nova-lsp` | Language server: diagnostics (syntax, patches, schemas, §6.7 schema lookup), outline, hover, completion, comment-safe formatting |
 | `nova-cli` | The `nova` command: `fmt`, `convert`, `hash`, `validate`, `get`, `patch`, `diff`, `render`, `stats`, `schema {fmt,fingerprint,check}` |
 
 **Known gaps in version 0.1:**
