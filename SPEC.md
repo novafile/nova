@@ -1319,6 +1319,13 @@ unary       = "not" unary | "(" cond ")" | flow-value [("==" | "!=") flow-value]
 8. **Rational shorthand.** Is a bare `11/17` being a rational the right trade-off, or should rationals require `@rational(...)`? Version 0.1 treats bare `n/d` as a number, consistent with integers.
 9. **Tensors.** A `tensor` kind for vectors, matrices and n-dimensional arrays (dtype, shape and row-major data, e.g. `@tensor<f32>[2,3](1, 2, 3; 4, 5, 6)`, binary tag `0x12`, schema types such as `vector<f32, 1536>`) is proposed in [docs/proposals/0001-tensors.md](docs/proposals/0001-tensors.md).
 10. **Labels and annotations.** Conventions for selectable labels and owner-namespaced annotations, plus small filter additions (`[?p]`, `[?!p]`, `[?p in […]]`), are proposed in [docs/proposals/0003-labels-and-annotations.md](docs/proposals/0003-labels-and-annotations.md).
+11. **Streaming, massive documents and a TUI.** These are proposed in [docs/proposals/0002-streaming-massive-documents-tui.md](docs/proposals/0002-streaming-massive-documents-tui.md):
+    - NOVA Lines (`.novl`), with streaming tables and an `@end` trailer;
+    - binary control frames and shared dictionaries, and sized (skippable) containers;
+    - pull-event and lazy APIs, and streaming query evaluation;
+    - `tree:` Merkle revisions and scoped `@expect` preconditions;
+    - sidecar patch logs;
+    - a TUI browser and editor.
 
 ---
 
