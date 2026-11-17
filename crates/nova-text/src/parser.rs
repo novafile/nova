@@ -1465,11 +1465,24 @@ impl<'a> Parser<'a> {
             let name = self.ident()?;
             self.skip_inline_ws();
             match name.as_str() {
-                "template" => {
+                "nova" => {
                     if !directives.is_empty() || tpl.is_some() {
-                        return Err(self.error_at(dpos, "@template must be the first directive"));
+                        return Err(self.error_at(dpos, "@nova must be the first directive"));
                     }
-                    self.end_line()?;
+                    let arg = self.rest_of_line_arg();
+                    crate::version::NOVA_VERSION.check(&arg, "NOVA").map_err(|m| self.error_at(dpos, m))?;
+                    directives.push(Directive { name, arg, line });
+                }
+                "template" => {
+                    if directives.iter().any(|d: &Directive| d.name != "nova") || tpl.is_some() {
+                        return Err(self.error_at(dpos, "@template must be the first directive (after @nova)"));
+                    }
+                    let arg = self.rest_of_line_arg();
+                    if !arg.is_empty() {
+                        crate::version::TEMPLATE_VERSION
+                            .check(&arg, "the NOVA template language")
+                            .map_err(|m| self.error_at(dpos, m))?;
+                    }
                     self.template = true;
                     tpl = Some(TemplateHeader::default());
                 }

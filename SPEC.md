@@ -212,7 +212,7 @@ Directives defined for **data documents**:
 
 | Directive | Meaning |
 | --- | --- |
-| `@nova <version>` | The NOVA version the document targets. OPTIONAL. |
+| `@nova MAJOR.MINOR` | The NOVA language version the document is written in. OPTIONAL. If present it MUST be the first directive, and readers MUST reject versions they do not support (§13.1). |
 | `@schema <ref>` | The schema version the data was written against: `name@MAJOR.MINOR.PATCH`, optionally followed by `#` and a fingerprint (§6.6–6.7), e.g. `infrastructure@1.2.0#8c21a0f3d5e6b7c8`. Parsers MUST NOT fetch it. A validator that is given a schema MUST check the reference against it (§6.7). |
 | `@revision <rev>` | The revision of the document the body was taken from (used in query responses, §7.3). |
 | `@scope <path>` | The location within that document the body was taken from (§7.3). |
@@ -945,7 +945,7 @@ NOVA separates the two concerns. A **template** is a different kind of document.
 
 ### 9.2 Template documents
 
-A template is a text document whose **first** directive is `@template`. It may then declare:
+A template is a text document whose **first** directive (after an optional `@nova`) is `@template`, optionally followed by the template-language version: `@template 0.1` (§13.1). It may then declare:
 
 ```
 @template
@@ -1181,6 +1181,24 @@ Serde has no data-model slots for NOVA's extra kinds. The binding therefore uses
 ---
 
 ## 13. Conformance
+
+### 13.1 Versioning of the languages
+
+NOVA has three versioned layers, which evolve independently:
+
+| Layer | Version | Declared by |
+| --- | --- | --- |
+| The NOVA language: value model, text syntax, binary encoding, path, patch and schema syntax | `MAJOR.MINOR`; this document is 0.1 | `@nova 0.1` as the first directive of any document, patch, query or `.novs` file; the version byte of binary frames (§5.4) |
+| The template language (§9) | `MAJOR.MINOR`, currently 0.1 | `@template 0.1` |
+| Each schema | SemVer 2.0.0 | `@schema name@X.Y.Z` (§6.7) |
+
+- Language versions are written `MAJOR.MINOR`: decimal, with no leading zeros.
+- An implementation of version X.Y MUST accept documents declaring X.y for every y ≤ Y. It MUST reject a different major version, and a minor version newer than its own.
+- While the major version is 0, minor versions MUST match exactly.
+- A document without a declaration is read as the newest version the reader implements. Documents meant to outlive tooling generations SHOULD declare their version.
+- Within a major version, minor versions may only *add* syntax. A valid document of version X.y keeps its meaning under X.(y+1).
+- A change to the meaning of existing syntax, or a removal, requires a new major version.
+- Writers SHOULD NOT emit `@nova` unless they use features newer than X.0, so that output stays readable by the widest range of readers.
 
 | Class | Requirements |
 | --- | --- |

@@ -222,3 +222,9 @@ fn source_patches_with_structure_changes_keep_comments() {
         }
     }
 }
+
+#[test]
+fn patches_declare_language_version() {
+    assert!(parse_patch("@nova 0.1\n@patch\n? environment\n").is_ok());
+    assert!(parse_patch("@nova 3.0\n@patch\n").unwrap_err().to_string().contains("requires NOVA 3.0"));
+}

@@ -207,3 +207,16 @@ fn positional_round_trip() {
     let bad = nova_text::parse("- production\n- x\n").unwrap();
     assert!(s.from_positional(&bad).unwrap_err().contains("expected 5 positional fields"));
 }
+
+#[test]
+fn schema_files_declare_language_version() {
+    assert!(parse_schema("@nova 0.1\n@schema x@1.0.0\n").is_ok());
+    assert!(parse_schema("@nova 9.9\n@schema x@1.0.0\n")
+        .unwrap_err()
+        .to_string()
+        .contains("requires NOVA 9.9"));
+    assert!(parse_schema("@schema x@1.0.0\n@nova 0.1\n")
+        .unwrap_err()
+        .to_string()
+        .contains("first directive"));
+}

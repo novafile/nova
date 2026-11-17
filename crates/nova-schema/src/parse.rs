@@ -254,7 +254,13 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
         if raw.starts_with(' ') {
             return Err(err(i, "unexpected indentation".into()));
         }
-        if let Some(rest) = raw.strip_prefix("@schema ") {
+        if let Some(rest) = raw.strip_prefix("@nova ") {
+            if schema.name.is_some() || schema.root.is_some() || !schema.defs.is_empty() {
+                return Err(err(i, "@nova must be the first directive".into()));
+            }
+            nova_text::version::NOVA_VERSION.check(rest, "NOVA").map_err(|m| err(i, m))?;
+            i += 1;
+        } else if let Some(rest) = raw.strip_prefix("@schema ") {
             let r = crate::SchemaRef::parse(rest.trim()).map_err(|m| err(i, m))?;
             if r.fingerprint.is_some() {
                 return Err(err(i, "a schema declares its version, not a fingerprint".into()));

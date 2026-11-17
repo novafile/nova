@@ -14,6 +14,7 @@ mod parser;
 pub mod path;
 pub mod spans;
 pub mod tokens;
+pub mod version;
 mod writer;
 
 pub use ast::Document;

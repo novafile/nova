@@ -158,6 +158,12 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
                         }
                     }
                 }
+                "nova" => {
+                    if seen_header || patch.base.is_some() || patch.schema.is_some() {
+                        return Err(syn(&p, start, "@nova must be the first directive".into()));
+                    }
+                    nova_text::version::NOVA_VERSION.check(arg, "NOVA").map_err(|m| syn(&p, start, m))?;
+                }
                 "base" => patch.base = Some(arg.to_owned()),
                 "schema" => patch.schema = Some(arg.to_owned()),
                 "scope" => patch.scope = Path::parse(arg).map_err(|m| syn(&p, start, m))?,

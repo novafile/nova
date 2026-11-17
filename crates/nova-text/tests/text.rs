@@ -302,3 +302,17 @@ fn render_preserving_follows_paths() {
         "{out}"
     );
 }
+
+#[test]
+fn language_versions() {
+    assert!(parse("@nova 0.1\na: 1\n").is_ok());
+    assert!(parse("@nova 0.2\na: 1\n").unwrap_err().to_string().contains("requires NOVA 0.2"));
+    assert!(parse("@schema x@1.0.0\n@nova 0.1\na: 1\n").unwrap_err().to_string().contains("first directive"));
+    assert!(parse("@nova 1\na: 1\n").unwrap_err().to_string().contains("MAJOR.MINOR"));
+    assert!(parse_document("@nova 0.1\n@template 0.1\na: 1\n").unwrap().is_template());
+    assert!(parse_document("@template 7.0\na: 1\n")
+        .unwrap_err()
+        .to_string()
+        .contains("template language 7.0"));
+    assert!(parse_document("@template\na: 1\n").is_ok());
+}
