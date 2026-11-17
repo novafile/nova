@@ -11,6 +11,8 @@ mod decimal;
 mod numeric;
 mod rational;
 mod record;
+#[cfg(feature = "schemars")]
+pub mod schemars_support;
 #[cfg(feature = "serde")]
 pub mod serde_support;
 mod time;
