@@ -20,6 +20,8 @@ nova-json.workspace = true
 nova-formats = { path = "../nova-formats" }
 nova-proto = { path = "../nova-proto" }
 nova-lint = { path = "../nova-lint" }
+nova-schemars = { path = "../nova-schemars" }
+serde_json.workspace = true
 clap.workspace = true
 miette = { workspace = true, features = ["fancy"] }
 detect-coding-agent = "0.2"

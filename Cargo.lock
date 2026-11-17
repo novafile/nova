@@ -1044,9 +1044,11 @@ dependencies = [
  "nova-patch",
  "nova-proto",
  "nova-schema",
+ "nova-schemars",
  "nova-template",
  "nova-text",
  "nova-value",
+ "serde_json",
 ]
 
 [[package]]

@@ -225,6 +225,18 @@ enum SchemaCmd {
     Check { old: PathBuf, new: PathBuf },
     /// Print the proto3 `.proto` file for a schema (fields need `@id`).
     Proto { file: PathBuf },
+    /// Print a JSON Schema (2020-12) describing the JSON form of valid documents.
+    JsonSchema { file: PathBuf },
+    /// Convert a JSON Schema (2020-12 or draft-07) into a NOVA schema.
+    FromJsonSchema {
+        file: PathBuf,
+        /// Schema name for `@schema name@version`.
+        #[arg(long)]
+        name: Option<String>,
+        /// SemVer version (default 0.1.0).
+        #[arg(long)]
+        version: Option<String>,
+    },
 }
 
 /// CLI error: a miette report, so diagnostics with source spans render nicely.
@@ -755,6 +767,18 @@ fn run(cli: Cli) -> R<ExitCode> {
             SchemaCmd::Fmt { file } => print!("{}", load_schema(&file)?.to_canonical_text()),
             SchemaCmd::Fingerprint { file } => println!("{}", load_schema(&file)?.fingerprint()),
             SchemaCmd::Proto { file } => print!("{}", nova_proto::proto_file(&load_schema(&file)?)?),
+            SchemaCmd::JsonSchema { file } => {
+                let j = nova_schemars::to_json_schema(&load_schema(&file)?);
+                println!("{}", serde_json::to_string_pretty(&j).map_err(|e| e.to_string())?);
+            }
+            SchemaCmd::FromJsonSchema { file, name, version } => {
+                let j: serde_json::Value = serde_json::from_str(&read_text(&file)?).map_err(|e| format!("{}: {e}", file.display()))?;
+                let c = nova_schemars::from_json_schema(&j, name.as_deref(), version.as_deref()).map_err(|e| format!("{}: {e}", file.display()))?;
+                for w in &c.warnings {
+                    eprintln!("warning: {w}");
+                }
+                print!("{}", c.schema.to_canonical_text());
+            }
             SchemaCmd::Check { old, new } => {
                 let r = check_versions(&load_schema(&old)?, &load_schema(&new)?)?;
                 for c in &r.changes {

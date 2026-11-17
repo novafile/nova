@@ -643,6 +643,7 @@ record Infrastructure:
 | `(A, …)` | list | Only if the lengths match. |
 | `map<K, V>` | record | Keys become strings. |
 | enum type | string | Only if the string names a variant without a payload: `active` becomes `!active`. |
+| enum type | record with one field | Only if the field names a variant with a payload: `{failed: oom}` becomes `!failed(oom)`. This is how JSON and the other formats spell variants (§11). |
 
 Notably, resolution never converts a float to a rational or integer, a rational to a float, a number to a string, or a string to a number or boolean.
 
@@ -1243,6 +1244,7 @@ The Rust workspace in this repository implements the specification.
 | `nova-formats` | §11.2: YAML, TOML and CBOR adapters with loss reporting |
 | `nova-proto` | §11.2: `.proto` generation and Protobuf wire encoding/decoding from NOVA schemas |
 | `nova-serde` | §11.3: Serde serializer/deserializer, text and binary helpers, `with::` adapters |
+| `nova-schemars` | NOVA schemas from Rust types via schemars, and NOVA schema ↔ JSON Schema (2020-12, draft-07 input) |
 | `nova-facet` | §11.3: facet (reflection) binding with the same mapping and API |
 | `nova-lsp` | Language server: diagnostics (syntax, patches, schemas, §6.7 schema lookup), outline, hover, completion, comment-safe formatting |
 | `nova-cli` | The `nova` command: `fmt`, `convert`, `hash`, `validate`, `get`, `patch`, `diff`, `render`, `stats`, `schema {fmt,fingerprint,check}` |

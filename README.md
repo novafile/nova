@@ -104,6 +104,7 @@ let bytes = nova_serde::to_vec(&svc)?;         // binary frame
 | [`nova-formats`](crates/nova-formats) | YAML, TOML and CBOR adapters with explicit loss reporting |
 | [`nova-proto`](crates/nova-proto) | `.proto` generation and Protobuf encoding/decoding driven by NOVA schemas (`@id` = field number) |
 | [`nova-facet`](crates/nova-facet) | [facet](https://github.com/facet-rs/facet) reflection binding, same mapping and API as `nova-serde` |
+| [`nova-schemars`](crates/nova-schemars) | NOVA schemas from Rust types (`#[derive(JsonSchema)]`), and NOVA schema ↔ JSON Schema |
 | [`nova-serde`](crates/nova-serde) | Serde integration: `to_string`/`from_str`, `to_vec`/`from_slice`, `to_value`/`from_value` |
 | [`nova-lint`](crates/nova-lint) | Conventions and lints with fixes (`nova lint`, also shown by the language server) |
 | [`nova-cli`](crates/nova-cli) | The `nova` command |
@@ -129,6 +130,7 @@ nova convert infrastructure.nova --to binary -o infrastructure.novb
 nova convert config.yaml --to nova                 # also toml, cbor; --to yaml/toml/cbor
 nova convert infrastructure.nova --to protobuf --schema infrastructure.novs -o infra.pb
 nova schema proto infrastructure.novs              # the matching .proto
+nova schema json-schema infrastructure.novs        # JSON Schema 2020-12 (and back: schema from-json-schema)
 nova convert infrastructure.nova --to positional --schema infrastructure.novs   # field names omitted
 nova hash infrastructure.novb          # same revision as the text form
 nova stats infrastructure.nova         # bytes and estimated tokens per representation

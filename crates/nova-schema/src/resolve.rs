@@ -259,6 +259,14 @@ impl<'s> Ctx<'s> {
     }
 
     fn variant(&mut self, v: Value, vs: &'s [VariantDef]) -> Value {
+        // `{tag: payload}` — how JSON and other formats spell a variant (§6.3).
+        let v = match v {
+            Value::Record(r) if r.len() == 1 && vs.iter().any(|d| d.payload.is_some() && r.contains_key(&d.name)) => {
+                let (tag, payload) = r.into_entries().pop().unwrap();
+                Value::Variant(tag, Some(Box::new(payload)))
+            }
+            other => other,
+        };
         match v {
             Value::String(s) => match vs.iter().find(|d| d.name == s) {
                 Some(d) if d.payload.is_none() => Value::Variant(s, None),
