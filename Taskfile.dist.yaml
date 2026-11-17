@@ -1,0 +1,12 @@
+version: '3'
+
+tasks:
+  clean:
+    desc: Remove the workspace target directory and those of every fuzz crate
+    cmds:
+      - cargo clean
+      # Fuzz crates are their own workspaces with their own target directories.
+      - |
+        find . -path ./target -prune -o -path '*/fuzz/Cargo.toml' -print | while read -r m; do
+          cargo clean --manifest-path "$m"
+        done
