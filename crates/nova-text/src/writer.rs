@@ -201,12 +201,84 @@ pub fn canonicalize(v: &mut Value) {
     walk(v);
 }
 
-struct W {
-    out: String,
-    compact: bool,
+pub(crate) struct W<'t> {
+    pub(crate) out: String,
+    pub(crate) compact: bool,
+    /// Comments, blank lines and spellings to carry over (document-preserving formatting).
+    pub(crate) trivia: Option<&'t crate::format::Trivia>,
+    /// Path of the value being written (for trivia lookups).
+    pub(crate) path: Vec<crate::path::Segment>,
 }
 
-impl W {
+impl<'t> W<'t> {
+    pub(crate) fn new(compact: bool, trivia: Option<&'t crate::format::Trivia>) -> Self {
+        W {
+            out: String::new(),
+            compact,
+            trivia,
+            path: Vec::new(),
+        }
+    }
+
+    fn here(&self) -> String {
+        crate::path::Path(self.path.clone()).to_string()
+    }
+
+    /// Blank line and leading comments for the current path.
+    fn emit_leading(&mut self, indent: usize) {
+        let Some(t) = self.trivia else { return };
+        let here = self.here();
+        if t.blank_before.contains(&here) && !self.out.is_empty() && !self.out.ends_with("\n\n") {
+            self.out.push('\n');
+        }
+        if let Some(cs) = t.leading.get(&here) {
+            for c in cs {
+                self.pad(indent);
+                self.out.push_str(c);
+                self.out.push('\n');
+            }
+        }
+    }
+
+    /// Comments attached anywhere below the current path, for values written inline.
+    fn emit_hoisted(&mut self, indent: usize) {
+        let Some(t) = self.trivia else { return };
+        let here = self.here();
+        let below = |p: &String| p.len() > here.len() && p.starts_with(&here) && (here == "." || matches!(p.as_bytes()[here.len()], b'.' | b'['));
+        let mut found: Vec<(&usize, &String)> = Vec::new();
+        for (p, cs) in &t.leading {
+            if below(p) {
+                found.extend(cs.iter().map(|c| (t.order.get(p).unwrap_or(&0), c)));
+            }
+        }
+        for (p, c) in &t.trailing {
+            if below(p) {
+                found.push((t.order.get(p).unwrap_or(&0), c));
+            }
+        }
+        found.sort();
+        for (_, c) in found {
+            self.pad(indent);
+            self.out.push_str(c);
+            self.out.push('\n');
+        }
+    }
+
+    /// Append the current path's trailing comment to the first line written since `mark`.
+    fn emit_trailing(&mut self, mark: usize) {
+        let Some(t) = self.trivia else { return };
+        if let Some(c) = t.trailing.get(&self.here()) {
+            let at = self.out[mark..].find('\n').map(|i| mark + i).unwrap_or(self.out.len());
+            self.out.insert_str(at, &format!("  {c}"));
+        }
+    }
+
+    /// The author's spelling of a scalar, if it still denotes the current value.
+    fn spelling(&self, v: &Value) -> Option<String> {
+        let t = self.trivia?;
+        let (text, orig) = t.spelling.get(&self.here())?;
+        (t.keep_spelling && orig == v).then(|| text.clone())
+    }
     fn sep(&self) -> &'static str {
         if self.compact {
             ","
@@ -237,7 +309,8 @@ impl W {
     }
 
     fn table_fields(&self, l: &[Value]) -> Option<Vec<String>> {
-        if !self.compact || l.len() < 2 {
+        let was_table = self.trivia.is_some_and(|t| t.tables.contains(&self.here()));
+        if !(self.compact || was_table) || (l.len() < 2 && !was_table) || l.is_empty() {
             return None;
         }
         let mut fields: Vec<String> = Vec::new();
@@ -261,6 +334,12 @@ impl W {
         (fields.len() <= 64 && present * 2 >= fields.len() * l.len()).then_some(fields)
     }
 
+    /// The text the writer would put after `key: ` / `- ` if `v` stays on one line.
+    pub(crate) fn inline_text(&self, v: &Value, used: usize) -> Option<String> {
+        (!self.wants_block(v, used) && !matches!(v, Value::List(l) if self.table_fields(l).is_some()))
+            .then(|| self.spelling(v).unwrap_or_else(|| self.scalar_line(v)))
+    }
+
     fn scalar_line(&self, v: &Value) -> String {
         match v {
             Value::String(s) if plain_safe(s) => s.clone(),
@@ -272,7 +351,7 @@ impl W {
     fn value_after_marker(&mut self, v: &Value, indent: usize, used: usize) {
         if !self.wants_block(v, used) {
             self.out.push(' ');
-            let s = self.scalar_line(v);
+            let s = self.spelling(v).unwrap_or_else(|| self.scalar_line(v));
             self.out.push_str(&s);
             self.out.push('\n');
             return;
@@ -308,45 +387,83 @@ impl W {
                 }
             }
             Value::List(l) => {
-                for it in l {
+                for (i, it) in l.iter().enumerate() {
+                    self.path.push(crate::path::Segment::Index(i as i64));
                     self.item(it, indent);
+                    self.path.pop();
                 }
             }
             _ => unreachable!(),
         }
     }
 
-    fn entry(&mut self, k: &str, v: &Value, indent: usize, pad: bool) {
+    pub(crate) fn entry(&mut self, k: &str, v: &Value, indent: usize, pad: bool) {
+        self.path.push(crate::path::Segment::Field(k.to_owned()));
+        let key = key_text(k);
+        let table = match v {
+            Value::List(l) => self.table_fields(l),
+            _ => None,
+        };
         if pad {
+            self.emit_leading(indent);
+            if table.is_none() && v.is_container() && !self.wants_block(v, indent + key.len() + 2) {
+                self.emit_hoisted(indent);
+            }
             self.pad(indent);
         }
-        let key = key_text(k);
-        if let Value::List(l) = v {
-            if let Some(fields) = self.table_fields(l) {
-                self.out.push_str(&key);
-                self.table(l, &fields, indent);
-                return;
-            }
+        let mark = self.out.len();
+        if let (Value::List(l), Some(fields)) = (v, &table) {
+            self.out.push_str(&key);
+            self.table(l, fields, indent);
+        } else {
+            self.out.push_str(&key);
+            self.out.push(':');
+            self.value_after_marker(v, indent, indent + key.len() + 2);
         }
-        self.out.push_str(&key);
-        self.out.push(':');
-        self.value_after_marker(v, indent, indent + key.len() + 2);
+        self.emit_trailing(mark);
+        self.path.pop();
     }
 
     fn table(&mut self, l: &[Value], fields: &[String], indent: usize) {
         let header: Vec<String> = fields.iter().map(|f| key_text(f)).collect();
         self.out.push_str(&format!("[{}]{{{}}}:\n", l.len(), header.join(",")));
-        for row in l {
+        for (i, row) in l.iter().enumerate() {
             let r = row.as_record().unwrap();
+            self.path.push(crate::path::Segment::Index(i as i64));
+            self.emit_leading(indent + 2);
             self.pad(indent + 2);
-            let cells: Vec<String> = fields.iter().map(|f| r.get(f).map(|v| self.flow(v)).unwrap_or_default()).collect();
+            let mark = self.out.len();
+            let cells: Vec<String> = fields
+                .iter()
+                .map(|f| match r.get(f) {
+                    Some(v) => {
+                        self.path.push(crate::path::Segment::Field(f.clone()));
+                        let s = self.spelling(v).unwrap_or_else(|| self.flow(v));
+                        self.path.pop();
+                        s
+                    }
+                    None => String::new(),
+                })
+                .collect();
             self.out.push_str(&cells.join(self.sep()));
             self.out.push('\n');
+            self.emit_trailing(mark);
+            self.path.pop();
         }
     }
 
-    fn item(&mut self, v: &Value, indent: usize) {
+    pub(crate) fn item(&mut self, v: &Value, indent: usize) {
+        self.emit_leading(indent);
+        if v.is_container() && !matches!(v, Value::Record(r) if !r.is_empty()) && !self.wants_block(v, indent + 2) {
+            self.emit_hoisted(indent);
+        }
         self.pad(indent);
+        let mark = self.out.len();
+        self.item_body(v, indent);
+        self.emit_trailing(mark);
+    }
+
+    fn item_body(&mut self, v: &Value, indent: usize) {
         self.out.push('-');
         match v {
             Value::Record(r) if !r.is_empty() => {
@@ -384,10 +501,12 @@ pub fn to_text(v: &Value, profile: Profile) -> String {
     } else {
         v
     };
-    let mut w = W {
-        out: String::new(),
-        compact: profile == Profile::Compact,
-    };
+    let mut w = W::new(profile == Profile::Compact, None);
+    write_body(&mut w, v);
+    w.out
+}
+
+pub(crate) fn write_body(w: &mut W, v: &Value) {
     match v {
         Value::Record(r) if !r.is_empty() => w.block(v, 0),
         Value::List(l) if !l.is_empty() => {
@@ -404,7 +523,6 @@ pub fn to_text(v: &Value, profile: Profile) -> String {
             w.out.push('\n');
         }
     }
-    w.out
 }
 
 /// Render directives followed by a body.

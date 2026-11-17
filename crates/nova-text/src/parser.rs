@@ -2,7 +2,7 @@
 
 use crate::ast::*;
 use crate::path::{is_ident_char, is_ident_start, Path, Segment};
-use crate::spans::Span;
+use crate::spans::{Span, SpanKind};
 use base64::Engine;
 use nova_value::{Decimal, Duration, Rational, Timestamp, Value};
 use std::fmt;
@@ -155,6 +155,7 @@ pub struct Parser<'a> {
     pub template: bool,
     depth: usize,
     spans: Option<Vec<Span>>,
+    comments: Vec<(usize, usize)>,
     cur: Vec<Segment>,
     last_end: usize,
 }
@@ -168,6 +169,7 @@ impl<'a> Parser<'a> {
             template,
             depth: 0,
             spans: None,
+            comments: Vec::new(),
             cur: Vec::new(),
             last_end: 0,
         }
@@ -183,8 +185,29 @@ impl<'a> Parser<'a> {
         self.spans.take().unwrap_or_default()
     }
 
+    /// Byte ranges of all comments seen (recorded only with [`Parser::with_spans`]),
+    /// sorted and de-duplicated.
+    pub fn take_comments(&mut self) -> Vec<(usize, usize)> {
+        let mut c = std::mem::take(&mut self.comments);
+        c.sort();
+        c.dedup();
+        c
+    }
+
+    /// Skip a `#` comment to the end of the line, recording it.
+    fn skip_comment(&mut self) {
+        let start = self.pos;
+        while !matches!(self.peek(), None | Some(b'\n')) {
+            self.pos += 1;
+        }
+        if self.spans.is_some() {
+            let end = start + self.src[start..self.pos].trim_end_matches('\r').len();
+            self.comments.push((start, end));
+        }
+    }
+
     /// Run `f` with `seg` appended to the current path and record the span of what it parsed.
-    fn spanned<T>(&mut self, seg: Segment, start: usize, key: Option<(usize, usize)>, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+    fn spanned<T>(&mut self, kind: SpanKind, seg: Segment, start: usize, key: Option<(usize, usize)>, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
         self.cur.push(seg);
         let r = f(self);
         if r.is_ok() && !self.template {
@@ -194,6 +217,7 @@ impl<'a> Parser<'a> {
                     start,
                     end: self.last_end.max(start),
                     key,
+                    kind,
                 });
             }
         }
@@ -257,11 +281,7 @@ impl<'a> Parser<'a> {
         loop {
             match self.peek() {
                 Some(b' ' | b'\t' | b'\r' | b'\n') => self.pos += 1,
-                Some(b'#') => {
-                    while !matches!(self.peek(), None | Some(b'\n')) {
-                        self.pos += 1;
-                    }
-                }
+                Some(b'#') => self.skip_comment(),
                 _ => return,
             }
         }
@@ -271,9 +291,7 @@ impl<'a> Parser<'a> {
     pub fn end_line(&mut self) -> R<()> {
         self.skip_inline_ws();
         if self.peek() == Some(b'#') {
-            while !matches!(self.peek(), None | Some(b'\n')) {
-                self.pos += 1;
-            }
+            self.skip_comment();
         }
         if self.peek() == Some(b'\r') && self.peek_at(1) == Some(b'\n') {
             self.pos += 1;
@@ -294,9 +312,7 @@ impl<'a> Parser<'a> {
             let save = self.pos;
             self.skip_inline_ws();
             if self.peek() == Some(b'#') {
-                while !matches!(self.peek(), None | Some(b'\n')) {
-                    self.pos += 1;
-                }
+                self.skip_comment();
             }
             if self.peek() == Some(b'\r') {
                 self.pos += 1;
@@ -554,7 +570,7 @@ impl<'a> Parser<'a> {
                 items.push(Item::Spread(self.parse_flow()?));
             } else {
                 let (i, start) = (items.len() as i64, self.pos);
-                let n = self.spanned(Segment::Index(i), start, None, |p| p.parse_flow())?;
+                let n = self.spanned(SpanKind::FlowItem, Segment::Index(i), start, None, |p| p.parse_flow())?;
                 items.push(Item::Node(n));
             }
             self.skip_ws_multi();
@@ -607,7 +623,7 @@ impl<'a> Parser<'a> {
                 self.skip_ws_multi();
                 self.expect(b':', "`:` after key")?;
                 self.skip_ws_multi();
-                let v = self.spanned(seg_of(&k), kpos, Some((kpos, kend)), |p| p.parse_flow())?;
+                let v = self.spanned(SpanKind::FlowEntry, seg_of(&k), kpos, Some((kpos, kend)), |p| p.parse_flow())?;
                 self.push_entry(&mut entries, k, v, kpos)?;
             }
             self.skip_ws_multi();
@@ -643,7 +659,7 @@ impl<'a> Parser<'a> {
                 break;
             }
             let (i, start) = (items.len() as i64, self.pos);
-            items.push(self.spanned(Segment::Index(i), start, None, |p| p.parse_flow())?);
+            items.push(self.spanned(SpanKind::FlowItem, Segment::Index(i), start, None, |p| p.parse_flow())?);
             self.skip_ws_multi();
             match self.peek() {
                 Some(b',') => {
@@ -912,7 +928,7 @@ impl<'a> Parser<'a> {
             let kpos = self.pos;
             let key = self.key()?;
             let kend = self.pos;
-            let value = self.spanned(seg_of(&key), kpos, Some((kpos, kend)), |p| {
+            let value = self.spanned(SpanKind::BlockEntry, seg_of(&key), kpos, Some((kpos, kend)), |p| {
                 if p.peek() == Some(b'[') {
                     let (n, fields) = p.table_header()?;
                     p.expect(b':', "`:` after table header")?;
@@ -971,7 +987,7 @@ impl<'a> Parser<'a> {
                 return self.err("nested list items must start on their own line (`-` then an indented block) or use [flow]");
             }
             let idx = items.iter().filter(|i| matches!(i, Item::Node(_))).count() as i64;
-            let node = self.spanned(Segment::Index(idx), start, None, |p| {
+            let node = self.spanned(SpanKind::BlockItem, Segment::Index(idx), start, None, |p| {
                 if p.looks_like_key() || (p.template && p.starts_with("...")) {
                     Ok(Node::Record(p.block_record(indent + 2, true)?))
                 } else {
@@ -1035,6 +1051,9 @@ impl<'a> Parser<'a> {
             }
         }
         let text = line[..cut].trim_end_matches([' ', '\t', '\r']);
+        if cut < line.len() && self.spans.is_some() {
+            self.comments.push((start + cut, start + line.trim_end_matches('\r').len()));
+        }
         let first = text.as_bytes()[0];
         if RESERVED_START.contains(&first) {
             return self.err(format!("a plain value cannot start with `{}`; quote the string", first as char));
@@ -1200,7 +1219,7 @@ impl<'a> Parser<'a> {
                 }
                 let field = fields.get(cells.len()).cloned().unwrap_or_default();
                 let start = self.pos;
-                cells.push(Some(self.spanned(Segment::Field(field), start, None, |p| p.parse_flow())?));
+                cells.push(Some(self.spanned(SpanKind::TableCell, Segment::Field(field), start, None, |p| p.parse_flow())?));
                 self.skip_inline_ws();
                 match self.peek() {
                     Some(b',') => self.pos += 1,
@@ -1219,6 +1238,7 @@ impl<'a> Parser<'a> {
                         start: row_start,
                         end: self.last_end.max(row_start),
                         key: None,
+                        kind: SpanKind::TableRow,
                     });
                 }
             }
@@ -1421,6 +1441,9 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        if cut < line.len() && self.spans.is_some() {
+            self.comments.push((start + cut, start + line.trim_end_matches('\r').len()));
+        }
         self.pos = (end + 1).min(self.src.len());
         line[..cut].trim().to_owned()
     }
@@ -1572,6 +1595,7 @@ impl<'a> Parser<'a> {
                     start: body_start,
                     end: self.last_end.max(body_start),
                     key: None,
+                    kind: SpanKind::Root,
                 });
             }
         }

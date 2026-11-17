@@ -1,0 +1,25 @@
+# Production infrastructure
+# owned by platform team
+@schema infrastructure@1.0.0
+
+environment: production   # do not change without approval
+region:    eu-central-1
+price: @decimal("12.50")
+ratio: 2/4
+
+# The services we run
+services:
+  # auth is critical
+  - id: auth
+    port: 8080   # legacy port
+    replicas: 3
+
+  - id: api      # public API
+    tags: [public,  # exposed
+           edge]
+    replicas: 5
+table[2]{a,b}:
+  1, x   # first row
+  # before second
+  2, y
+# trailing comment at end

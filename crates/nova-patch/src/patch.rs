@@ -281,7 +281,7 @@ fn show(v: &Value) -> String {
     }
 }
 
-fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(), String> {
+pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(), String> {
     let e = |e: PathError| e.to_string();
     match kind {
         OpKind::Test(want) => {

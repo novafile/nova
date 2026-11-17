@@ -263,3 +263,42 @@ fn spans_locate_values() {
     let s = spans.get(&Path::parse("a.b[1].c").unwrap()).unwrap();
     assert_eq!(s.end - s.start, "c: x".len());
 }
+
+const COMMENTED: &str = include_str!("commented.nova");
+
+#[test]
+fn preserving_format_keeps_comments_and_is_idempotent() {
+    for profile in [Profile::Human, Profile::Canonical] {
+        let once = nova_text::format_preserving(COMMENTED, profile).unwrap();
+        assert_eq!(parse(&once).unwrap(), parse(COMMENTED).unwrap(), "{once}");
+        assert_eq!(nova_text::format_preserving(&once, profile).unwrap(), once, "not idempotent:\n{once}");
+        for c in COMMENTED.lines().filter_map(|l| l.find('#').map(|i| l[i..].trim())) {
+            assert!(once.contains(c), "lost comment {c:?} in {profile:?}:\n{once}");
+        }
+    }
+    let human = nova_text::format_preserving(COMMENTED, Profile::Human).unwrap();
+    assert!(human.contains("price: @decimal(\"12.50\")") && human.contains("ratio: 2/4"), "{human}");
+    assert!(human.contains("    replicas: 3\n\n  - id: api  # public API\n"), "{human}");
+    let canonical = nova_text::format_preserving(COMMENTED, Profile::Canonical).unwrap();
+    assert!(
+        canonical.contains("price: @decimal(\"12.5\")") && canonical.contains("ratio: 1/2"),
+        "{canonical}"
+    );
+    // Formatting a comment-free document matches the plain writer.
+    let plain = to_text(&parse(HUMAN).unwrap(), Profile::Human);
+    assert_eq!(nova_text::format_preserving(&plain, Profile::Human).unwrap(), plain);
+}
+
+#[test]
+fn render_preserving_follows_paths() {
+    let mut v = parse(COMMENTED).unwrap();
+    if let nova_value::Value::Record(r) = &mut v {
+        r.set("region", "eu-west-1".into());
+        r.remove("price");
+    }
+    let out = nova_text::render_preserving(COMMENTED, &v, Profile::Human).unwrap();
+    assert!(
+        out.contains("region: eu-west-1") && !out.contains("price") && out.contains("port: 8080  # legacy port"),
+        "{out}"
+    );
+}

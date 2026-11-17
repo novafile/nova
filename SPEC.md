@@ -173,6 +173,20 @@ Conversions are classified by **fidelity level**:
 - **Value-preserving** — the decoded value equals the original (§2.12). All conversions among NOVA representations MUST be value-preserving.
 - **Document-preserving** — additionally preserves comments, field order, blank lines, and the author's choice among equivalent spellings. This applies to tools that edit text in place (formatters, refactoring tools, schema migrations). A conforming *editor* (§13) MUST be document-preserving for edits it did not intend to make.
 
+**Comment attachment.** To carry comments through a re-rendering, a document-preserving formatter attaches each comment to a path:
+- A comment that follows code on the same line *trails* the innermost line-level construct (block entry, list item or table row) that starts on that line.
+- Any other comment *leads* the next line-level construct; when several start at the same place, it leads the outermost (the list item rather than its first field).
+- Comments before the body stay with the directives, and comments after the last entry stay at the end.
+- A comment inside a value that is re-rendered on a single line (for example, a multi-line flow list) moves to that entry's line.
+
+**Patching text.** A document-preserving patch host (§7.5) SHOULD apply each operation as a minimal edit of the source text at the target's span:
+- replace the value text in place when it stays on one line;
+- re-render only the affected entry otherwise, carrying over the comments inside it;
+- insert new fields after the last sibling, and new list items at the requested position;
+- delete removed entries together with the comment lines directly above them.
+
+The result MUST parse to the same value that value-level application produces. Hosts SHOULD verify this, and fall back to a comment-preserving re-rendering if it does not.
+
 The canonical form of a value preserves the value and nothing else. Comments are presentation metadata: they belong to a document, not to its value, and are discarded by value-preserving conversions such as text → binary.
 
 ---
@@ -1103,7 +1117,7 @@ The Rust workspace in this repository implements the specification.
 
 **Known gaps in version 0.1:**
 
-- **Fidelity.** The text parser is value-preserving only: comments are discarded, so `nova fmt` drops them. A lossless concrete syntax tree, needed for document-preserving editors, is future work.
+- **Fidelity.** The reference implementation is document-preserving without a separate concrete syntax tree. Instead, the parser records the source span of every value and every comment (`parse_with_spans`). `nova fmt` (`format_preserving`) re-renders with comments, blank lines and the author's spellings carried over. `nova patch` on text (`apply_to_source`) edits the source surgically and reports whether any part had to be re-rendered. Whitespace *inside* a line (for example, alignment after `key:`) is normalised whenever that line is re-rendered.
 - **Envelopes.** `@envelope` (§8.2) is accepted as a directive, but its body structure is not yet checked.
 - **Formats.** There are no YAML, TOML, CBOR or Protobuf adapters yet. The positional profile (Appendix C) is not implemented.
 
@@ -1166,7 +1180,7 @@ unary       = "not" unary | "(" cond ")" | flow-value [("==" | "!=") flow-value]
 
 1. **Positional profile (experimental).** With a known schema fingerprint, a record can be written as its field values in declared order, omitting names (`@mode positional`). This is opt-in transport only: it is not self-describing, and its exact tokenization and escaping rules are still open.
 2. **References.** Explicit references to independently identified records (`@ref(services, api)`) across documents, without general cyclic graphs.
-3. **Lossless syntax tree** for document-preserving editing, formatting and schema migration.
+3. **Lossless syntax tree.** A full concrete syntax tree, which would also preserve intra-line whitespace and comments inside flow values, for refactoring tools and schema migrations.
 4. **Adapters** for YAML, TOML, CBOR and Protobuf, and bindings beyond Serde (e.g. the reflection-based `facet`).
 5. **Constrained decoding.** Generate tokenizer-level grammars from schemas and the patch grammar.
 6. **Empirical evaluation** of the §10 objective across models, using the five workloads.

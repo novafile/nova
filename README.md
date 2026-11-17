@@ -164,7 +164,7 @@ A VS Code extension, with a TextMate grammar for syntax highlighting, is not wri
 
 ## Status
 
-This is a draft. The reference implementation is **value-preserving**: comments are not yet retained by `nova fmt`. There are no YAML, TOML or CBOR adapters yet. See [SPEC.md §14](SPEC.md#14-reference-implementation) and [Appendix C](SPEC.md#appendix-c--open-questions-and-future-work).
+This is a draft. Formatting and patching are **document-preserving**: `nova fmt` keeps comments, blank lines and spellings, and `nova patch -w` edits only the lines it changes. See [SPEC.md §14](SPEC.md#14-reference-implementation) and [Appendix C](SPEC.md#appendix-c--open-questions-and-future-work).
 
 ## License
 

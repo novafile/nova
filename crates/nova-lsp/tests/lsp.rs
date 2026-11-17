@@ -148,12 +148,21 @@ fn end_to_end() {
     let labels: Vec<&str> = items.as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap()).collect();
     assert_eq!(labels, ["active", "draining", "!failed(string)"]);
 
-    // Formatting is refused for documents with comments, offered otherwise.
+    // Formatting keeps comments.
+    c.notify(
+        "textDocument/didChange",
+        json!({"textDocument": {"uri": uri, "version": 7}, "contentChanges": [{"text": DOC.replace("region: eu-central-1", "region:   eu-central-1")}]}),
+    );
+    c.diagnostics();
     let f = c.request(
         "textDocument/formatting",
         json!({"textDocument": {"uri": uri}, "options": {"tabSize": 2, "insertSpaces": true}}),
     );
-    assert_eq!(f, Value::Null);
+    let new_text = f[0]["newText"].as_str().unwrap();
+    assert!(
+        new_text.contains("region: eu-central-1\n") && new_text.contains("# a string until the schema resolves it"),
+        "{f}"
+    );
     let plain = format!("file://{}/plain.nova", dir.display());
     open(&c, &plain, "b:   1\na: [1,2]\n");
     c.diagnostics();

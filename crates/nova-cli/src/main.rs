@@ -251,6 +251,12 @@ fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
     })
 }
 
+/// Is this file NOVA text (rather than JSON, JSON Lines or binary)?
+fn is_nova_text(p: &Path, text: &str) -> bool {
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    !matches!(ext, "json" | "jsonl" | "ndjson") && !text.as_bytes().starts_with(MAGIC) && nova_text::parse(text).is_ok()
+}
+
 fn load_schema(p: &Path) -> R<Schema> {
     let src = read_text(p)?;
     parse_schema(&src).map_err(|e| {
@@ -345,8 +351,20 @@ fn patch_error(e: &nova_patch::PatchError, file: &Path, src: &str) -> E {
 fn run(cli: Cli) -> R<ExitCode> {
     match cli.cmd {
         Cmd::Fmt { file, to, write } => {
-            let l = load(&file)?;
-            let bytes = render_as(&l, to, false)?;
+            // NOVA text keeps its comments, blank lines and spellings (spec §3).
+            let profile = match to {
+                Format::Nova => Some(Profile::Human),
+                Format::Canonical => Some(Profile::Canonical),
+                Format::Compact => Some(Profile::Compact),
+                _ => None,
+            };
+            let text = read_text(&file).ok().filter(|t| is_nova_text(&file, t));
+            let bytes = match (profile, text) {
+                (Some(p), Some(t)) => nova_text::format_preserving(&t, p)
+                    .map_err(|e| e.to_diagnostic(&name_of(&file), &t))?
+                    .into_bytes(),
+                _ => render_as(&load(&file)?, to, false)?,
+            };
             out(&bytes, write.then_some(file.as_path()))?;
         }
         Cmd::Convert {
@@ -471,12 +489,23 @@ fn run(cli: Cli) -> R<ExitCode> {
                 Some(s) => s.validate(v).map_err(|i| i.iter().map(|i| i.to_string()).collect()),
                 None => Ok(()),
             };
-            let applied = nova_patch::apply(&l.value, &p, &validate).map_err(|e| patch_error(&e, &patch, &patch_src))?;
-            let result = Loaded {
-                directives: l.directives,
-                value: applied.value,
+            let text = read_text(&file).ok().filter(|t| is_nova_text(&file, t));
+            let (bytes, applied) = match text {
+                // Document-preserving: minimal edits to the source text.
+                Some(src) => {
+                    let r = nova_patch::apply_to_source(&src, &p, &validate).map_err(|e| patch_error(&e, &patch, &patch_src))?;
+                    (r.text.into_bytes(), r.applied)
+                }
+                None => {
+                    let applied = nova_patch::apply(&l.value, &p, &validate).map_err(|e| patch_error(&e, &patch, &patch_src))?;
+                    let result = Loaded {
+                        directives: l.directives,
+                        value: applied.value.clone(),
+                    };
+                    (render_as(&result, Format::Nova, false)?, applied)
+                }
             };
-            out(&render_as(&result, Format::Nova, false)?, write.then_some(file.as_path()))?;
+            out(&bytes, write.then_some(file.as_path()))?;
             eprintln!("{} -> {}", applied.base, applied.revision);
         }
         Cmd::Diff { a, b } => print!("{}", nova_patch::diff(&load(&a)?.value, &load(&b)?.value)),

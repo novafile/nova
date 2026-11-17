@@ -9,6 +9,7 @@
 pub mod ast;
 #[cfg(feature = "miette")]
 pub mod diagnostic;
+pub mod format;
 mod parser;
 pub mod path;
 pub mod spans;
@@ -16,6 +17,7 @@ pub mod tokens;
 mod writer;
 
 pub use ast::Document;
+pub use format::{format_preserving, inline_value, render_fragment, render_preserving};
 pub use parser::{ParseError, Parser};
 pub use path::{CmpOp, Path, PathError, Segment};
 pub use writer::{canonicalize, document_to_text, flow_string, key_text, quote, to_text, Profile};
@@ -56,7 +58,9 @@ pub fn parse(src: &str) -> Result<Value, ParseError> {
 pub fn parse_with_spans(src: &str) -> Result<(Document, spans::SpanMap), ParseError> {
     let mut p = Parser::new(src, false).with_spans();
     let doc = p.parse_document(&is_data_directive)?;
-    Ok((doc, spans::SpanMap::new(p.take_spans())))
+    let mut map = spans::SpanMap::new(p.take_spans());
+    map.comments = p.take_comments();
+    Ok((doc, map))
 }
 
 /// Parse a single flow value occupying all of `src` (surrounding whitespace allowed).

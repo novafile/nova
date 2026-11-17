@@ -135,3 +135,90 @@ fn filters() {
     let p = nova_text::Path::parse("services[?status.code>=500].id").unwrap();
     assert_eq!(p.to_string(), "services[?status.code>=500].id");
 }
+
+const COMMENTED: &str = include_str!("../../nova-text/tests/commented.nova");
+
+fn on_source(src: &str, ops: &str) -> nova_patch::SourceEdit {
+    let p = parse_patch(&format!("@patch\n{ops}")).unwrap();
+    let r = nova_patch::apply_to_source(src, &p, &|_| Ok(())).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(parse(&r.text).unwrap(), r.applied.value, "{}", r.text);
+    r
+}
+
+/// Lines of `b` that are not in `a` and vice versa.
+fn changed(a: &str, b: &str) -> (Vec<String>, Vec<String>) {
+    let (la, lb): (Vec<&str>, Vec<&str>) = (a.lines().collect(), b.lines().collect());
+    (
+        la.iter().filter(|l| !lb.contains(l)).map(|s| s.to_string()).collect(),
+        lb.iter().filter(|l| !la.contains(l)).map(|s| s.to_string()).collect(),
+    )
+}
+
+#[test]
+fn source_patches_are_surgical() {
+    let cases: Vec<(&str, Vec<&str>, Vec<&str>)> = vec![
+        ("services[id=auth].replicas: 3 -> 4", vec!["    replicas: 3"], vec!["    replicas: 4"]),
+        (
+            "= services[id=auth].port: 9090",
+            vec!["    port: 8080   # legacy port"],
+            vec!["    port: 9090   # legacy port"],
+        ),
+        (
+            "environment: production -> staging",
+            vec!["environment: production   # do not change without approval"],
+            vec!["environment: staging   # do not change without approval"],
+        ),
+        ("+ services[id=auth].enabled: true", vec![], vec!["    enabled: true"]),
+        ("+ owner: platform", vec![], vec!["owner: platform"]),
+        ("- price", vec!["price: @decimal(\"12.50\")"], vec![]),
+        ("+ services: {id: metrics, replicas: 1}", vec![], vec!["  - id: metrics", "    replicas: 1"]),
+        (
+            "- services[id=auth]",
+            vec!["  # auth is critical", "  - id: auth", "    port: 8080   # legacy port", "    replicas: 3"],
+            vec![],
+        ),
+        (
+            "services[id=api].tags[0]: public -> internal",
+            vec!["    tags: [public,  # exposed"],
+            vec!["    tags: [internal,  # exposed"],
+        ),
+        ("table[1].b: y -> z", vec!["  2, y"], vec!["  2, z"]),
+    ];
+    for (op, removed, added) in cases {
+        let r = on_source(COMMENTED, op);
+        assert!(r.surgical, "{op}: fell back to re-rendering:\n{}", r.text);
+        let (gone, new) = changed(COMMENTED, &r.text);
+        assert_eq!(
+            (
+                gone.iter().map(String::as_str).collect::<Vec<_>>(),
+                new.iter().map(String::as_str).collect::<Vec<_>>()
+            ),
+            (removed, added),
+            "{op}:\n{}",
+            r.text
+        );
+    }
+}
+
+#[test]
+fn source_patches_with_structure_changes_keep_comments() {
+    // Replacing a scalar by a block value, emptying a list, set/map edits: still valid, comments kept.
+    for op in [
+        "= services[id=auth].port: {http: 8080, https: 8443}",
+        "= services[id=api].tags: []",
+        "+ table: {a: 3, b: w}",
+        "- table[0]",
+        "= region: [a, b]",
+        "- services[id=api].tags[edge]",
+    ] {
+        let r = on_source(COMMENTED, op);
+        for c in [
+            "# Production infrastructure",
+            "# auth is critical",
+            "# The services we run",
+            "# trailing comment at end",
+        ] {
+            assert!(r.text.contains(c), "{op}: lost {c:?}:\n{}", r.text);
+        }
+    }
+}

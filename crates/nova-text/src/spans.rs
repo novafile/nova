@@ -2,6 +2,32 @@
 
 use crate::path::{Path, Segment};
 
+/// The syntactic construct a span belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpanKind {
+    /// The document body.
+    Root,
+    /// `key: value` in a block record.
+    BlockEntry,
+    /// `- value` in a block list.
+    BlockItem,
+    /// `key: value` inside `{…}`.
+    FlowEntry,
+    /// An element of `[…]` or `(…)`.
+    FlowItem,
+    /// A row of a table (§4.9).
+    TableRow,
+    /// A cell of a table row.
+    TableCell,
+}
+
+impl SpanKind {
+    /// Constructs that occupy whole lines.
+    pub fn is_block(self) -> bool {
+        matches!(self, SpanKind::Root | SpanKind::BlockEntry | SpanKind::BlockItem | SpanKind::TableRow)
+    }
+}
+
 /// The byte range of one value in the source text.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Span {
@@ -13,17 +39,68 @@ pub struct Span {
     pub end: usize,
     /// Byte range of the key, for record fields.
     pub key: Option<(usize, usize)>,
+    pub kind: SpanKind,
+}
+
+impl Span {
+    /// Where the value itself starts: after `key:` or `- `, or on the next
+    /// content line when the value is an indented block.
+    pub fn value_start(&self, src: &str) -> usize {
+        let b = src.as_bytes();
+        let mut i = match (self.kind, self.key) {
+            (SpanKind::BlockEntry | SpanKind::FlowEntry, Some((_, kend))) => {
+                let mut i = kend;
+                while matches!(b.get(i), Some(b' ' | b'\t')) {
+                    i += 1;
+                }
+                if b.get(i) == Some(&b':') {
+                    i += 1;
+                }
+                i
+            }
+            (SpanKind::BlockItem, _) => self.start + 1,
+            _ => return self.start,
+        };
+        loop {
+            while matches!(b.get(i), Some(b' ' | b'\t' | b'\r')) {
+                i += 1;
+            }
+            match b.get(i) {
+                Some(b'#') => {
+                    while !matches!(b.get(i), None | Some(b'\n')) {
+                        i += 1;
+                    }
+                }
+                Some(b'\n') => i += 1,
+                _ => return i.min(self.end.max(self.start)),
+            }
+        }
+    }
+
+    /// Column (in bytes) of the span's first character.
+    pub fn column(&self, src: &str) -> usize {
+        self.start - src[..self.start].rfind('\n').map(|i| i + 1).unwrap_or(0)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct SpanMap {
     spans: Vec<Span>,
+    /// Byte ranges of comments (`#` through end of line).
+    pub comments: Vec<(usize, usize)>,
 }
 
 impl SpanMap {
     pub fn new(mut spans: Vec<Span>) -> Self {
         spans.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
-        SpanMap { spans }
+        SpanMap { spans, comments: Vec::new() }
+    }
+
+    /// Direct children of `parent`, in source order.
+    pub fn children<'a>(&'a self, parent: &'a Path) -> impl Iterator<Item = &'a Span> + 'a {
+        self.spans
+            .iter()
+            .filter(move |s| s.path.0.len() == parent.0.len() + 1 && s.path.0.starts_with(&parent.0))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Span> {

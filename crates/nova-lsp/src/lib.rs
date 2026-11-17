@@ -7,8 +7,8 @@
 //! - document outline (symbols), with list items named by their `id`/`name`/`key`;
 //! - hover: path, kind, value and declared schema type;
 //! - completion: missing record fields and enum variants / booleans from the schema;
-//! - formatting (human profile) for documents without comments, since the
-//!   reference parser does not yet preserve comments (spec §14).
+//! - document-preserving formatting (human profile): comments, blank lines
+//!   and spellings are kept (spec §3).
 
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument, Notification as _, PublishDiagnostics};
@@ -434,16 +434,11 @@ impl<'c> Server<'c> {
 
     fn format(&self, uri: &Url) -> Option<Vec<TextEdit>> {
         let text = self.docs.get(uri)?;
-        if kind_of(uri, text) != Kind::Document || text.lines().any(|l| l.trim_start().starts_with('#') || l.contains(" #")) {
-            return None; // would drop comments (spec §14)
-        }
-        let doc = nova_text::parse_document(text).ok()?;
-        if doc.is_template() {
+        if kind_of(uri, text) != Kind::Document {
             return None;
         }
-        let value = doc.body.to_value().ok()?;
-        let d: Vec<(&str, &str)> = doc.directives.iter().map(|d| (d.name.as_str(), d.arg.as_str())).collect();
-        let formatted = nova_text::document_to_text(&d, &value, nova_text::Profile::Human);
+        // Document-preserving: comments, blank lines and spellings survive.
+        let formatted = nova_text::format_preserving(text, nova_text::Profile::Human).ok()?;
         if formatted == *text {
             return Some(vec![]);
         }
