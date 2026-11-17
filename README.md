@@ -115,4 +115,13 @@ This is a draft. The reference implementation is **value-preserving**: comments 
 
 ## License
 
-MIT OR Apache-2.0
+Licensed under either of, at your option:
+
+- European Union Public Licence v1.2 ([LICENSE-EUPL](LICENSE-EUPL) or <https://interoperable-europe.ec.europa.eu/collection/eupl/eupl-text-eupl-12>)
+- Mozilla Public License 2.0 ([LICENSE-MPL](LICENSE-MPL) or <https://mozilla.org/MPL/2.0/>)
+
+SPDX-License-Identifier: `EUPL-1.2 OR MPL-2.0`
+
+The example files in [`examples/`](examples/) are dedicated to the public domain under [CC0-1.0](examples/LICENSE) (SPDX-License-Identifier: `CC0-1.0`): copy them into your own projects without conditions.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this work shall be dual-licensed as above, without any additional terms or conditions.
