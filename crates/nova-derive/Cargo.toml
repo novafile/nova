@@ -1,0 +1,21 @@
+[package]
+name = "nova-derive"
+description = "#[derive(NovaSchema)]: NOVA schemas from Rust types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "2"
+quote = "1"
+proc-macro2 = "1"
+
+[dev-dependencies]
+nova-schema = { path = "../nova-schema", features = ["derive"] }
+nova-value = { path = "../nova-value" }
+nova-text = { path = "../nova-text" }
+nova-serde = { path = "../nova-serde" }
+serde.workspace = true

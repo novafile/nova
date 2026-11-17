@@ -610,6 +610,8 @@ record Infrastructure:
 
 `name?:` (an optional field, which may be absent) and `T?` (a nullable type, where the field is present but may be `null`) are independent.
 
+**Type arguments may carry type attributes**, e.g. `list<u16 @range(1..1024)>` or `map<string @len(1..8), int>`.
+
 **Attributes**
 
 **Numeric comparison** (used by `@range` and by query filters, §7.1) is exact across `int`, `float`, `decimal` and `rational`. Each value is compared as the exact number it denotes — a float as its exact binary fraction — never via binary64 conversion. For example, the float `0.1` (exactly 0.1000000000000000055511151231257827…) is *above* the decimal bound `0.1`, and `9007199254740993` is greater than the float `9007199254740992.0`. NaN satisfies no range. Implementations SHOULD compare orders of magnitude first, so that decimals with extreme exponents do not require huge intermediate integers.
@@ -1173,6 +1175,13 @@ Bindings map NOVA kinds to native types. They SHOULD follow these rules:
 
 Serde has no data-model slots for NOVA's extra kinds. The binding therefore uses reserved newtype-struct names (`$nova::timestamp`, `$nova::decimal`, `$nova::set`, `$nova::value`, …). With other serde formats these degrade to natural forms: a timestamp becomes its canonical text, a set becomes a sequence, and a variant becomes a string or `{tag: payload}`. This means the same Rust types can also be serialized to JSON with the usual JSON conventions.
 
+**Rust schema derivation.** `#[derive(NovaSchema)]` (crate `nova-derive`, re-exported by `nova-schema` with feature `derive`) generates the NOVA schema of a Rust type.
+- Mapping: structs become records, enums become variants (struct variants get a record of their own), and newtype structs become aliases. `Option<T>` becomes an optional, nullable field, and collections, maps and tuples map as in the table above.
+- `#[nova(...)]` attributes carry what Rust types cannot express:
+  - `name` and `version` produce the `@schema` line;
+  - `key`, `id`, `range`, `len`, `default`, `deprecated` and `open` map to the schema attributes of the same names.
+- Serde attributes (`rename`, `rename_all`, `default`, `skip`) are honoured, so values produced by `nova-serde` resolve against the derived schema. Internally tagged and untagged enums, `flatten` and generic types are rejected at compile time.
+
 **Rust / facet (`nova-facet`).** A reflection-based binding built on `facet` (`#[derive(Facet)]`), with the same mapping and API as `nova-serde`. It needs no reserved names: the NOVA types are recognised by their shapes. Its differences from the Serde binding are:
 - sets map to `set` natively, without an adapter;
 - `Vec<u8>` and byte arrays map to `bytes`;
@@ -1244,6 +1253,7 @@ The Rust workspace in this repository implements the specification.
 | `nova-formats` | §11.2: YAML, TOML and CBOR adapters with loss reporting |
 | `nova-proto` | §11.2: `.proto` generation and Protobuf wire encoding/decoding from NOVA schemas |
 | `nova-serde` | §11.3: Serde serializer/deserializer, text and binary helpers, `with::` adapters |
+| `nova-derive` | `#[derive(NovaSchema)]`: NOVA schemas from Rust types |
 | `nova-schemars` | NOVA schemas from Rust types via schemars, and NOVA schema ↔ JSON Schema (2020-12, draft-07 input) |
 | `nova-facet` | §11.3: facet (reflection) binding with the same mapping and API |
 | `nova-lsp` | Language server: diagnostics (syntax, patches, schemas, §6.7 schema lookup), outline, hover, completion, comment-safe formatting |

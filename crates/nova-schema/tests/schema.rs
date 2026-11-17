@@ -220,3 +220,17 @@ fn schema_files_declare_language_version() {
         .to_string()
         .contains("first directive"));
 }
+
+#[test]
+fn constraints_on_type_arguments() {
+    let s = parse_schema("@root R\nrecord R:\n  ports: list<u16 @range(1..1024)>\n  m: map<string @len(1..8), (int @range(0..), string)>\n").unwrap();
+    let text = s.to_canonical_text();
+    assert!(
+        text.contains("ports: list<u16 @range(1..1024)>") && text.contains("m: map<string @len(1..8), (int @range(0..), string)>"),
+        "{text}"
+    );
+    assert_eq!(parse_schema(&text).unwrap().fingerprint(), s.fingerprint());
+    let issues = s.resolve(&nova_text::parse("ports: [80, 2000]\nm: {abc: (-1, x)}\n").unwrap()).unwrap_err();
+    let msgs: Vec<String> = issues.iter().map(|i| i.to_string()).collect();
+    assert_eq!(msgs, ["ports[1]: 2000 is outside @range(1..1024)", "m.abc[0]: -1 is outside @range(0..)"]);
+}

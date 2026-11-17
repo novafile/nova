@@ -75,6 +75,17 @@ impl<'a> TyParser<'a> {
         }
     }
 
+    /// A type argument (inside `<…>` or a tuple), which may carry type-level
+    /// attributes: `list<string @len(1..64)>`.
+    fn inner(&mut self) -> Result<TypeRef, String> {
+        let mut t = self.ty()?;
+        let field_attrs = self.attrs(&mut t)?;
+        if let Some((a, _)) = field_attrs.first() {
+            return Err(format!("@{a} is only valid on record fields"));
+        }
+        Ok(t)
+    }
+
     /// `type := atom ('[]' | '?')*` followed by type-level attributes.
     pub(crate) fn ty(&mut self) -> Result<TypeRef, String> {
         let mut t = self.atom()?;
@@ -101,7 +112,7 @@ impl<'a> TyParser<'a> {
                 if self.eat(b')') {
                     break;
                 }
-                items.push(self.ty()?);
+                items.push(self.inner()?);
                 if !self.eat(b',') {
                     self.need(b')')?;
                     break;
@@ -123,7 +134,7 @@ impl<'a> TyParser<'a> {
             "duration" => TypeKind::Duration,
             "list" | "set" => {
                 self.need(b'<')?;
-                let t = Box::new(self.ty()?);
+                let t = Box::new(self.inner()?);
                 self.need(b'>')?;
                 if name == "list" {
                     TypeKind::List(t)
@@ -133,9 +144,9 @@ impl<'a> TyParser<'a> {
             }
             "map" => {
                 self.need(b'<')?;
-                let k = Box::new(self.ty()?);
+                let k = Box::new(self.inner()?);
                 self.need(b',')?;
-                let v = Box::new(self.ty()?);
+                let v = Box::new(self.inner()?);
                 self.need(b'>')?;
                 TypeKind::Map(k, v)
             }

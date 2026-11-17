@@ -1052,6 +1052,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-derive"
+version = "0.1.0"
+dependencies = [
+ "nova-schema",
+ "nova-serde",
+ "nova-text",
+ "nova-value",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "nova-facet"
 version = "0.1.0"
 dependencies = [
@@ -1133,6 +1147,7 @@ name = "nova-schema"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "nova-derive",
  "nova-text",
  "nova-value",
  "unicode-segmentation",

@@ -90,6 +90,26 @@ let svc: Service = nova_serde::from_str(&text)?;
 let bytes = nova_serde::to_vec(&svc)?;         // binary frame
 ```
 
+Schemas can be derived from the same types:
+
+```rust
+#[derive(Serialize, Deserialize, NovaSchema)]          // nova-schema = { features = ["derive"] }
+#[nova(name = "infrastructure", version = "1.0.0")]
+struct Infrastructure {
+    #[nova(id = 1)] environment: String,
+    #[nova(id = 5)] services: Vec<Service>,
+}
+
+#[derive(Serialize, Deserialize, NovaSchema)]
+struct Service {
+    #[nova(key, id = 1)] id: String,
+    #[nova(id = 2, range = "1..65535")] port: u16,
+    #[nova(id = 3, default = "true")] enabled: bool,
+}
+
+let schema = Infrastructure::nova_schema();             // == the hand-written .novs
+```
+
 ## Workspace
 
 | Crate | Purpose |
@@ -104,6 +124,7 @@ let bytes = nova_serde::to_vec(&svc)?;         // binary frame
 | [`nova-formats`](crates/nova-formats) | YAML, TOML and CBOR adapters with explicit loss reporting |
 | [`nova-proto`](crates/nova-proto) | `.proto` generation and Protobuf encoding/decoding driven by NOVA schemas (`@id` = field number) |
 | [`nova-facet`](crates/nova-facet) | [facet](https://github.com/facet-rs/facet) reflection binding, same mapping and API as `nova-serde` |
+| [`nova-derive`](crates/nova-derive) | `#[derive(NovaSchema)]`: NOVA schemas from Rust types, honouring `#[nova]` and `#[serde]` attributes |
 | [`nova-schemars`](crates/nova-schemars) | NOVA schemas from Rust types (`#[derive(JsonSchema)]`), and NOVA schema ↔ JSON Schema |
 | [`nova-serde`](crates/nova-serde) | Serde integration: `to_string`/`from_str`, `to_vec`/`from_slice`, `to_value`/`from_value` |
 | [`nova-lint`](crates/nova-lint) | Conventions and lints with fixes (`nova lint`, also shown by the language server) |

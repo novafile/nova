@@ -3,6 +3,7 @@
 //! values, `@key` uniqueness and evolution checks.
 
 mod compat;
+pub mod derive;
 mod model;
 mod parse;
 mod positional;
@@ -10,7 +11,10 @@ mod resolve;
 mod version;
 
 pub use compat::{check_compatibility, widens, Change};
+pub use derive::{schema_for, NovaSchema, SchemaGen};
 pub use model::*;
+#[cfg(feature = "derive")]
+pub use nova_derive::NovaSchema;
 pub use parse::{parse_schema, parse_type, SchemaError};
 pub use resolve::Issue;
 pub use version::{valid_schema_name, ChangeKind, PreId, SchemaRef, Version};
