@@ -10,6 +10,8 @@ mod codec;
 mod decimal;
 mod rational;
 mod record;
+#[cfg(feature = "serde")]
+pub mod serde_support;
 mod time;
 
 pub use codec::{canonical_bytes, decode, decode_prefix, encode, revision, DecodeError, EncodeOptions, Limits, Revision};

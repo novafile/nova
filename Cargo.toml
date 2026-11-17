@@ -16,6 +16,9 @@ nova-schema = { path = "crates/nova-schema" }
 nova-patch = { path = "crates/nova-patch" }
 nova-template = { path = "crates/nova-template" }
 nova-json = { path = "crates/nova-json" }
+nova-serde = { path = "crates/nova-serde" }
 sha2 = "0.10"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

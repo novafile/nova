@@ -5,5 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+serde = ["dep:serde"]
+
 [dependencies]
 sha2.workspace = true
+serde = { workspace = true, optional = true }

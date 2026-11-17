@@ -76,6 +76,20 @@ services:
     - id: metrics
 ```
 
+## Serde
+
+```rust
+#[derive(Serialize, Deserialize)]
+enum Status { Active, Failed(String) }
+
+#[derive(Serialize, Deserialize)]
+struct Service { id: String, port: u16, deployed_at: nova_value::Timestamp, status: Status }
+
+let text = nova_serde::to_string(&svc)?;      // status: !Failed(oom), deployed_at: @timestamp("…")
+let svc: Service = nova_serde::from_str(&text)?;
+let bytes = nova_serde::to_vec(&svc)?;         // binary frame
+```
+
 ## Workspace
 
 | Crate | Purpose |
@@ -87,6 +101,7 @@ services:
 | [`nova-patch`](crates/nova-patch) | `@get` queries and projections; the patch language; atomic apply; diff |
 | [`nova-template`](crates/nova-template) | Template rendering with typed parameters, output budget and sandboxed imports |
 | [`nova-json`](crates/nova-json) | JSON and JSONL mapping with explicit loss reporting |
+| [`nova-serde`](crates/nova-serde) | Serde integration: `to_string`/`from_str`, `to_vec`/`from_slice`, `to_value`/`from_value` |
 | [`nova-cli`](crates/nova-cli) | The `nova` command |
 
 ## CLI
@@ -111,7 +126,7 @@ nova schema check old.novs new.novs    # exits 1 on breaking changes
 
 ## Status
 
-This is a draft. The reference implementation is **value-preserving**: comments are not yet retained by `nova fmt`. There is no Serde integration and there are no YAML, TOML or CBOR adapters yet. See [SPEC.md §14](SPEC.md#14-reference-implementation) and [Appendix C](SPEC.md#appendix-c--open-questions-and-future-work).
+This is a draft. The reference implementation is **value-preserving**: comments are not yet retained by `nova fmt`. There are no YAML, TOML or CBOR adapters yet. See [SPEC.md §14](SPEC.md#14-reference-implementation) and [Appendix C](SPEC.md#appendix-c--open-questions-and-future-work).
 
 ## License
 

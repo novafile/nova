@@ -956,6 +956,34 @@ JSON Lines maps to a list of the values on its non-empty lines.
 
 Adapters for YAML, TOML, CBOR, MessagePack and Protobuf SHOULD follow the same discipline: lossless where the target can represent the kind, and an explicit report where it cannot. YAML input SHOULD be read with the YAML 1.2 core schema and aliases expanded under the limits of §9.5. YAML-specific tags and merge keys SHOULD be rejected, not guessed at.
 
+### 11.3 Language bindings
+
+Bindings map NOVA kinds to native types. They SHOULD follow these rules:
+
+- **The native type acts as a schema.** When the target type is known — a timestamp, a decimal, an enum — a binding SHOULD accept the string spellings that §6.3 would resolve, and nothing else. So a schema-free document with `at: 2026-11-17T16:00:00Z` deserializes into a timestamp field.
+- **Enums map to variants.** A binding SHOULD accept the variant itself, a string naming a unit variant, or a single-entry record `{tag: payload}`. The last form lets data that passed through JSON still deserialize.
+- **No lossy narrowing.** A rational, decimal or out-of-range integer MUST NOT be silently converted to a float or a narrower integer. Bindings MAY offer explicit, opt-in adapters.
+- **Errors carry paths.** Errors SHOULD report the path (§7.1) of the offending value, e.g. `services[1].port: invalid value: integer 70000, expected u16`.
+
+**Rust / Serde (reference binding, `nova-serde`):**
+
+| Serde data model | NOVA |
+| --- | --- |
+| bool, i8…i128, u8…u128, f32/f64, char, str, bytes | bool, int, float, string (char), string, bytes |
+| `None`, unit, unit struct | null |
+| `Some(x)`, newtype struct | `x` |
+| seq | list |
+| tuple, tuple struct | tuple |
+| struct, map with string keys | record |
+| map with other keys | map (when deserializing, numeric keys also accept their string form, as in JSON objects) |
+| unit / newtype / tuple / struct variant | `!Tag`, `!Tag(x)`, `!Tag((a, b))`, `!Tag({…})` |
+| `nova_value::{Timestamp, Duration, Decimal, Rational}` | the corresponding kind |
+| `nova_value::Value` | itself, losslessly |
+| `#[serde(with = "nova_serde::with::set")]` | set |
+| `with::duration` (`std::time::Duration`), `with::system_time` (`SystemTime`) | duration, timestamp |
+
+Serde has no data-model slots for NOVA's extra kinds. The binding therefore uses reserved newtype-struct names (`$nova::timestamp`, `$nova::decimal`, `$nova::set`, `$nova::value`, …). With other serde formats these degrade to natural forms: a timestamp becomes its canonical text, a set becomes a sequence, and a variant becomes a string or `{tag: payload}`. This means the same Rust types can also be serialized to JSON with the usual JSON conventions.
+
 ---
 
 ## 12. Security considerations
@@ -998,13 +1026,14 @@ The Rust workspace in this repository implements the specification.
 | `nova-patch` | §7: queries and projections, the patch language, atomic application, diffs |
 | `nova-template` | §9: rendering, sandboxed file loader, limits |
 | `nova-json` | §11.1: JSON and JSON Lines mapping with loss reporting |
+| `nova-serde` | §11.3: Serde serializer/deserializer, text and binary helpers, `with::` adapters |
 | `nova-cli` | The `nova` command: `fmt`, `convert`, `hash`, `validate`, `get`, `patch`, `diff`, `render`, `stats`, `schema {fmt,fingerprint,check}` |
 
 **Known gaps in version 0.1:**
 
 - **Fidelity.** The text parser is value-preserving only: comments are discarded, so `nova fmt` drops them. A lossless concrete syntax tree, needed for document-preserving editors, is future work.
 - **Envelopes.** `@envelope` (§8.2) is accepted as a directive, but its body structure is not yet checked.
-- **Formats.** There is no Serde integration and there are no YAML, TOML, CBOR or Protobuf adapters yet. The positional profile (Appendix C) is not implemented.
+- **Formats.** There are no YAML, TOML, CBOR or Protobuf adapters yet. The positional profile (Appendix C) is not implemented.
 - **Schema checks.** `@len` on strings counts Unicode scalar values. `@range` comparisons between mixed numeric kinds use binary64.
 
 ---
@@ -1067,7 +1096,7 @@ unary       = "not" unary | "(" cond ")" | flow-value [("==" | "!=") flow-value]
 1. **Positional profile (experimental).** With a known schema fingerprint, a record can be written as its field values in declared order, omitting names (`@mode positional`). This is opt-in transport only: it is not self-describing, and its exact tokenization and escaping rules are still open.
 2. **References.** Explicit references to independently identified records (`@ref(services, api)`) across documents, without general cyclic graphs.
 3. **Lossless syntax tree** for document-preserving editing, formatting and schema migration.
-4. **Serde integration** (`nova-serde`) and adapters for YAML, TOML, CBOR and Protobuf.
+4. **Adapters** for YAML, TOML, CBOR and Protobuf, and bindings beyond Serde (e.g. the reflection-based `facet`).
 5. **Constrained decoding.** Generate tokenizer-level grammars from schemas and the patch grammar.
 6. **Empirical evaluation** of the §10 objective across models, using the five workloads.
 7. **Scale-preserving decimals.** Should `1.50` and `1.5` be distinguishable? Version 0.1 says no; schemas can constrain scale.
