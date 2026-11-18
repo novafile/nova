@@ -612,7 +612,11 @@ impl<'a> Parser<'a> {
     /// Run `f` one nesting level deeper, failing once [`MAX_DEPTH`] is exceeded.
     fn nested<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
         self.depth += 1;
-        let r = if self.depth > MAX_DEPTH { self.err("nesting depth limit exceeded") } else { f(self) };
+        let r = if self.depth > MAX_DEPTH {
+            self.err("nesting depth limit exceeded")
+        } else {
+            f(self)
+        };
         self.depth -= 1;
         r
     }
