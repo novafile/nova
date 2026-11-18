@@ -190,3 +190,17 @@ fn recursive_aliases_fail_instead_of_hanging() {
     let issues = Chain::novafile_schema().resolve(&novafile_value::Value::Int(1)).unwrap_err();
     assert!(issues[0].message.contains("cycle"), "{issues:?}");
 }
+
+#[derive(NovaSchema)]
+#[allow(dead_code)]
+struct Big {
+    n: u128,
+}
+
+#[test]
+fn u128_is_non_negative() {
+    let s = Big::novafile_schema();
+    assert!(s.to_canonical_text().contains("  n: int @range(0..)\n"), "{}", s.to_canonical_text());
+    assert!(s.resolve(&novafile_text::parse("n: -1\n").unwrap()).is_err());
+    assert!(s.resolve(&novafile_text::parse("n: 1\n").unwrap()).is_ok());
+}

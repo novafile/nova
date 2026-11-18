@@ -18,7 +18,7 @@
 //! The mapping follows the Serde binding (spec §11.3), so values produced
 //! by `novafile-serde` resolve against the generated schema.
 
-use crate::model::{Def, IntKind, Schema, TypeKind, TypeRef};
+use crate::model::{Def, IntKind, Num, Schema, TypeKind, TypeRef};
 use std::collections::HashSet;
 
 /// Collects named definitions while type expressions are generated.
@@ -145,13 +145,21 @@ simple! {
     bool => TypeKind::Bool,
     i8 => TypeKind::Int(IntKind::I8), i16 => TypeKind::Int(IntKind::I16), i32 => TypeKind::Int(IntKind::I32), i64 => TypeKind::Int(IntKind::I64),
     u8 => TypeKind::Int(IntKind::U8), u16 => TypeKind::Int(IntKind::U16), u32 => TypeKind::Int(IntKind::U32), u64 => TypeKind::Int(IntKind::U64),
-    i128 => TypeKind::Int(IntKind::Int), u128 => TypeKind::Int(IntKind::Int), isize => TypeKind::Int(IntKind::I64), usize => TypeKind::Int(IntKind::U64),
+    i128 => TypeKind::Int(IntKind::Int), isize => TypeKind::Int(IntKind::I64), usize => TypeKind::Int(IntKind::U64),
     f32 => TypeKind::Float, f64 => TypeKind::Float,
     String => TypeKind::String, str => TypeKind::String,
     novafile_value::Timestamp => TypeKind::Timestamp, novafile_value::Duration => TypeKind::Duration,
     novafile_value::Decimal => TypeKind::Decimal, novafile_value::Rational => TypeKind::Rational,
     novafile_value::Value => TypeKind::Any,
     () => TypeKind::Null,
+}
+
+impl NovaSchema for u128 {
+    fn nova_type(_: &mut SchemaGen) -> TypeRef {
+        let mut t = TypeRef::new(TypeKind::Int(IntKind::Int));
+        t.constraints.range = Some((Some(Num::int(0)), None));
+        t
+    }
 }
 
 impl NovaSchema for char {
