@@ -43,22 +43,6 @@ impl<'s> Ctx<'s> {
         });
     }
 
-    /// Follow aliases to the underlying type (and its record or enum
-    /// definition, if any). Relies on the parser having rejected alias cycles.
-    fn deref(&self, t: &'s TypeRef) -> (&'s TypeRef, Option<&'s Def>) {
-        let mut cur = t;
-        loop {
-            match &cur.kind {
-                TypeKind::Named(n) => match self.schema.def(n) {
-                    Some(Def::Alias(a)) => cur = a,
-                    Some(d) => return (cur, Some(d)),
-                    None => return (cur, None),
-                },
-                _ => return (cur, None),
-            }
-        }
-    }
-
     /// Resolve `v` against `t`: apply permitted conversions, record issues, and
     /// return the possibly converted value. The constraints of both the use site
     /// and the alias target apply.
@@ -67,7 +51,7 @@ impl<'s> Ctx<'s> {
             return v;
         }
 
-        let (rt, def) = self.deref(t);
+        let (rt, def) = self.schema.deref(t);
         if matches!(v, Value::Null) && rt.nullable {
             return v;
         }
@@ -75,6 +59,12 @@ impl<'s> Ctx<'s> {
         let v = match (&rt.kind, def) {
             (TypeKind::Named(_), Some(Def::Record(r))) => self.record(v, r),
             (TypeKind::Named(_), Some(Def::Enum(vs))) => self.variant(v, vs),
+            // Schemas built in code (derive, JSON Schema import) skip the
+            // parser's cycle check, so a bounded deref can stop on an alias.
+            (TypeKind::Named(n), _) if self.schema.def(n).is_some() => {
+                self.issue(format!("type alias cycle through {n}"));
+                v
+            }
             (TypeKind::Named(n), _) => {
                 self.issue(format!("unknown type {n}"));
                 v
@@ -232,7 +222,7 @@ impl<'s> Ctx<'s> {
             .collect();
 
         // @key uniqueness (spec §6.2).
-        if let (_, Some(Def::Record(r))) = self.deref(et) {
+        if let (_, Some(Def::Record(r))) = self.schema.deref(et) {
             let keys = r.key_fields();
             if !keys.is_empty() {
                 let mut seen = HashSet::new();
