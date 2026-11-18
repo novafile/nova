@@ -20,7 +20,7 @@ impl Client {
             .unwrap();
         loop {
             match self.conn.receiver.recv_timeout(Duration::from_secs(10)).unwrap() {
-                Message::Response(r) if r.id == id => return r.result.unwrap_or_else(|| panic!("error: {:?}", r.error)),
+                Message::Response(r) if r.id == id => return r.response_result.unwrap_or_else(|e| panic!("error: {e:?}")),
                 _ => {}
             }
         }

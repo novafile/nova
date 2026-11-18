@@ -18,7 +18,7 @@ use lsp_types::{
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams,
     DocumentSymbolResponse, Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams, MarkupContent, MarkupKind, NumberOrString, OneOf,
     Position, PublishDiagnosticsParams, Range, ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, TextEdit, Url,
+    TextDocumentSyncSaveOptions, TextEdit, Uri,
 };
 
 use novafile_schema::{Def, Schema, SchemaRef, TypeKind};
@@ -68,8 +68,8 @@ pub fn run(conn: Connection) -> Result<(), Error> {
         .workspace_folders
         .as_ref()
         .and_then(|f| f.first())
-        .and_then(|f| f.uri.to_file_path().ok())
-        .or_else(|| params.root_uri.as_ref().and_then(|u| u.to_file_path().ok()));
+        .and_then(|f| file_path(&f.uri))
+        .or_else(|| params.root_uri.as_ref().and_then(file_path));
     let mut server = Server {
         docs: HashMap::new(),
         disk_schemas: Vec::new(),
@@ -87,7 +87,7 @@ pub fn run(conn: Connection) -> Result<(), Error> {
 /// Server state: open documents and the workspace's schemas.
 struct Server<'c> {
     /// Text of every open document, as last sent by the client.
-    docs: HashMap<Url, String>,
+    docs: HashMap<Uri, String>,
     /// Schemas found on disk: (path, schema).
     disk_schemas: Vec<(PathBuf, Schema)>,
     /// Directories already searched for schemas; nothing below them is scanned again.
@@ -107,19 +107,45 @@ enum Kind {
     Document,
 }
 
-/// Whether a URI path has the given (case-sensitive) file extension.
-fn has_ext(path: &str, ext: &str) -> bool {
-    std::path::Path::new(path).extension().is_some_and(|e| e == ext)
+/// Whether a URI's path has the given (case-sensitive) file extension.
+fn has_ext(uri: &Uri, ext: &str) -> bool {
+    std::path::Path::new(uri.path().as_str()).extension().is_some_and(|e| e == ext)
+}
+
+/// The local file a `file:` URI names, or `None` for other schemes and remote hosts.
+fn file_path(uri: &Uri) -> Option<PathBuf> {
+    if !uri.scheme().is_some_and(|s| s.as_str().eq_ignore_ascii_case("file")) {
+        return None;
+    }
+
+    if let Some(a) = uri.authority()
+        && !matches!(a.host().as_str(), "" | "localhost")
+    {
+        return None;
+    }
+
+    let bytes = uri.path().as_estr().decode().into_bytes().into_owned();
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+        Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+    }
+    #[cfg(not(unix))]
+    {
+        let s = String::from_utf8(bytes).ok()?;
+        // `file:///C:/x` names `C:/x`.
+        Some(PathBuf::from(if s.as_bytes().get(2) == Some(&b':') { &s[1..] } else { &s[..] }))
+    }
 }
 
 /// Classify a text by its URI extension and, for patches, its first directive.
-fn kind_of(uri: &Url, text: &str) -> Kind {
-    if has_ext(uri.path(), "novs") {
+fn kind_of(uri: &Uri, text: &str) -> Kind {
+    if has_ext(uri, "novs") {
         return Kind::Schema;
     }
 
     let first = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).unwrap_or("");
-    if first.starts_with("@patch") || has_ext(uri.path(), "patch") {
+    if first.starts_with("@patch") || has_ext(uri, "patch") {
         Kind::Patch
     } else {
         Kind::Document
@@ -237,8 +263,8 @@ impl Server<'_> {
 
     /// Re-reads the `.novs` file at `uri` from disk into the known schemas, dropping it
     /// if it is gone or no longer parses. Returns whether `uri` is a schema file.
-    fn reload_schema(&mut self, uri: &Url) -> bool {
-        let Some(path) = uri.to_file_path().ok().filter(|_| has_ext(uri.path(), "novs")) else {
+    fn reload_schema(&mut self, uri: &Uri) -> bool {
+        let Some(path) = file_path(uri).filter(|_| has_ext(uri, "novs")) else {
             return false;
         };
 
@@ -255,8 +281,8 @@ impl Server<'_> {
         let open: Vec<(PathBuf, Schema)> = self
             .docs
             .iter()
-            .filter(|(u, _)| has_ext(u.path(), "novs"))
-            .filter_map(|(u, t)| Some((u.to_file_path().ok()?, novafile_schema::parse_schema(t).ok()?)))
+            .filter(|(u, _)| has_ext(u, "novs"))
+            .filter_map(|(u, t)| Some((file_path(u)?, novafile_schema::parse_schema(t).ok()?)))
             .collect();
         let mut all: Vec<Schema> = open.iter().map(|(_, s)| s.clone()).collect();
         for (p, s) in &self.disk_schemas {
@@ -286,7 +312,7 @@ impl Server<'_> {
     }
 
     /// Syntax errors, and schema validation for documents with a resolvable `@schema`.
-    fn diagnostics(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
+    fn diagnostics(&self, uri: &Uri, text: &str) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         match kind_of(uri, text) {
             Kind::Schema => {
@@ -344,7 +370,7 @@ impl Server<'_> {
     }
 
     /// Convention findings from `novafile-lint` (spec Appendix E).
-    fn lints(uri: &Url, text: &str) -> Vec<Diagnostic> {
+    fn lints(uri: &Uri, text: &str) -> Vec<Diagnostic> {
         let config = novafile_lint::Config::default();
         let findings = match kind_of(uri, text) {
             Kind::Schema => novafile_lint::lint_schema(text, &config).unwrap_or_default(),
@@ -367,7 +393,7 @@ impl Server<'_> {
     }
 
     /// Send the diagnostics and lint findings of an open document to the client.
-    fn publish(&self, uri: &Url) -> Result<(), Error> {
+    fn publish(&self, uri: &Uri) -> Result<(), Error> {
         let Some(text) = self.docs.get(uri) else { return Ok(()) };
         let mut diagnostics = self.diagnostics(uri, text);
         diagnostics.extend(Self::lints(uri, text));
@@ -385,7 +411,7 @@ impl Server<'_> {
 
     /// Republish every open document, e.g. after a schema changed.
     fn publish_all(&self) -> Result<(), Error> {
-        let uris: Vec<Url> = self.docs.keys().cloned().collect();
+        let uris: Vec<Uri> = self.docs.keys().cloned().collect();
         for u in uris {
             self.publish(&u)?;
         }
@@ -423,10 +449,10 @@ impl Server<'_> {
         match n.method.as_str() {
             DidOpenTextDocument::METHOD => {
                 let p: DidOpenTextDocumentParams = serde_json::from_value(n.params)?;
-                let is_schema = has_ext(p.text_document.uri.path(), "novs");
+                let is_schema = has_ext(&p.text_document.uri, "novs");
                 // Files opened outside the workspace (or without one) still find the
                 // schemas next to them.
-                if let Ok(path) = p.text_document.uri.to_file_path()
+                if let Some(path) = file_path(&p.text_document.uri)
                     && let Some(dir) = path.parent()
                     && !self.scanned.iter().any(|root| dir.starts_with(root))
                 {
@@ -443,7 +469,7 @@ impl Server<'_> {
             DidChangeTextDocument::METHOD => {
                 let p: DidChangeTextDocumentParams = serde_json::from_value(n.params)?;
                 if let Some(c) = p.content_changes.into_iter().last() {
-                    let is_schema = has_ext(p.text_document.uri.path(), "novs");
+                    let is_schema = has_ext(&p.text_document.uri, "novs");
                     self.docs.insert(p.text_document.uri.clone(), c.text);
                     if is_schema {
                         self.publish_all()?;
@@ -515,7 +541,7 @@ impl Server<'_> {
     }
 
     /// The text and parse result of an open data document, if it parses.
-    fn parsed(&self, uri: &Url) -> Option<(&str, Parsed)> {
+    fn parsed(&self, uri: &Uri) -> Option<(&str, Parsed)> {
         let text = self.docs.get(uri)?;
         if kind_of(uri, text) != Kind::Document {
             return None;
@@ -525,7 +551,7 @@ impl Server<'_> {
     }
 
     /// Hover: the path, kind and value under the cursor, with its schema type and field notes.
-    fn hover(&self, uri: &Url, pos: Position) -> Option<Hover> {
+    fn hover(&self, uri: &Uri, pos: Position) -> Option<Hover> {
         let (text, p) = self.parsed(uri)?;
         let off = offset_of_utf16(text, pos.line, pos.character);
         let span = p.spans.at(off)?;
@@ -583,13 +609,13 @@ impl Server<'_> {
     }
 
     /// Document outline of an open data document.
-    fn symbols(&self, uri: &Url) -> Option<Vec<DocumentSymbol>> {
+    fn symbols(&self, uri: &Uri) -> Option<Vec<DocumentSymbol>> {
         let (text, p) = self.parsed(uri)?;
         Some(children_of(text, &p, &Path::root()))
     }
 
     /// Document-preserving formatting (human profile) as one whole-document edit.
-    fn format(&self, uri: &Url) -> Option<Vec<TextEdit>> {
+    fn format(&self, uri: &Uri) -> Option<Vec<TextEdit>> {
         let text = self.docs.get(uri)?;
         if kind_of(uri, text) != Kind::Document {
             return None;
@@ -609,7 +635,7 @@ impl Server<'_> {
 
     /// Completion from the schema: enum variants and booleans after `key:`, else the
     /// missing fields of the enclosing record.
-    fn complete(&self, uri: &Url, pos: Position) -> Option<Vec<CompletionItem>> {
+    fn complete(&self, uri: &Uri, pos: Position) -> Option<Vec<CompletionItem>> {
         let text = self.docs.get(uri)?;
         if kind_of(uri, text) != Kind::Document {
             return None;
@@ -814,4 +840,22 @@ fn children_of(text: &str, p: &Parsed, parent: &Path) -> Vec<DocumentSymbol> {
             })
         })
         .collect()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{Uri, file_path};
+    use std::path::PathBuf;
+
+    fn path(s: &str) -> Option<PathBuf> {
+        file_path(&s.parse::<Uri>().unwrap())
+    }
+
+    #[test]
+    fn file_uris_map_to_local_paths() {
+        assert_eq!(path("file:///tmp/a%20b.novs"), Some(PathBuf::from("/tmp/a b.novs")));
+        assert_eq!(path("file://localhost/tmp/x"), Some(PathBuf::from("/tmp/x")));
+        assert_eq!(path("file://server/share/x"), None);
+        assert_eq!(path("untitled:Untitled-1"), None);
+    }
 }

@@ -94,7 +94,13 @@ fn datetime(d: &Datetime) -> Result<Value, String> {
 
     let text = format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}{off}",
-        date.year, date.month, date.day, time.hour, time.minute, time.second, time.nanosecond
+        date.year,
+        date.month,
+        date.day,
+        time.hour,
+        time.minute,
+        time.second.unwrap_or(0),
+        time.nanosecond.unwrap_or(0)
     );
     Timestamp::parse(&text).map(Value::Timestamp).map_err(|e| format!("TOML: date-time {d}: {e}"))
 }

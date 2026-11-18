@@ -160,3 +160,10 @@ fn bad_toml() {
     assert!(from_str("a = ").is_err());
     assert!(from_str("a = 99999999999999999999").is_err());
 }
+
+#[test]
+fn time_without_seconds() {
+    // TOML 1.1 lets a time omit its seconds.
+    let v = from_str("t = 2026-11-17T16:00Z\n").unwrap();
+    assert_eq!(v, rec(vec![("t", ts("2026-11-17T16:00:00Z"))]));
+}
