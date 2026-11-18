@@ -1,6 +1,26 @@
 version: '3'
 
 tasks:
+  default:
+    cmds:
+      - task --list --sort=none
+    silent: true
+
+  build:
+    desc: Build every workspace crate and target, then the fuzz targets
+    preconditions:
+      - sh: command -v cargo
+        msg: "cargo not found — install Rust from https://rustup.rs/"
+    cmds:
+      - cargo build --workspace --all-targets
+      # Fuzz crates are their own workspace; building them catches drift.
+      - task: fuzz:build
+
+  fuzz:build:
+    desc: Build the fuzz targets
+    cmds:
+      - cargo build --manifest-path fuzz/Cargo.toml --bins
+
   clean:
     desc: Remove the workspace target directory and those of every fuzz crate
     cmds:
