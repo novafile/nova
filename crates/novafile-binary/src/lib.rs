@@ -136,19 +136,29 @@ fn put_varint(out: &mut Vec<u8>, mut v: u64) {
 /// Read an unsigned LEB128 varint at `*pos`, advancing it.
 ///
 /// Fails with [`FrameError::Truncated`] at end of input and with
-/// [`FrameError::Malformed`] after ten bytes.
+/// [`FrameError::Malformed`] on values past `u64` and non-minimal encodings
+/// (a trailing zero byte), as the value codec rejects them.
 fn get_varint(buf: &[u8], pos: &mut usize) -> Result<u64, FrameError> {
     let mut v = 0u64;
     for shift in (0..64).step_by(7) {
         let b = *buf.get(*pos).ok_or(FrameError::Truncated)?;
         *pos += 1;
+        // The 10th byte holds bit 63 only and must be the last.
+        if shift == 63 && b > 1 {
+            return Err(FrameError::Malformed("varint overflow".into()));
+        }
+
         v |= u64::from(b & 0x7F) << shift;
         if b & 0x80 == 0 {
+            if b == 0 && shift > 0 {
+                return Err(FrameError::Malformed("non-minimal varint".into()));
+            }
+
             return Ok(v);
         }
     }
 
-    Err(FrameError::Malformed("varint too long".into()))
+    unreachable!("the 10th byte never continues")
 }
 
 /// Encode one frame, setting the flags to match `frame` and `opts`.
@@ -366,6 +376,17 @@ mod tests {
             assert_eq!(n, bytes.len());
             assert_eq!(g, f);
         }
+    }
+
+    #[test]
+    fn rejects_bad_varints() {
+        // A 10-byte schema length with bit 64 set used to wrap to 0 and decode.
+        let mut overflow = b"NOVA\x01\x01".to_vec();
+        overflow.extend([0x80; 9]);
+        overflow.extend([0x02, 0x01, 0x00]);
+        assert!(matches!(decode_frame(&overflow), Err(FrameError::Malformed(_))));
+        // Payload length 1 padded with a zero byte.
+        assert!(matches!(decode_frame(b"NOVA\x01\x00\x81\x00\x00"), Err(FrameError::Malformed(_))));
     }
 
     #[test]
