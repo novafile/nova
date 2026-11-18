@@ -29,22 +29,30 @@ fn value_expect(v: &Value) -> J {
     })
 }
 
-/// Files in `dir` with extension `ext`, sorted; empty if `dir` is missing.
-fn files(dir: &Path, ext: &str) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == ext)).collect())
-        .unwrap_or_default();
+/// Entries of `dir` that pass `keep`, sorted; empty if `dir` is missing.
+fn entries(dir: &Path, keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => panic!("{}: {e}", dir.display()),
+    };
+
+    let mut v: Vec<PathBuf> = rd
+        .map(|e| e.unwrap_or_else(|e| panic!("{}: {e}", dir.display())).path())
+        .filter(|p| keep(p))
+        .collect();
     v.sort();
     v
 }
 
+/// Files in `dir` with extension `ext`, sorted; empty if `dir` is missing.
+fn files(dir: &Path, ext: &str) -> Vec<PathBuf> {
+    entries(dir, |p| p.extension().is_some_and(|e| e == ext))
+}
+
 /// Subdirectories of `dir`, sorted; empty if `dir` is missing.
 fn dirs(dir: &Path) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
-        .unwrap_or_default();
-    v.sort();
-    v
+    entries(dir, Path::is_dir)
 }
 
 /// Reads a file as text, panicking with its path if that fails.
@@ -62,12 +70,14 @@ fn expect_path(input: &Path) -> PathBuf {
 ///
 /// # Panics
 ///
-/// Panics if a case's input files cannot be read, if a case contradicts
+/// Panics if `root` is not a directory or holds no cases, if a case's input
+/// files cannot be read, if a case contradicts
 /// its directory (a `valid` input fails, an `invalid` one succeeds), or if
 /// auxiliary inputs (schemas, base documents, template args) do not parse.
 #[must_use]
 #[expect(clippy::too_many_lines, reason = "one flat section per conformance category")]
 pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
+    assert!(root.is_dir(), "{}: not a conformance directory", root.display());
     let mut out = Vec::new();
 
     // text: parse; valid inputs give canonical text, revision and canonical binary.
@@ -207,6 +217,7 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
         out.push((d.join("expect.json"), e));
     }
 
+    assert!(!out.is_empty(), "{}: no conformance cases found", root.display());
     out
 }
 
