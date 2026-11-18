@@ -7,9 +7,11 @@
 //! * [`path`] — the path/selector language shared by queries, patches and templates.
 
 pub mod ast;
+pub mod columns;
 #[cfg(feature = "miette")]
 pub mod diagnostic;
 pub mod format;
+pub mod lines;
 mod parser;
 pub mod path;
 pub mod spans;
@@ -18,6 +20,7 @@ pub mod version;
 mod writer;
 
 pub use ast::Document;
+pub use columns::{Column, Columns, decode_row, encode_row, infer_columns, row_line, validate_columns};
 pub use format::{format_preserving, inline_value, render_fragment, render_preserving};
 pub use parser::{ParseError, Parser};
 pub use path::{CmpOp, Path, PathError, Segment};
@@ -94,6 +97,45 @@ pub fn parse_flow(src: &str) -> Result<Value, ParseError> {
     }
 
     Ok(v)
+}
+
+/// Parse a column spec `{c1, …}` (spec §4.13) occupying all of `src`.
+///
+/// # Errors
+///
+/// Returns a [`ParseError`] if `src` is not a well-formed spec, or if a brace level repeats
+/// a name or has a misplaced `..`.
+pub fn parse_columns(src: &str) -> Result<Vec<Column>, ParseError> {
+    let mut p = Parser::new(src, false);
+    p.skip_inline_ws();
+    let cols = p.column_specs()?;
+    p.skip_inline_ws();
+    if !p.at_eof() {
+        return Err(p.error_at(p.pos, "unexpected content after the column spec"));
+    }
+
+    Ok(cols)
+}
+
+/// Parse one table row (spec §4.9) occupying all of `src`, which must be a single line:
+/// comma-separated flow values, where an empty cell is `None`. A trailing comment is allowed.
+///
+/// # Errors
+///
+/// Returns a [`ParseError`] if a cell is not a well-formed flow value, if cells are not
+/// separated by commas, or if `src` continues past the end of its line.
+pub fn parse_row(src: &str) -> Result<Vec<Option<Value>>, ParseError> {
+    let mut p = Parser::new(src, false);
+    let cells = p.row_cells(&[])?;
+    p.end_line()?;
+    if !p.at_eof() {
+        return Err(p.error_at(p.pos, "a table row must fit on one line"));
+    }
+
+    cells
+        .into_iter()
+        .map(|c| c.map(|n| n.to_value().map_err(|m| p.error_at(0, m))).transpose())
+        .collect()
 }
 
 /// Split a text stream into documents separated by `---` lines (spec §4.11).

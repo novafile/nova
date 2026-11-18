@@ -5,6 +5,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use novafile_binary::{Frame, FrameOptions, MAGIC, decode_frame, encode_frame};
 use novafile_schema::{Schema, check_versions, parse_schema};
 use novafile_text::diagnostic::SourceDiagnostic;
+use novafile_text::lines::{Header, Positional, Segment, Status, WriteMode};
 use novafile_text::tokens::{HeuristicCounter, TokenCounter};
 use novafile_text::{Profile, document_to_text, parse_document};
 use novafile_value::{Record, Value, revision};
@@ -93,12 +94,20 @@ enum Format {
     Protobuf,
     /// Positional text: field values in schema order, no names (needs --schema).
     Positional,
+    /// NOVA Lines: one record per line, as a table when columns fit, else one value per line (root must be a list).
+    Novl,
+    /// NOVA Lines with one flow value per line (root must be a list).
+    NovlValues,
+    /// NOVA Lines in the positional profile (needs --schema with a list @root).
+    NovlPositional,
+    /// Binary record stream: a header frame, batches of records, an end frame (root must be a list).
+    BinaryStream,
 }
 
 /// Input representation for `--from`.
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
 enum InputFormat {
-    /// Binary frames by magic; `.json`, `.jsonl`, `.yaml`/`.yml`, `.toml`, `.cbor`, `.pb` by extension; otherwise JSON if it parses, else NOVA text.
+    /// Binary frames by magic; `.json`, `.jsonl`, `.novl`, `.yaml`/`.yml`, `.toml`, `.cbor`, `.pb` by extension; otherwise JSON if it parses, else NOVA text.
     Auto,
     /// NOVA text.
     Nova,
@@ -106,8 +115,10 @@ enum InputFormat {
     Json,
     /// JSON Lines (one value per line, read as a list).
     Jsonl,
-    /// Framed binary.
+    /// Framed binary: one frame, or a record stream starting with a header frame.
     Binary,
+    /// NOVA Lines (one record per line, read as a list).
+    Novl,
     /// YAML 1.2.
     Yaml,
     /// TOML 1.0.
@@ -124,7 +135,7 @@ enum Cmd {
     /// Reformat a NOVA text document.
     ///
     /// Only NOVA text (and `.novs` schemas) is formatted. Other input (JSON, JSON Lines, YAML,
-    /// TOML, CBOR, Protobuf, binary) is refused; convert it with `nvf convert FILE --to nova`.
+    /// NOVA Lines, TOML, CBOR, Protobuf, binary) is refused; convert it with `nvf convert FILE --to nova`.
     Fmt {
         /// Document or schema to reformat.
         file: PathBuf,
@@ -427,6 +438,7 @@ fn detect(p: &Path, bytes: &[u8], from: InputFormat) -> InputFormat {
     match from {
         InputFormat::Auto if bytes.starts_with(MAGIC) => InputFormat::Binary,
         InputFormat::Auto if ext == "jsonl" || ext == "ndjson" => InputFormat::Jsonl,
+        InputFormat::Auto if ext == "novl" => InputFormat::Novl,
         InputFormat::Auto if ext == "json" => InputFormat::Json,
         InputFormat::Auto if ext == "yaml" || ext == "yml" => InputFormat::Yaml,
         InputFormat::Auto if ext == "toml" => InputFormat::Toml,
@@ -466,6 +478,12 @@ fn decode(p: &Path, bytes: Vec<u8>, from: InputFormat, schema: Option<&Schema>, 
         _ => {}
     }
 
+    if from == InputFormat::Binary && novafile_binary::stream::is_stream(&bytes) {
+        let r = novafile_binary::stream::read_stream(&bytes, true, schema.map(|s| s as &dyn Positional));
+        let errors = r.errors.iter().map(|(at, m)| format!("byte {at}: {m}")).collect();
+        return stream_loaded(p, r.records, errors, &r.segments, strict);
+    }
+
     if from == InputFormat::Binary {
         let (f, n) = decode_frame(&bytes).map_err(|e| ctx(e.to_string()))?;
         if n != bytes.len() {
@@ -478,6 +496,11 @@ fn decode(p: &Path, bytes: Vec<u8>, from: InputFormat, schema: Option<&Schema>, 
 
     let text = String::from_utf8(bytes).map_err(|_| ctx("not UTF-8".into()))?;
     match from {
+        InputFormat::Novl => {
+            let r = novafile_text::lines::read_str(&text, schema.map(|s| s as &dyn Positional));
+            let errors = r.errors.iter().map(ToString::to_string).collect();
+            return stream_loaded(p, r.records, errors, &r.segments, strict);
+        }
         InputFormat::Jsonl => {
             let (v, w) = novafile_json::from_jsonl_str_lossy(&text).map_err(ctx)?;
             return json(Value::List(v), w);
@@ -530,6 +553,42 @@ fn decode(p: &Path, bytes: Vec<u8>, from: InputFormat, schema: Option<&Schema>, 
     Ok(Loaded {
         directives: doc.directives.into_iter().map(|d| (d.name, d.arg)).collect(),
         value,
+    })
+}
+
+/// A record stream (NOVA Lines or binary) as a list. Skipped records and corrupt segments
+/// are errors with `strict`, warnings otherwise; an unfinished segment is a note.
+fn stream_loaded(p: &Path, records: Vec<Value>, mut problems: Vec<String>, segments: &[Segment], strict: bool) -> R<Loaded> {
+    for (i, seg) in segments.iter().enumerate() {
+        let n = i + 1;
+        match &seg.status {
+            Status::Complete => {}
+            Status::Open if seg.count == 0 && segments.len() == 1 => {}
+            Status::Open => eprintln!("note: {}: segment {n} has no end marker; the producer may still be writing", p.display()),
+            Status::Corrupt(m) => problems.push(format!("segment {n}: {m}")),
+        }
+
+        if let Some(r) = &seg.revision {
+            eprintln!("note: {}: segment {n} revision {r} is not verified", p.display());
+        }
+    }
+
+    if !problems.is_empty() {
+        let msg = problems.iter().map(|m| format!("  {m}")).collect::<Vec<_>>().join("\n");
+        if strict {
+            return Err(format!("{}: invalid records:\n{msg}", p.display()).into());
+        }
+
+        eprintln!("warning: {}: skipped invalid records:\n{msg}", p.display());
+    }
+
+    let directives = match segments {
+        [only] => only.header.schema.iter().map(|s| ("schema".to_owned(), s.clone())).collect(),
+        _ => Vec::new(),
+    };
+    Ok(Loaded {
+        directives,
+        value: Value::List(records),
     })
 }
 
@@ -625,6 +684,32 @@ fn render_with(l: &Loaded, f: Format, strict: bool, schema: Option<&Schema>) -> 
             let fp = s.fingerprint();
             document_to_text(&[("schema", fp.as_str()), ("mode", "positional")], &pos, Profile::Compact).into_bytes()
         }
+        Format::Novl | Format::NovlValues | Format::NovlPositional => {
+            let Value::List(records) = &l.value else {
+                return Err(format!("NOVA Lines writes a list of records; the root is {}", l.value.kind()).into());
+            };
+
+            let mode = match f {
+                Format::Novl => WriteMode::Table,
+                Format::NovlValues => WriteMode::Values,
+                _ => WriteMode::Positional(schema.ok_or("writing positional NOVA Lines needs --schema")?),
+            };
+            let declared = l.directives.iter().find(|(n, _)| n == "schema").map(|(_, s)| s.as_str());
+            novafile_text::lines::write_string(records, mode, None, declared, None)
+                .map_err(|e| e.to_string())?
+                .into_bytes()
+        }
+        Format::BinaryStream => {
+            let Value::List(records) = &l.value else {
+                return Err(format!("a binary record stream writes a list of records; the root is {}", l.value.kind()).into());
+            };
+
+            let header = Header {
+                schema: l.directives.iter().find(|(n, _)| n == "schema").map(|(_, s)| s.clone()),
+                ..Header::default()
+            };
+            novafile_binary::stream::write_stream(records, &header, None, FrameOptions::default())?
+        }
         Format::Binary | Format::BinaryCanonical => {
             let canonical = matches!(f, Format::BinaryCanonical);
             let schema = l.directives.iter().find(|(n, _)| n == "schema").map(|(_, s)| s.clone());
@@ -632,6 +717,7 @@ fn render_with(l: &Loaded, f: Format, strict: bool, schema: Option<&Schema>) -> 
                 &Frame {
                     schema,
                     value: l.value.clone(),
+                    meta: false,
                 },
                 FrameOptions {
                     canonical,
@@ -973,12 +1059,14 @@ fn run(cli: Cli) -> R<ExitCode> {
                 } else {
                     // Written back in the format it was read in.
                     let to = match detect(&file, &bytes, InputFormat::Auto) {
+                        // Record streams would lose their header (`@key`, columns) if written back.
+                        InputFormat::Binary if novafile_binary::stream::is_stream(&bytes) => None,
                         InputFormat::Binary => Some(Format::Binary),
                         InputFormat::Json => Some(Format::Json),
                         InputFormat::Yaml => Some(Format::Yaml),
                         InputFormat::Toml => Some(Format::Toml),
                         InputFormat::Cbor => Some(Format::Cbor),
-                        InputFormat::Jsonl | InputFormat::Protobuf => None,
+                        InputFormat::Jsonl | InputFormat::Novl | InputFormat::Protobuf => None,
                         InputFormat::Auto | InputFormat::Nova if l.directives.iter().any(|(n, a)| n == "compat" && a == "json") => Some(Format::Json),
                         InputFormat::Auto | InputFormat::Nova => Some(Format::Nova),
                     };

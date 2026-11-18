@@ -1459,6 +1459,96 @@ impl<'a> Parser<'a> {
         Ok((n, fields))
     }
 
+    /// Parse a column spec `{c1, …}` (spec §4.13): names, nested columns `name{…}` and the
+    /// rest column `..`, validated with [`crate::columns::validate_columns`].
+    ///
+    /// # Errors
+    ///
+    /// Fails on malformed syntax or an invalid spec (duplicate names, `..` not last).
+    pub fn column_specs(&mut self) -> R<Vec<crate::columns::Column>> {
+        use crate::columns::Column;
+        let start = self.pos;
+        self.expect(b'{', "`{` to start the column list")?;
+        let mut cols = Vec::new();
+        loop {
+            self.skip_inline_ws();
+            if self.src[self.pos..].starts_with("..") {
+                self.pos += 2;
+                cols.push(Column::Rest);
+            } else {
+                let name = match self.key()? {
+                    Key::Lit(s) => s,
+                    Key::Interp(_) => return self.err("interpolation is not allowed in column specs"),
+                };
+
+                if self.peek() == Some(b'{') {
+                    let subs = self.column_specs()?;
+                    cols.push(Column::Nested(name, subs));
+                } else {
+                    cols.push(Column::Field(name));
+                }
+            }
+
+            self.skip_inline_ws();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(b'}') => {
+                    self.pos += 1;
+                    break;
+                }
+                _ => return self.err("expected `,` or `}` in column spec"),
+            }
+        }
+
+        crate::columns::validate_columns(&cols).map_err(|m| self.error_at(start, m))?;
+        Ok(cols)
+    }
+
+    /// Parse the comma-separated cells of one table row up to the end of the line (spec §4.9).
+    /// An empty cell, including a trailing one after a comma, is `None`. `fields` names the
+    /// cells' spans; cells beyond it get an empty name.
+    ///
+    /// # Errors
+    ///
+    /// Fails if a cell is not a flow value or cells are not separated by `,`.
+    pub fn row_cells(&mut self, fields: &[String]) -> R<Vec<Option<Node>>> {
+        let mut cells: Vec<Option<Node>> = Vec::new();
+        loop {
+            self.skip_inline_ws();
+            if self.peek() == Some(b',') {
+                cells.push(None);
+                self.pos += 1;
+                continue;
+            }
+
+            if self.at_eol_or_comment() {
+                if !cells.is_empty() {
+                    cells.push(None); // trailing empty cell after a comma
+                }
+
+                break;
+            }
+
+            let field = fields.get(cells.len()).cloned().unwrap_or_default();
+            let start = self.pos;
+            cells.push(Some(self.spanned(
+                SpanKind::TableCell,
+                Segment::Field(field),
+                start,
+                None,
+                Parser::parse_flow,
+            )?));
+            self.skip_inline_ws();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                _ if self.at_eol_or_comment() => break,
+                _ => return self.err("expected `,` between table cells"),
+            }
+        }
+
+        Ok(cells)
+    }
+
     /// Parse exactly `n` table rows at `indent` into a list of records; an empty cell leaves its field
     /// absent.
     fn table_rows(&mut self, indent: usize, n: usize, fields: &[String]) -> R<Node> {
@@ -1477,40 +1567,7 @@ impl<'a> Parser<'a> {
                 reason = "`r` counts rows already parsed from the source, so it is far below i64::MAX"
             )]
             self.cur.push(Segment::Index(r as i64));
-            let mut cells: Vec<Option<Node>> = Vec::new();
-            loop {
-                self.skip_inline_ws();
-                if self.peek() == Some(b',') {
-                    cells.push(None);
-                    self.pos += 1;
-                    continue;
-                }
-
-                if self.at_eol_or_comment() {
-                    if !cells.is_empty() {
-                        cells.push(None); // trailing empty cell after a comma
-                    }
-
-                    break;
-                }
-
-                let field = fields.get(cells.len()).cloned().unwrap_or_default();
-                let start = self.pos;
-                cells.push(Some(self.spanned(
-                    SpanKind::TableCell,
-                    Segment::Field(field),
-                    start,
-                    None,
-                    Parser::parse_flow,
-                )?));
-                self.skip_inline_ws();
-                match self.peek() {
-                    Some(b',') => self.pos += 1,
-                    _ if self.at_eol_or_comment() => break,
-                    _ => return self.err("expected `,` between table cells"),
-                }
-            }
-
+            let cells = self.row_cells(fields)?;
             self.end_line()?;
             if cells.len() != fields.len() {
                 return self.err(format!("table row has {} cells; the header declares {}", cells.len(), fields.len()));

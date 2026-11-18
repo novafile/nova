@@ -1211,6 +1211,7 @@ name = "novafile-binary"
 version = "0.2.0"
 dependencies = [
  "criterion",
+ "novafile-text",
  "novafile-value",
 ]
 

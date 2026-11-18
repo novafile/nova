@@ -29,6 +29,7 @@ fn frame(c: &mut Criterion) {
     let f = Frame {
         schema: Some("services@1.0.0".into()),
         value: document(1000),
+        meta: false,
     };
 
     let bytes = encode_frame(&f, FrameOptions::default());

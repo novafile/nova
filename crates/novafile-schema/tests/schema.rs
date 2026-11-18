@@ -435,3 +435,30 @@ fn deeply_nested_types_are_rejected() {
     let ok = format!("{}int{}", "list<".repeat(60), ">".repeat(60));
     assert!(novafile_schema::parse_type(&ok).is_ok());
 }
+
+#[test]
+fn positional_nova_lines() {
+    use novafile_text::lines::{WriteMode, read_str, write_string};
+    let s = parse_schema("@schema logs@1.0.0\n@root Events\ntype Events = Event[]\nrecord Event:\n  id: u32\n  msg?: string\n").unwrap();
+    let records = vec![
+        novafile_text::parse_flow("{id: 1, msg: hi}").unwrap(),
+        novafile_text::parse_flow("{id: 2}").unwrap(),
+    ];
+    let text = write_string(&records, WriteMode::Positional(&s), None, None, None).unwrap();
+    assert!(
+        text.contains(&format!("@schema {}\n@mode positional\n(1, hi)\n(2, !_)\n", s.fingerprint())),
+        "{text}"
+    );
+    let back = read_str(&text, Some(&s));
+    assert!(back.errors.is_empty(), "{:?}", back.errors);
+    assert_eq!(back.records, records);
+
+    // A different schema, or none, cannot read it.
+    let other = parse_schema("@schema logs@1.0.0\n@root Events\ntype Events = Event[]\nrecord Event:\n  id: u64\n  msg?: string\n").unwrap();
+    assert!(read_str(&text, Some(&other)).errors[0].message.contains("fingerprint"));
+
+    // The root must be a list.
+    let flat = parse_schema("@schema one@1.0.0\n@root Event\nrecord Event:\n  id: u32\n").unwrap();
+    let err = write_string(&records, WriteMode::Positional(&flat), None, None, None).unwrap_err();
+    assert!(err.to_string().contains("list @root"), "{err}");
+}

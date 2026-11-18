@@ -160,3 +160,36 @@ fn imprecise_json_number_warns_or_fails_with_strict() {
     let o = nvf(&d, &["convert", "pi.json", "--to", "nova", "--strict"], "");
     assert_eq!(o.status.code(), Some(2), "{o:?}");
 }
+
+#[test]
+fn record_streams_round_trip() {
+    let d = scratch("record-streams");
+    std::fs::write(
+        d.join("a.jsonl"),
+        "{\"id\": 1, \"req\": {\"m\": \"GET\"}}\n{\"id\": 2, \"req\": {\"m\": \"PUT\"}}\n",
+    )
+    .unwrap();
+    let ok = |args: &[&str]| {
+        let o = nvf(&d, args, "");
+        assert!(o.status.success(), "{args:?}: {o:?}");
+        stdout(&o)
+    };
+    ok(&["convert", "a.jsonl", "--to", "novl", "-o", "a.novl"]);
+    assert!(std::fs::read_to_string(d.join("a.novl")).unwrap().contains("@columns {id, req{m}}"));
+    ok(&["convert", "a.novl", "--to", "nova", "-o", "a.nova"]);
+    ok(&["convert", "a.nova", "--to", "binary-stream", "-o", "a.novb"]);
+    ok(&["convert", "a.novb", "--to", "novl", "-o", "b.novl"]);
+    assert_eq!(
+        std::fs::read_to_string(d.join("a.novl")).unwrap(),
+        std::fs::read_to_string(d.join("b.novl")).unwrap()
+    );
+    assert_eq!(
+        ok(&["convert", "b.novl", "--to", "json-compact"]).trim(),
+        r#"[{"id":1,"req":{"m":"GET"}},{"id":2,"req":{"m":"PUT"}}]"#
+    );
+
+    // A corrupt end marker is a warning, and an error with --strict.
+    std::fs::write(d.join("bad.novl"), "@nova 0.2\n{a: 1}\n@end 2\n").unwrap();
+    ok(&["convert", "bad.novl", "--to", "json"]);
+    assert_eq!(nvf(&d, &["convert", "bad.novl", "--strict", "--to", "json"], "").status.code(), Some(2));
+}

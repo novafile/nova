@@ -164,6 +164,7 @@ pub fn to_vec<'a, T: ?Sized + Facet<'a>>(v: &T) -> Result<Vec<u8>, Error> {
     let frame = novafile_binary::Frame {
         schema: None,
         value: to_value(v)?,
+        meta: false,
     };
 
     Ok(novafile_binary::encode_frame(&frame, novafile_binary::FrameOptions::default()))

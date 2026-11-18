@@ -53,6 +53,45 @@ impl Schema {
             .map_err(|i| i.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; "))
     }
 
+    /// The element type `T` of a list `@root` `[T]`, which streams of positional records
+    /// (NOVA Lines `@mode positional`) require.
+    fn root_item_type(&self) -> Result<TypeRef, String> {
+        let root = self.root_type().ok_or("the positional profile needs a schema with @root")?;
+        match &self.deref(&root).0.kind {
+            TypeKind::List(item) => Ok((**item).clone()),
+            _ => Err(format!("a stream of positional records needs a list @root, not {root}")),
+        }
+    }
+
+    /// Convert one element of a list `@root` (resolved against the element type first)
+    /// into its positional form.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the schema's `@root` is not a list type, or if `v` does not resolve
+    /// against its element type.
+    pub fn to_positional_item(&self, v: &Value) -> Result<Value, String> {
+        let t = self.root_item_type()?;
+        let resolved = self
+            .resolve_as(v, &t)
+            .map_err(|i| i.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; "))?;
+        self.pos_out(&resolved, &t, "")
+    }
+
+    /// Convert one positional element of a list `@root` back into a named value,
+    /// validated against the element type.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the schema's `@root` is not a list type, if `v` does not have the
+    /// positional shape, or if the named value does not resolve against the element type.
+    pub fn from_positional_item(&self, v: &Value) -> Result<Value, String> {
+        let t = self.root_item_type()?;
+        let named = self.pos_in(v, &t, "")?;
+        self.resolve_as(&named, &t)
+            .map_err(|i| i.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; "))
+    }
+
     /// Named to positional form for a value of type `t`; `at` is the path used
     /// in error messages. Fails on undeclared record fields and on the reserved
     /// `_` tag.
@@ -162,5 +201,20 @@ impl Schema {
     /// [`Self::pos_in`] for each element of a list or set.
     fn each_in(&self, l: &[Value], et: &TypeRef, at: &str) -> Result<Vec<Value>, String> {
         l.iter().enumerate().map(|(i, x)| self.pos_in(x, et, &format!("{at}[{i}]"))).collect()
+    }
+}
+
+/// NOVA Lines `@mode positional` streams are read and written with a schema's list `@root`.
+impl novafile_text::lines::Positional for Schema {
+    fn fingerprint(&self) -> String {
+        Schema::fingerprint(self)
+    }
+
+    fn encode_item(&self, v: &Value) -> Result<Value, String> {
+        Schema::to_positional_item(self, v)
+    }
+
+    fn decode_item(&self, v: &Value) -> Result<Value, String> {
+        Schema::from_positional_item(self, v)
     }
 }

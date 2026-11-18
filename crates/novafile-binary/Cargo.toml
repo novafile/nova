@@ -14,6 +14,7 @@ categories.workspace = true
 
 [dependencies]
 novafile-value.workspace = true
+novafile-text.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

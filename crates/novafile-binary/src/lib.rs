@@ -8,6 +8,8 @@
 //! stream  = frame*
 //! ```
 
+pub mod stream;
+
 use novafile_value::{DecodeError, EncodeOptions, Limits, Value, decode_prefix, encode};
 use std::fmt;
 
@@ -28,8 +30,10 @@ pub mod flags {
     pub const DEDUPE: u8 = 0b0000_1000;
     /// The payload may contain record lists (informational).
     pub const TABLES: u8 = 0b0001_0000;
+    /// The payload is a stream-control value (`!header{…}`, `!end{…}`, …), not data.
+    pub const META: u8 = 0b0010_0000;
     /// All flags defined by this version; a frame setting any other bit is rejected.
-    pub const KNOWN: u8 = 0b0001_1111;
+    pub const KNOWN: u8 = 0b0011_1111;
 }
 
 /// One frame: an optional schema reference and a value.
@@ -39,6 +43,8 @@ pub struct Frame {
     pub schema: Option<String>,
     /// The framed value.
     pub value: Value,
+    /// The value is stream control (a META frame), not part of the data a stream denotes.
+    pub meta: bool,
 }
 
 /// Encoder switches for [`encode_frame`]. The default dedupes strings, writes
@@ -321,6 +327,10 @@ pub fn encode_frame(frame: &Frame, opts: FrameOptions) -> Vec<u8> {
         f |= flags::SCHEMA;
     }
 
+    if frame.meta {
+        f |= flags::META;
+    }
+
     if opts.canonical {
         f |= flags::CANONICAL;
     } else {
@@ -423,7 +433,14 @@ fn decode_frame_with(buf: &[u8], crc: impl FnOnce(std::ops::Range<usize>) -> u32
         return Err(FrameError::Malformed("payload length does not match value".into()));
     }
 
-    Ok((Frame { schema, value }, pos))
+    Ok((
+        Frame {
+            schema,
+            value,
+            meta: f & flags::META != 0,
+        },
+        pos,
+    ))
 }
 
 /// Iterates frames in a byte stream. With `recover`, a corrupt frame is
@@ -461,6 +478,12 @@ impl<'a> FrameReader<'a> {
     pub fn recovering(mut self) -> Self {
         self.recover = true;
         self
+    }
+
+    /// Byte offset of the next frame.
+    #[must_use]
+    pub fn offset(&self) -> usize {
+        self.pos
     }
 }
 
@@ -510,6 +533,18 @@ mod tests {
     use super::*;
     use novafile_value::Record;
 
+    #[test]
+    fn meta_flag_round_trips() {
+        let f = Frame {
+            schema: None,
+            value: Value::Variant("end".into(), None),
+            meta: true,
+        };
+        let bytes = encode_frame(&f, FrameOptions::default());
+        assert_ne!(bytes[5] & flags::META, 0);
+        assert_eq!(decode_frame(&bytes).unwrap().0, f);
+    }
+
     fn val(i: i64) -> Value {
         let mut r = Record::new();
         r.insert("id", Value::String(format!("svc-{i}"))).unwrap();
@@ -527,6 +562,7 @@ mod tests {
         let f = Frame {
             schema: Some("infrastructure@1.0.0".into()),
             value: val(3),
+            meta: false,
         };
 
         for opts in [
@@ -567,10 +603,25 @@ mod tests {
     fn stream_recovery() {
         let mut stream = Vec::new();
         for i in 0..3 {
-            stream.extend(encode_frame(&Frame { schema: None, value: val(i) }, FrameOptions::default()));
+            stream.extend(encode_frame(
+                &Frame {
+                    schema: None,
+                    value: val(i),
+                    meta: false,
+                },
+                FrameOptions::default(),
+            ));
         }
 
-        let second = encode_frame(&Frame { schema: None, value: val(0) }, FrameOptions::default()).len();
+        let second = encode_frame(
+            &Frame {
+                schema: None,
+                value: val(0),
+                meta: false,
+            },
+            FrameOptions::default(),
+        )
+        .len();
         stream[second + 9] ^= 0xFF; // corrupt the second frame's payload
         let all: Vec<_> = FrameReader::new(&stream).recovering().collect();
         assert_eq!(all.len(), 3);

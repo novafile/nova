@@ -434,3 +434,39 @@ fn many_directives_columns_and_comments_stay_linear() {
     novafile_text::format_preserving(&commented, Profile::Human).unwrap();
     assert!(start.elapsed() < std::time::Duration::from_secs(20), "took {:?}", start.elapsed());
 }
+
+/// One table row on its own, as NOVA Lines reads it: empty cells, tuples, `!_`, a
+/// record cell, a leading `@timestamp(…)`, and a trailing empty cell.
+#[test]
+fn parse_row_cells() {
+    use novafile_text::parse_row;
+    let row = parse_row(r#"@timestamp("2026-11-17T16:00:02Z"), !warn, api, (GET, /health, !_), , {slow_ms: 950}"#).unwrap();
+    assert_eq!(row.len(), 6);
+    assert!(row[0].is_some() && row[4].is_none());
+    assert_eq!(novafile_text::flow_string(row[3].as_ref().unwrap()), "(GET, /health, !_)");
+    assert_eq!(parse_row("a, (7, []),").unwrap().len(), 3);
+    assert_eq!(parse_row("a, b  # comment").unwrap().len(), 2);
+    assert!(parse_row("a b").is_err());
+    assert!(parse_row("a,\nb").is_err());
+}
+
+/// Column specs: nesting, `..`, quoting, and the validation rules.
+#[test]
+fn column_specs() {
+    use novafile_text::{Column, Columns, parse_columns};
+    let cols = parse_columns("{ts, level, req{method, path, status}, user{id, roles}, ..}").unwrap();
+    assert_eq!(cols.len(), 5);
+    assert_eq!(
+        cols[2],
+        Column::Nested(
+            "req".into(),
+            vec![Column::Field("method".into()), Column::Field("path".into()), Column::Field("status".into())]
+        )
+    );
+    assert_eq!(cols[4], Column::Rest);
+    assert_eq!(Columns(&cols).to_string(), "{ts, level, req{method, path, status}, user{id, roles}, ..}");
+    assert_eq!(Columns(&parse_columns(r#"{"a b", c{..}}"#).unwrap()).to_string(), r#"{"a b", c{..}}"#);
+    for bad in ["{a, a}", "{.., a}", "{a, .., ..}", "{a{}}", "{a, b{c, c}}", "{a} x", "{a"] {
+        assert!(parse_columns(bad).is_err(), "{bad}");
+    }
+}

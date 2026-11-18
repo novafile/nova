@@ -120,8 +120,8 @@ let schema = Infrastructure::novafile_schema();             // == the hand-writt
 | --- | --- |
 | [`novafile`](crates/novafile) | Umbrella crate re-exporting the pieces below (features: `serde`, `derive`, `facet`, `formats`, `proto`, `template`, `lint`, `schemars`, `full`) |
 | [`novafile-value`](crates/novafile-value) | Value model (incl. decimals, rationals, timestamps, durations), canonical encoding, revisions |
-| [`novafile-binary`](crates/novafile-binary) | Framed binary representation, CRC-32, recovering stream reader |
-| [`novafile-text`](crates/novafile-text) | Text parser; human, compact and canonical writers; paths; source spans; template syntax; token heuristics; [miette](https://docs.rs/miette) diagnostics (feature `miette`) |
+| [`novafile-binary`](crates/novafile-binary) | Framed binary representation, CRC-32, recovering stream reader, record streams with header and end frames |
+| [`novafile-text`](crates/novafile-text) | Text parser; human, compact and canonical writers; paths; source spans; template syntax; NOVA Lines (`.novl`) record streams; token heuristics; [miette](https://docs.rs/miette) diagnostics (feature `miette`) |
 | [`novafile-schema`](crates/novafile-schema) | Schema language, schema-directed resolution, `@key`, compatibility checks, fingerprints |
 | [`novafile-patch`](crates/novafile-patch) | `@get` queries and projections; the patch language; atomic apply; diff |
 | [`novafile-template`](crates/novafile-template) | Template rendering with typed parameters, output budget and sandboxed imports |
@@ -163,14 +163,16 @@ nvf schema json-schema infrastructure.novs        # JSON Schema 2020-12 (and bac
 nvf get infrastructure.novs 'defs[name=Service].record.fields[*].name'   # schemas are data too
 nvf schema to-nova infrastructure.novs           # the schema's descriptor (validated by `nvf schema meta`)
 nvf convert infrastructure.nova --to positional --schema infrastructure.novs   # field names omitted
+nvf convert events.jsonl --to novl -o events.novl   # NOVA Lines: one record per line, a table when columns fit
+nvf convert events.novl --to binary-stream -o events.novb   # header frame, record batches, end frame
 nvf hash infrastructure.novb          # same revision as the text form
 nvf stats infrastructure.nova         # bytes and estimated tokens per representation
 nvf schema check old.novs new.novs    # exits 1 on breaking changes
 ```
 
-`nvf fmt` formats NOVA text (and `.novs` schemas) only. Other input, detected by extension or magic bytes (`.json`, `.jsonl`, `.yaml`/`.yml`, `.toml`, `.cbor`, `.pb`, binary frames), is refused: convert it with `nvf convert config.yaml --to nova -o config.nova`.
+`nvf fmt` formats NOVA text (and `.novs` schemas) only. Other input, detected by extension or magic bytes (`.json`, `.jsonl`, `.novl`, `.yaml`/`.yml`, `.toml`, `.cbor`, `.pb`, binary frames), is refused: convert it with `nvf convert config.yaml --to nova -o config.nova`.
 
-`nvf patch` prints the result, or with `-w` writes it back, in the input's format. NOVA text keeps its comments and layout. JSON, YAML, TOML, CBOR and binary documents are rendered in the same format, so `nvf patch x.json p.patch` prints JSON (YAML and TOML comments are not kept). `.novs` schemas are rewritten in canonical form. JSON Lines and Protobuf have no writer: their result is printed as NOVA text, and `-w` refuses them. For another output format, pipe the result through `nvf convert`.
+`nvf patch` prints the result, or with `-w` writes it back, in the input's format. NOVA text keeps its comments and layout. JSON, YAML, TOML, CBOR and binary documents are rendered in the same format, so `nvf patch x.json p.patch` prints JSON (YAML and TOML comments are not kept). `.novs` schemas are rewritten in canonical form. JSON Lines, NOVA Lines, binary record streams and Protobuf are not written back: their result is printed as NOVA text, and `-w` refuses them. For another output format, pipe the result through `nvf convert`.
 
 `nvf patch -w` and `nvf lint --fix` lock the file while they read, change and rewrite it, so parallel patches are not lost. The new contents are written to a temporary file and renamed over the old one. On Unix the lock is on the file itself. On Windows it is a `<file>.lock` file next to it, which stays on disk: ignore it in version control with patterns such as `*.nova.lock` (not `*.lock`, which also matches `Cargo.lock`).
 
