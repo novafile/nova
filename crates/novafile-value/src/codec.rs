@@ -401,6 +401,30 @@ struct Decoder<'a> {
     limits: Limits,
     /// Literal strings seen so far, indexed by back-references; borrowed from `buf`.
     strings: Vec<&'a str>,
+    /// Interned canonical identities of the subtrees that duplicate checks need.
+    ids: HashMap<Node<'a>, usize>,
+}
+
+/// A subtree's canonical form, with its children as interned ids: two subtrees
+/// get the same id exactly when their canonical encodings are equal. Children are
+/// interned first, so each subtree is hashed once however deep it sits under sets
+/// and maps.
+#[derive(PartialEq, Eq, Hash)]
+enum Node<'a> {
+    /// A scalar, by its canonical bytes.
+    Scalar(Vec<u8>),
+    /// A string.
+    String(&'a str),
+    /// A byte string.
+    Bytes(&'a [u8]),
+    /// A list, tuple or set by wire tag; set members are sorted.
+    Seq(u8, Vec<usize>),
+    /// Record fields, sorted by key.
+    Record(Vec<(&'a str, usize)>),
+    /// Map entries, sorted.
+    Map(Vec<(usize, usize)>),
+    /// A variant and its payload.
+    Variant(&'a str, Option<usize>),
 }
 
 impl<'a> Decoder<'a> {
@@ -507,10 +531,23 @@ impl<'a> Decoder<'a> {
         Ok(s)
     }
 
+    /// The id of `n`, shared by every subtree with the same canonical form.
+    fn intern(&mut self, n: Node<'a>) -> usize {
+        let next = self.ids.len();
+        *self.ids.entry(n).or_insert(next)
+    }
+
+    /// Build scalar `s`, with its canonical identity if `want`.
+    fn scalar<T: Build<'a>>(s: Scalar, want: bool) -> (T, Option<Node<'a>>) {
+        let node = want.then(|| Node::Scalar(canonical_bytes(&Value::scalar(s))));
+        (T::scalar(s), node)
+    }
+
     /// Decode one value, enforcing [`Limits`] and canonical-form invariants
     /// (normalized decimals and rationals, unique set elements, map keys and record keys).
+    /// With `want`, also return the value's interned canonical identity.
     #[expect(clippy::too_many_lines, reason = "flat dispatcher over every wire tag")]
-    fn value<T: Build<'a>>(&mut self) -> Result<T, DecodeError> {
+    fn value<T: Build<'a>>(&mut self, want: bool) -> Result<(T, Option<usize>), DecodeError> {
         let start = self.pos;
         let kind = self.byte()?;
         // A record list nests twice (list, then records), as its canonical re-encoding does.
@@ -523,14 +560,14 @@ impl<'a> Decoder<'a> {
             return self.err("nesting depth limit exceeded");
         }
 
-        Ok(match kind {
-            tag::NULL => T::scalar(Scalar::Null),
-            tag::FALSE => T::scalar(Scalar::Bool(false)),
-            tag::TRUE => T::scalar(Scalar::Bool(true)),
-            tag::INT => T::scalar(Scalar::Int(unzigzag(self.varint()?))),
+        let (v, node) = match kind {
+            tag::NULL => Self::scalar(Scalar::Null, want),
+            tag::FALSE => Self::scalar(Scalar::Bool(false), want),
+            tag::TRUE => Self::scalar(Scalar::Bool(true), want),
+            tag::INT => Self::scalar(Scalar::Int(unzigzag(self.varint()?)), want),
             tag::FLOAT => {
                 let b = self.take(8)?;
-                T::scalar(Scalar::Float(f64::from_bits(u64::from_be_bytes(b.try_into().unwrap()))))
+                Self::scalar(Scalar::Float(f64::from_bits(u64::from_be_bytes(b.try_into().unwrap()))), want)
             }
             tag::DECIMAL => {
                 let coeff = unzigzag(self.varint()?);
@@ -543,7 +580,7 @@ impl<'a> Decoder<'a> {
                     return self.err("decimal is not normalized");
                 }
 
-                T::scalar(Scalar::Decimal(d))
+                Self::scalar(Scalar::Decimal(d), want)
             }
             tag::RATIONAL => {
                 let num = unzigzag(self.varint()?);
@@ -553,15 +590,19 @@ impl<'a> Decoder<'a> {
                 };
 
                 match Rational::new(num, den) {
-                    Ok(r) if r.numerator() == num && r.denominator() == den => T::scalar(Scalar::Rational(r)),
+                    Ok(r) if r.numerator() == num && r.denominator() == den => Self::scalar(Scalar::Rational(r), want),
                     Ok(_) => return self.err("rational is not normalized"),
                     Err(e) => return self.err(e),
                 }
             }
-            tag::STRING => T::string(self.string()?),
+            tag::STRING => {
+                let s = self.string()?;
+                (T::string(s), want.then_some(Node::String(s)))
+            }
             tag::BYTES => {
                 let n = self.count()?;
-                T::bytes(self.take(n)?)
+                let b = self.take(n)?;
+                (T::bytes(b), want.then_some(Node::Bytes(b)))
             }
             tag::TIMESTAMP => {
                 let secs = i64::try_from(unzigzag(self.varint()?));
@@ -571,24 +612,24 @@ impl<'a> Decoder<'a> {
                 };
 
                 match Timestamp::new(secs, nanos) {
-                    Ok(t) => T::scalar(Scalar::Timestamp(t)),
+                    Ok(t) => Self::scalar(Scalar::Timestamp(t), want),
                     Err(e) => return self.err(e),
                 }
             }
             tag::DURATION => match Duration::from_nanos(unzigzag(self.varint()?)) {
-                Ok(d) => T::scalar(Scalar::Duration(d)),
+                Ok(d) => Self::scalar(Scalar::Duration(d), want),
                 Err(e) => return self.err(e),
             },
             tag::LIST | tag::TUPLE | tag::SET => {
                 let n = self.count()?;
                 self.depth += 1;
+                let check = kind == tag::SET && n > 1;
                 let mut items = Vec::with_capacity(n);
+                let mut ids = Vec::new();
                 let mut seen = HashSet::new();
                 for _ in 0..n {
-                    let v = self.value::<T>()?;
-                    // shortcut: each set or map with two or more members re-encodes them, so a
-                    // chain of them costs up to max_depth x the input; cache child encodings if that bites.
-                    if kind == tag::SET && n > 1 && !seen.insert(v.canonical()) {
+                    let (v, id) = self.value::<T>(want || check)?;
+                    if check && !seen.insert(id) {
                         return Err(DecodeError {
                             offset: start,
                             message: "duplicate set element".into(),
@@ -596,49 +637,61 @@ impl<'a> Decoder<'a> {
                     }
 
                     items.push(v);
+                    ids.extend(id);
                 }
 
                 self.depth -= 1;
-                T::seq(kind, items)
+                if kind == tag::SET {
+                    ids.sort_unstable();
+                }
+
+                (T::seq(kind, items), want.then_some(Node::Seq(kind, ids)))
             }
             tag::RECORD => {
                 let n = self.count()?;
                 self.depth += 1;
                 let mut r = T::record(n);
+                let mut fields = Vec::new();
                 for _ in 0..n {
                     let k = self.string()?;
-                    let v = self.value::<T>()?;
+                    let (v, id) = self.value::<T>(want)?;
                     if let Err(e) = T::insert(&mut r, k, v) {
                         return Err(DecodeError {
                             offset: start,
                             message: e.to_string(),
                         });
                     }
+
+                    fields.extend(id.map(|id| (k, id)));
                 }
 
                 self.depth -= 1;
-                T::finish(r)
+                fields.sort_unstable();
+                (T::finish(r), want.then_some(Node::Record(fields)))
             }
             tag::MAP => {
                 let n = self.count()?;
                 self.depth += 1;
                 let mut entries = Vec::with_capacity(n);
+                let mut ids = Vec::new();
                 let mut seen = HashSet::new();
                 for _ in 0..n {
-                    let k = self.value::<T>()?;
-                    if n > 1 && !seen.insert(k.canonical()) {
+                    let (k, key_id) = self.value::<T>(want || n > 1)?;
+                    if n > 1 && !seen.insert(key_id) {
                         return Err(DecodeError {
                             offset: start,
                             message: "duplicate map key".into(),
                         });
                     }
 
-                    let v = self.value::<T>()?;
+                    let (v, value_id) = self.value::<T>(want)?;
                     entries.push((k, v));
+                    ids.extend(key_id.zip(value_id));
                 }
 
                 self.depth -= 1;
-                T::map(entries)
+                ids.sort_unstable();
+                (T::map(entries), want.then_some(Node::Map(ids)))
             }
             tag::RECORD_LIST => {
                 let n = self.count()?;
@@ -665,6 +718,7 @@ impl<'a> Decoder<'a> {
 
                 self.depth += 2;
                 let mut rows = Vec::with_capacity(n.min(4096));
+                let mut row_ids = Vec::new();
                 for _ in 0..n {
                     let present: Vec<bool> = if dense {
                         vec![true; k]
@@ -679,27 +733,36 @@ impl<'a> Decoder<'a> {
 
                     // Only dense rows spend at least a byte per field, so only they bound the preallocation.
                     let mut r = T::record(if dense { k } else { 0 });
+                    let mut row = Vec::new();
                     for (f, p) in fields.iter().zip(present) {
                         if p {
-                            let v = self.value::<T>()?;
+                            let (v, id) = self.value::<T>(want)?;
                             // Field names were checked for duplicates above.
                             T::push(&mut r, f, v);
+                            row.extend(id.map(|id| (*f, id)));
                         }
                     }
 
                     rows.push(T::finish(r));
+                    if want {
+                        row.sort_unstable();
+                        row_ids.push(self.intern(Node::Record(row)));
+                    }
                 }
 
                 self.depth -= 2;
-                T::seq(tag::LIST, rows)
+                (T::seq(tag::LIST, rows), want.then_some(Node::Seq(tag::LIST, row_ids)))
             }
-            tag::UNIT_VARIANT => T::variant(self.string()?, None),
+            tag::UNIT_VARIANT => {
+                let name = self.string()?;
+                (T::variant(name, None), want.then_some(Node::Variant(name, None)))
+            }
             tag::VARIANT => {
                 let name = self.string()?;
                 self.depth += 1;
-                let p = self.value::<T>()?;
+                let (p, id) = self.value::<T>(want)?;
                 self.depth -= 1;
-                T::variant(name, Some(p))
+                (T::variant(name, Some(p)), want.then_some(Node::Variant(name, id)))
             }
             other => {
                 return Err(DecodeError {
@@ -707,11 +770,14 @@ impl<'a> Decoder<'a> {
                     message: format!("unknown type tag 0x{other:02X}"),
                 });
             }
-        })
+        };
+
+        Ok((v, node.map(|n| self.intern(n))))
     }
 }
 
 /// The value kinds without heap data, as the decoder hands them to [`Build::scalar`].
+#[derive(Clone, Copy)]
 pub(crate) enum Scalar {
     /// `null`.
     Null,
@@ -759,8 +825,6 @@ pub(crate) trait Build<'a>: Sized {
     fn push(r: &mut Self::Record, key: &'a str, v: Self);
     /// The finished record.
     fn finish(r: Self::Record) -> Self;
-    /// The canonical encoding, for duplicate checks in sets and maps.
-    fn canonical(&self) -> Vec<u8>;
 }
 
 impl<'a> Build<'a> for Value {
@@ -822,10 +886,6 @@ impl<'a> Build<'a> for Value {
 
     fn finish(r: Record) -> Self {
         Value::Record(r)
-    }
-
-    fn canonical(&self) -> Vec<u8> {
-        canonical_bytes(self)
     }
 }
 
@@ -900,86 +960,6 @@ impl<'a> Build<'a> for ValueRef<'a> {
     fn finish((entries, _): RecordRef<'a>) -> Self {
         ValueRef::Record(entries)
     }
-
-    fn canonical(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        canonical_ref(self, &mut out);
-        out
-    }
-}
-
-/// Append the canonical encoding of `v` (as [`canonical_bytes`] of its
-/// [`ValueRef::to_value`]) without copying it into a [`Value`] first.
-fn canonical_ref(v: &ValueRef<'_>, out: &mut Vec<u8>) {
-    /// The canonical encoding of `v` on its own.
-    fn part(v: &ValueRef<'_>) -> Vec<u8> {
-        let mut out = Vec::new();
-        canonical_ref(v, &mut out);
-        out
-    }
-
-    /// Append a literal string header and body.
-    fn string(out: &mut Vec<u8>, s: &str) {
-        put_varint(out, (s.len() as u128) << 1);
-        out.extend_from_slice(s.as_bytes());
-    }
-
-    match v {
-        ValueRef::String(s) => {
-            out.push(tag::STRING);
-            string(out, s);
-        }
-        ValueRef::Bytes(b) => {
-            out.push(tag::BYTES);
-            put_varint(out, b.len() as u128);
-            out.extend_from_slice(b);
-        }
-        ValueRef::List(items) | ValueRef::Tuple(items) => {
-            out.push(if matches!(v, ValueRef::List(_)) { tag::LIST } else { tag::TUPLE });
-            put_varint(out, items.len() as u128);
-            for i in items {
-                canonical_ref(i, out);
-            }
-        }
-        ValueRef::Set(items) => {
-            out.push(tag::SET);
-            put_varint(out, items.len() as u128);
-            let mut parts: Vec<Vec<u8>> = items.iter().map(part).collect();
-            parts.sort();
-            for p in parts {
-                out.extend_from_slice(&p);
-            }
-        }
-        ValueRef::Record(entries) => {
-            out.push(tag::RECORD);
-            put_varint(out, entries.len() as u128);
-            let mut sorted: Vec<_> = entries.iter().collect();
-            sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-            for (k, v) in sorted {
-                string(out, k);
-                canonical_ref(v, out);
-            }
-        }
-        ValueRef::Map(entries) => {
-            out.push(tag::MAP);
-            put_varint(out, entries.len() as u128);
-            let mut parts: Vec<(Vec<u8>, Vec<u8>)> = entries.iter().map(|(k, v)| (part(k), part(v))).collect();
-            parts.sort();
-            for (k, v) in parts {
-                out.extend_from_slice(&k);
-                out.extend_from_slice(&v);
-            }
-        }
-        ValueRef::Variant(name, p) => {
-            out.push(if p.is_some() { tag::VARIANT } else { tag::UNIT_VARIANT });
-            string(out, name);
-            if let Some(p) = p {
-                canonical_ref(p, out);
-            }
-        }
-        // The remaining kinds hold no heap data, so converting them copies nothing.
-        scalar => out.extend_from_slice(&canonical_bytes(&scalar.to_value())),
-    }
 }
 
 /// Decode one value from the start of `buf`; returns the value and bytes consumed.
@@ -1010,9 +990,10 @@ fn decode_any<'a, T: Build<'a>>(buf: &'a [u8], limits: Limits) -> Result<(T, usi
         depth: 0,
         limits,
         strings: Vec::new(),
+        ids: HashMap::new(),
     };
 
-    let v = d.value()?;
+    let (v, _) = d.value(false)?;
     Ok((v, d.pos))
 }
 
@@ -1217,13 +1198,69 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_canonical_matches_owned() {
-        let v = sample();
-        let r = encode(&v, EncodeOptions::default());
-        assert_eq!(decode_ref(&r).unwrap().canonical(), canonical_bytes(&v));
+    fn duplicates_compare_canonical_forms() {
+        let rejected = |b: &[u8]| decode(b).is_err() && decode_ref(b).is_err();
         // Records equal up to field order are duplicate set elements either way.
         let set = [tag::SET, 2, tag::RECORD, 2, 2, b'a', 0, 2, b'b', 0, tag::RECORD, 2, 2, b'b', 0, 2, b'a', 0];
-        assert!(decode(&set).is_err() && decode_ref(&set).is_err());
+        assert!(rejected(&set));
+        // So are sets equal up to element order, and a record list equal to a list of records.
+        assert!(rejected(&[
+            tag::SET,
+            2,
+            tag::SET,
+            2,
+            tag::INT,
+            2,
+            tag::INT,
+            4,
+            tag::SET,
+            2,
+            tag::INT,
+            4,
+            tag::INT,
+            2
+        ]));
+        let rows = [tag::SET, 2, tag::LIST, 1, tag::RECORD, 1, 2, b'a', 0, tag::RECORD_LIST, 1, 1, 2, b'a', 0, 0];
+        assert!(rejected(&rows));
+        // NaN payloads all encode as the canonical NaN.
+        let mut nans = vec![tag::MAP, 2, tag::FLOAT];
+        nans.extend(f64::NAN.to_bits().to_be_bytes());
+        nans.extend([0, tag::FLOAT]);
+        nans.extend((f64::NAN.to_bits() | 1).to_be_bytes());
+        nans.push(0);
+        assert!(rejected(&nans));
+        // Different kinds or contents are distinct.
+        assert!(decode(&[tag::SET, 2, tag::LIST, 1, tag::NULL, tag::TUPLE, 1, tag::NULL]).is_ok());
+        assert!(decode_ref(&[tag::MAP, 2, tag::SET, 1, tag::INT, 2, 0, tag::SET, 1, tag::INT, 4, 0]).is_ok());
+    }
+
+    #[test]
+    fn nested_sets_decode_in_linear_time() {
+        // Each level is a two-element set around the previous one, so every level
+        // checks a member holding the whole byte string for duplicates.
+        let nested = |depth: usize| {
+            let mut v = Value::Bytes(vec![7; 1 << 20]);
+            for i in 0..depth {
+                v = Value::Set(vec![v, Value::Int(i as i128)]);
+            }
+
+            canonical_bytes(&v)
+        };
+
+        let fastest = |b: &[u8]| {
+            (0..3)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    assert!(decode(b).is_ok() && decode_ref(b).is_ok());
+                    t.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+
+        // Re-encoding members per level made depth 64 cost thousands of times depth 1.
+        let (shallow, deep) = (fastest(&nested(1)), fastest(&nested(64)));
+        assert!(deep < shallow * 8, "depth 1: {shallow:?}, depth 64: {deep:?}");
     }
 
     #[test]
