@@ -231,7 +231,7 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
             return Err(syn(&p, start, "a patch must start with `@patch`".into()));
         }
 
-        let sigil = match p_peek(&p) {
+        let sigil = match p.peek_byte() {
             Some(c @ (b'=' | b'+' | b'-' | b'?')) if src.as_bytes().get(p.pos + 1) == Some(&b' ') => {
                 p.pos += 2;
                 Some(c)
@@ -247,7 +247,7 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
 
         p.pos += n;
         p.skip_inline_ws();
-        let has_value = p_peek(&p) == Some(b':');
+        let has_value = p.peek_byte() == Some(b':');
         let value = if has_value {
             p.pos += 1;
             p.skip_inline_ws();
@@ -292,12 +292,6 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
     }
 
     Ok(patch)
-}
-
-/// The next byte at the parser's position, if any.
-fn p_peek(p: &Parser) -> Option<u8> {
-    // Parser keeps its byte view private; re-derive from the shared source.
-    p.peek_byte()
 }
 
 /// The result of a successful [`apply`].
@@ -447,17 +441,6 @@ pub(crate) fn apply_op(root: &mut Value, path: &Path, kind: &OpKind) -> Result<(
             let target = get_mut(root, &parent).map_err(to_msg)?;
             match (target, last) {
                 (Value::Record(r), Segment::Field(k)) => r.insert(k.clone(), v.clone()).map_err(|e| e.to_string()),
-                (Value::List(l), Segment::Index(i)) => {
-                    let len = l.len();
-                    let idx = if usize::try_from(*i) == Ok(len) {
-                        len
-                    } else {
-                        resolve_index(*i, len).ok_or(format!("index {i} is out of bounds for insert (len {len})"))?
-                    };
-
-                    l.insert(idx, v.clone());
-                    Ok(())
-                }
                 (Value::Map(m), seg @ (Segment::Field(_) | Segment::Key(_) | Segment::Index(_))) => {
                     m.push((seg_key(seg), v.clone()));
                     Ok(())

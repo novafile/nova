@@ -130,15 +130,24 @@ impl Response {
     }
 }
 
+/// Parse `@get <path>`, `@select <path>` or a bare path into the path.
+///
+/// # Errors
+///
+/// Returns a message if `request` is not a valid path.
+pub fn parse_request(request: &str) -> Result<Path, String> {
+    let req = request.trim();
+    let p = req.strip_prefix("@get").or_else(|| req.strip_prefix("@select")).unwrap_or(req);
+    Path::parse(p).map_err(|e| format!("invalid path: {e}"))
+}
+
 /// Parse `@get <path>` (or a bare path) and evaluate it.
 ///
 /// # Errors
 ///
 /// Returns a message if `request` is not a valid path or [`select`] fails.
 pub fn get(root: &Value, request: &str) -> Result<Response, String> {
-    let req = request.trim();
-    let p = req.strip_prefix("@get").or_else(|| req.strip_prefix("@select")).unwrap_or(req);
-    let path = Path::parse(p).map_err(|e| format!("invalid path: {e}"))?;
+    let path = parse_request(request)?;
     let value = select(root, &path).map_err(|e| e.to_string())?;
     let mut base = path.clone();
     if matches!(base.0.last(), Some(Segment::Project(_))) {
