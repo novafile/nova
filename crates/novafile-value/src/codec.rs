@@ -586,7 +586,9 @@ impl<'a> Decoder<'a> {
                 let mut seen = HashSet::new();
                 for _ in 0..n {
                     let v = self.value::<T>()?;
-                    if kind == tag::SET && !seen.insert(v.canonical()) {
+                    // shortcut: each set or map with two or more members re-encodes them, so a
+                    // chain of them costs up to max_depth x the input; cache child encodings if that bites.
+                    if kind == tag::SET && n > 1 && !seen.insert(v.canonical()) {
                         return Err(DecodeError {
                             offset: start,
                             message: "duplicate set element".into(),
@@ -624,7 +626,7 @@ impl<'a> Decoder<'a> {
                 let mut seen = HashSet::new();
                 for _ in 0..n {
                     let k = self.value::<T>()?;
-                    if !seen.insert(k.canonical()) {
+                    if n > 1 && !seen.insert(k.canonical()) {
                         return Err(DecodeError {
                             offset: start,
                             message: "duplicate map key".into(),
@@ -900,7 +902,83 @@ impl<'a> Build<'a> for ValueRef<'a> {
     }
 
     fn canonical(&self) -> Vec<u8> {
-        canonical_bytes(&self.to_value())
+        let mut out = Vec::new();
+        canonical_ref(self, &mut out);
+        out
+    }
+}
+
+/// Append the canonical encoding of `v` (as [`canonical_bytes`] of its
+/// [`ValueRef::to_value`]) without copying it into a [`Value`] first.
+fn canonical_ref(v: &ValueRef<'_>, out: &mut Vec<u8>) {
+    /// The canonical encoding of `v` on its own.
+    fn part(v: &ValueRef<'_>) -> Vec<u8> {
+        let mut out = Vec::new();
+        canonical_ref(v, &mut out);
+        out
+    }
+
+    /// Append a literal string header and body.
+    fn string(out: &mut Vec<u8>, s: &str) {
+        put_varint(out, (s.len() as u128) << 1);
+        out.extend_from_slice(s.as_bytes());
+    }
+
+    match v {
+        ValueRef::String(s) => {
+            out.push(tag::STRING);
+            string(out, s);
+        }
+        ValueRef::Bytes(b) => {
+            out.push(tag::BYTES);
+            put_varint(out, b.len() as u128);
+            out.extend_from_slice(b);
+        }
+        ValueRef::List(items) | ValueRef::Tuple(items) => {
+            out.push(if matches!(v, ValueRef::List(_)) { tag::LIST } else { tag::TUPLE });
+            put_varint(out, items.len() as u128);
+            for i in items {
+                canonical_ref(i, out);
+            }
+        }
+        ValueRef::Set(items) => {
+            out.push(tag::SET);
+            put_varint(out, items.len() as u128);
+            let mut parts: Vec<Vec<u8>> = items.iter().map(part).collect();
+            parts.sort();
+            for p in parts {
+                out.extend_from_slice(&p);
+            }
+        }
+        ValueRef::Record(entries) => {
+            out.push(tag::RECORD);
+            put_varint(out, entries.len() as u128);
+            let mut sorted: Vec<_> = entries.iter().collect();
+            sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+            for (k, v) in sorted {
+                string(out, k);
+                canonical_ref(v, out);
+            }
+        }
+        ValueRef::Map(entries) => {
+            out.push(tag::MAP);
+            put_varint(out, entries.len() as u128);
+            let mut parts: Vec<(Vec<u8>, Vec<u8>)> = entries.iter().map(|(k, v)| (part(k), part(v))).collect();
+            parts.sort();
+            for (k, v) in parts {
+                out.extend_from_slice(&k);
+                out.extend_from_slice(&v);
+            }
+        }
+        ValueRef::Variant(name, p) => {
+            out.push(if p.is_some() { tag::VARIANT } else { tag::UNIT_VARIANT });
+            string(out, name);
+            if let Some(p) = p {
+                canonical_ref(p, out);
+            }
+        }
+        // The remaining kinds hold no heap data, so converting them copies nothing.
+        scalar => out.extend_from_slice(&canonical_bytes(&scalar.to_value())),
     }
 }
 
@@ -1136,6 +1214,16 @@ mod tests {
         assert!(decode(&[tag::LIST, 0x7F]).is_err());
         assert!(decode(&[0x42]).is_err());
         assert!(decode(&[tag::NULL, tag::NULL]).is_err());
+    }
+
+    #[test]
+    fn borrowed_canonical_matches_owned() {
+        let v = sample();
+        let r = encode(&v, EncodeOptions::default());
+        assert_eq!(decode_ref(&r).unwrap().canonical(), canonical_bytes(&v));
+        // Records equal up to field order are duplicate set elements either way.
+        let set = [tag::SET, 2, tag::RECORD, 2, 2, b'a', 0, 2, b'b', 0, tag::RECORD, 2, 2, b'b', 0, 2, b'a', 0];
+        assert!(decode(&set).is_err() && decode_ref(&set).is_err());
     }
 
     #[test]
