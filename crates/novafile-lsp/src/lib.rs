@@ -67,11 +67,12 @@ pub fn run(conn: Connection) -> Result<(), Error> {
     let mut server = Server {
         docs: HashMap::new(),
         disk_schemas: Vec::new(),
+        scanned: Vec::new(),
         conn: &conn,
     };
 
     if let Some(root) = root {
-        server.scan_schemas(&root);
+        server.scan_schemas(&root, 8);
     }
 
     server.main_loop()
@@ -81,8 +82,10 @@ pub fn run(conn: Connection) -> Result<(), Error> {
 struct Server<'c> {
     /// Text of every open document, as last sent by the client.
     docs: HashMap<Url, String>,
-    /// Schemas found on disk at startup: (path, schema).
+    /// Schemas found on disk: (path, schema).
     disk_schemas: Vec<(PathBuf, Schema)>,
+    /// Directories already searched for schemas; nothing below them is scanned again.
+    scanned: Vec<PathBuf>,
     /// The client connection.
     conn: &'c Connection,
 }
@@ -183,13 +186,13 @@ fn parse_data(text: &str) -> Result<Option<Parsed>, novafile_text::ParseError> {
 }
 
 impl Server<'_> {
-    /// Collect every parseable `.novs` file under `root` (at most 8 directories deep,
-    /// skipping hidden directories, `target` and `node_modules`).
-    fn scan_schemas(&mut self, root: &std::path::Path) {
-        /// Appends every `.novs` file below `dir` to `out`, recursing at most 8 levels and
-        /// skipping hidden directories, `target` and `node_modules`.
-        fn walk(dir: &std::path::Path, depth: usize, out: &mut Vec<PathBuf>) {
-            if depth > 8 {
+    /// Collect every parseable `.novs` file under `root`, at most `max_depth` directories
+    /// deep (0: `root` itself only), skipping hidden directories, `target` and `node_modules`.
+    fn scan_schemas(&mut self, root: &std::path::Path, max_depth: usize) {
+        /// Appends every `.novs` file below `dir` to `out`, recursing at most `max_depth`
+        /// levels and skipping hidden directories, `target` and `node_modules`.
+        fn walk(dir: &std::path::Path, depth: usize, max_depth: usize, out: &mut Vec<PathBuf>) {
+            if depth > max_depth {
                 return;
             }
 
@@ -203,15 +206,17 @@ impl Server<'_> {
                 }
 
                 if p.is_dir() {
-                    walk(&p, depth + 1, out);
+                    walk(&p, depth + 1, max_depth, out);
                 } else if name.ends_with(".novs") {
                     out.push(p);
                 }
             }
         }
 
+        self.scanned.push(root.to_path_buf());
         let mut files = Vec::new();
-        walk(root, 0, &mut files);
+        walk(root, 0, max_depth, &mut files);
+        files.retain(|f| !self.disk_schemas.iter().any(|(p, _)| p == f));
         for f in files {
             if let Some(s) = std::fs::read_to_string(&f).ok().and_then(|t| novafile_schema::parse_schema(&t).ok()) {
                 self.disk_schemas.push((f, s));
@@ -393,6 +398,15 @@ impl Server<'_> {
             DidOpenTextDocument::METHOD => {
                 let p: DidOpenTextDocumentParams = serde_json::from_value(n.params)?;
                 let is_schema = has_ext(p.text_document.uri.path(), "novs");
+                // Files opened outside the workspace (or without one) still find the
+                // schemas next to them.
+                if let Ok(path) = p.text_document.uri.to_file_path()
+                    && let Some(dir) = path.parent()
+                    && !self.scanned.iter().any(|root| dir.starts_with(root))
+                {
+                    self.scan_schemas(dir, 0);
+                }
+
                 self.docs.insert(p.text_document.uri.clone(), p.text_document.text);
                 if is_schema {
                     self.publish_all()?;

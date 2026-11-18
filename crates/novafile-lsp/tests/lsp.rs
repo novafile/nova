@@ -189,3 +189,28 @@ fn end_to_end() {
     server.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// Without a workspace folder (an editor opening loose files), a document still
+/// validates against the schema in its own directory.
+#[test]
+fn schema_next_to_a_loose_file() {
+    let dir = std::env::temp_dir().join(format!("novafile-lsp-loose-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("infrastructure.novs"), SCHEMA).unwrap();
+    let (server, client) = Connection::memory();
+    let h = std::thread::spawn(move || novafile_lsp::run(server).unwrap());
+    let mut c = Client { conn: client, next: 0 };
+    c.request("initialize", json!({"capabilities": {}}));
+    c.notify("initialized", json!({}));
+
+    let uri = format!("file://{}/infra.nova", dir.display());
+    open(&c, &uri, &DOC.replace("port: 3000", "port: 0"));
+    let d = c.diagnostics();
+    assert_eq!(d.as_array().unwrap().len(), 1, "{d}");
+    assert!(d[0]["message"].as_str().unwrap().starts_with("services[1].port: 0 is outside"), "{d}");
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    h.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+}
