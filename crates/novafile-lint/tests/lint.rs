@@ -40,6 +40,14 @@ fn fixes_keep_comments_and_value() {
 }
 
 #[test]
+fn fixes_never_rename_two_keys_to_one() {
+    let src = "fooBar: 1\nfoo-bar: 2\n";
+    let f = lint_document(src, &Config::default()).unwrap();
+    assert!(f.iter().all(|f| f.fix.is_none()), "{f:#?}");
+    assert_eq!(apply_fixes(src, &f), src);
+}
+
+#[test]
 fn configuration() {
     let camel = Config::default().with_directive("case=camel allow=quoted-key,mixed-list").unwrap();
     let f = lint_document(DOC, &camel).unwrap();
