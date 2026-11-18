@@ -385,13 +385,27 @@ impl<'s> Plan<'s> {
                 }
                 Some(Def::Enum(vs)) => {
                     let mut names = HashMap::new();
+                    let oneof = vs.iter().any(|v| v.payload.is_some());
                     for v in vs {
                         if let Some(other) = names.insert(ident(&v.name), &v.name) {
                             return Err(format!("{name}.{}: Protobuf name collides with variant {other}", v.name));
                         }
+
+                        match v.id {
+                            Some(id) if oneof && (id > MAX_FIELD_NUMBER || RESERVED_FIELD_NUMBERS.contains(&id)) => {
+                                return Err(format!(
+                                    "{name}.{}: @id({id}) is not a valid Protobuf field number (1..={MAX_FIELD_NUMBER}, not 19000..=19999)",
+                                    v.name
+                                ));
+                            }
+                            Some(id) if i32::try_from(id).is_err() => {
+                                return Err(format!("{name}.{}: @id({id}) does not fit a Protobuf enum value (int32)", v.name));
+                            }
+                            _ => {}
+                        }
                     }
 
-                    if vs.iter().any(|v| v.payload.is_some()) {
+                    if oneof {
                         for v in vs {
                             visit(classify_payload(schema, name, v)?, &mut queue, &mut imports);
                         }

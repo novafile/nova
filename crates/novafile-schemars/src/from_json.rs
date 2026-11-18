@@ -270,11 +270,16 @@ impl Conv<'_> {
                 Alt::Units(tags) => out.extend(tags.iter().map(|t| VariantDef {
                     name: t.clone(),
                     payload: None,
+                    id: None,
                 })),
                 Alt::Payload(tag, payload, i) => {
                     let at = format!("{at}/{key}/{i}/properties/{}", escape_pointer(&tag));
                     let t = self.ty(payload, &at, &format!("{name}{}", pascal(&tag)));
-                    out.push(VariantDef { name: tag, payload: Some(t) });
+                    out.push(VariantDef {
+                        name: tag,
+                        payload: Some(t),
+                        id: None,
+                    });
                 }
             }
         }

@@ -104,19 +104,21 @@ fn record(w: &mut String, schema: &Schema, name: &str, r: &RecordDef) -> Result<
 }
 
 /// Write a Protobuf `enum` for a NOVA enum without payloads. Value 0 is the
-/// `…_UNSPECIFIED` placeholder; variant `i` gets number `i + 1`.
+/// `…_UNSPECIFIED` placeholder; a variant's number is its `@id`, or its
+/// 1-based position without one.
 fn unit_enum(w: &mut String, name: &str, vs: &[VariantDef]) {
     let _ = writeln!(w, "enum {} {{", ident(name));
     let _ = writeln!(w, "  {} = 0;", enum_value_name(name, "unspecified"));
     for (i, v) in vs.iter().enumerate() {
-        let _ = writeln!(w, "  {} = {}; // {}", enum_value_name(name, &v.name), i + 1, v.name);
+        let _ = writeln!(w, "  {} = {}; // {}", enum_value_name(name, &v.name), v.number(i), v.name);
     }
 
     w.push_str("}\n");
 }
 
 /// Write a message holding a single `oneof` for a NOVA enum with payloads;
-/// variant `i` gets field number `i + 1`, unit variants carry
+/// a variant's field number is its `@id`, or its 1-based position without
+/// one; unit variants carry
 /// `google.protobuf.Empty`.
 fn union(w: &mut String, schema: &Schema, name: &str, vs: &[VariantDef]) -> Result<(), String> {
     let _ = writeln!(w, "message {} {{", ident(name));
@@ -128,7 +130,7 @@ fn union(w: &mut String, schema: &Schema, name: &str, vs: &[VariantDef]) -> Resu
             None => format!("{} (unit variant)", v.name),
         };
 
-        let _ = writeln!(w, "    {} {} = {}; // {note}", single.proto_name(), ident(&v.name), i + 1);
+        let _ = writeln!(w, "    {} {} = {}; // {note}", single.proto_name(), ident(&v.name), v.number(i));
     }
 
     w.push_str("  }\n}\n");

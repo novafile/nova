@@ -79,7 +79,7 @@ impl<'s> Decoder<'s> {
                 let mut current = None;
                 let mut entries = Vec::new();
                 for (n, w) in wire {
-                    if (1..=vs.len()).contains(&(n as usize)) {
+                    if vs.iter().enumerate().any(|(i, v)| v.number(i) == n) {
                         if current != Some(n) {
                             current = Some(n);
                             entries.clear();
@@ -90,7 +90,12 @@ impl<'s> Decoder<'s> {
                 }
 
                 let n = current.ok_or_else(|| Fail::new(format!("no variant of {name} is set")))?;
-                let vd = &vs[n as usize - 1];
+                let vd = vs
+                    .iter()
+                    .enumerate()
+                    .find(|&(i, v)| v.number(i) == n)
+                    .map(|(_, v)| v)
+                    .expect("only variant numbers are kept");
                 let payload = match classify_payload(self.schema, name, vd)? {
                     Single::Message(Message::Empty) => {
                         // Still check that the Empty messages are well-formed.
@@ -288,17 +293,18 @@ fn scalar(w: Wire<'_>, s: Scalar<'_>) -> Result<Value, Fail> {
         (Scalar::Enum(name, vs), Wire::Varint(v)) => {
             // Enums are int32 on the wire.
             let number = (v as u32).cast_signed();
-            let idx = usize::try_from(number)
-                .ok()
-                .and_then(|n| n.checked_sub(1))
-                .filter(|&i| i < vs.len())
+            let vd = vs
+                .iter()
+                .enumerate()
+                .find(|&(i, v)| i32::try_from(v.number(i)) == Ok(number))
+                .map(|(_, v)| v)
                 .ok_or_else(|| {
                     Fail::new(match number {
                         0 => format!("{name} value 0 (UNSPECIFIED) has no NOVA variant"),
                         n => format!("unknown {name} value {n}"),
                     })
                 })?;
-            Value::Variant(vs[idx].name.clone(), None)
+            Value::Variant(vd.name.clone(), None)
         }
         (Scalar::Double, Wire::I64(bits)) => Value::Float(f64::from_bits(bits)),
         (Scalar::String, Wire::Len(b)) => Value::String(text(b)?),

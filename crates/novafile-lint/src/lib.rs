@@ -11,7 +11,7 @@
 //! | `compat-loss` | values the `@compat` format cannot represent | warning | — |
 //! | `field-case` | schema field names | warning | — |
 //! | `variant-case` | schema enum variants | warning | — |
-//! | `partial-ids` | records where only some fields have `@id` | warning | — |
+//! | `partial-ids` | records where only some fields have `@id` (an enum where only some variants have `@id` is a schema error) | warning | — |
 //!
 //! Configuration: [`Config`], or in a document `@x-lint case=camel allow=quoted-key,mixed-list`.
 //!

@@ -2,7 +2,7 @@
 //!
 //! [`Schema::to_value`] produces the *descriptor* of a schema: an ordinary
 //! NOVA value described by the meta-schema [`meta_schema`]
-//! (`nova-schema@0.1.0`). [`Schema::from_value`] turns a descriptor back
+//! (`nova-schema@0.2.0`). [`Schema::from_value`] turns a descriptor back
 //! into a schema by rendering its canonical text and parsing that, so
 //! descriptors are validated exactly like hand-written schemas.
 
@@ -148,6 +148,10 @@ impl Schema {
                                         e.push(("payload", type_value(p)));
                                     }
 
+                                    if let Some(id) = v.id {
+                                        e.push(("id", Value::Int(i128::from(id))));
+                                    }
+
                                     rec(e)
                                 })
                                 .collect(),
@@ -246,6 +250,10 @@ impl Schema {
                             Ok(VariantDef {
                                 name: v.get("name").and_then(Value::as_str).ok_or("variant without name")?.to_owned(),
                                 payload: v.get("payload").map(value_type).transpose()?,
+                                id: match v.get("id") {
+                                    Some(Value::Int(id)) => Some(u32::try_from(*id).map_err(|_| "id out of range")?),
+                                    _ => None,
+                                },
                             })
                         })
                         .collect::<Result<_, String>>()

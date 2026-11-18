@@ -68,8 +68,8 @@ fn compatibility() {
     let broken = parse_schema(&SCHEMA.replace("port: Port @id(3)", "port: u8 @id(3)").replace("  draining\n", "")).unwrap();
     let changes = check_compatibility(&old, &broken);
     let b: Vec<_> = changes.iter().filter(|c| c.breaking).map(|c| c.at.as_str()).collect();
-    // Removing `draining` also moves `failed` up, which Protobuf numbering sees.
-    assert_eq!(b, ["Service.port", "Status.draining", "Status.failed"], "{changes:#?}");
+    // Removing `draining` also moves `failed` up; the removal reports that shift once.
+    assert_eq!(b, ["Service.port", "Status.draining"], "{changes:#?}");
 }
 
 /// The places `old` -> `new` breaks, for two schemas given as bodies.
@@ -101,11 +101,88 @@ fn compatibility_rules() {
     assert_eq!(breaks(&rec("  port: u16 @id(1)\n"), &rec("  port: u16 @id(2)\n")), ["R.port"]);
     assert_eq!(breaks(&rec("  port: u16 @id(1)\n"), &rec("  port: u16\n")), ["R.port"]);
     assert_eq!(breaks(&rec("  port: u16\n"), &rec("  port: u16 @id(1)\n")), none);
-    // Protobuf numbers variants by position: only appending is safe.
+    // Without @id, Protobuf numbers variants by position: only appending is safe.
     let e = |vs: &str| format!("enum E:\n{vs}");
     assert_eq!(breaks(&e("  a\n  b\n"), &e("  a\n  b\n  c(int)\n")), none);
-    assert_eq!(breaks(&e("  a\n  b\n"), &e("  z\n  a\n  b\n")), ["E.a", "E.b"]);
+    // An insertion shifts later variants; that is reported once, at the inserted variant.
+    assert_eq!(breaks(&e("  a\n  b\n"), &e("  z\n  a\n  b\n")), ["E.z"]);
     assert_eq!(breaks(&e("  a\n  b(int)\n"), &e("  b(int)\n  a\n")), ["E.a", "E.b"]);
+    // With @id, the variant number is the id: reordering and inserting are safe.
+    assert_eq!(breaks(&e("  a @id(1)\n  b @id(2)\n"), &e("  z @id(3)\n  b @id(2)\n  a @id(1)\n")), none);
+    assert_eq!(breaks(&e("  a @id(1)\n  b(int) @id(2)\n"), &e("  a @id(1)\n  b(int) @id(3)\n")), ["E.b"]);
+    // An added variant must not take a number that old data uses.
+    assert_eq!(breaks(&e("  a @id(1)\n  b @id(2)\n"), &e("  a @id(1)\n  c @id(2)\n")), ["E.b", "E.c"]);
+    // Adding ids that equal the old positions is safe; other ids renumber.
+    assert_eq!(breaks(&e("  a\n  b\n"), &e("  b @id(2)\n  a @id(1)\n  c @id(3)\n")), none);
+    assert_eq!(breaks(&e("  a\n  b\n"), &e("  a @id(2)\n  b @id(1)\n")), ["E.a", "E.b"]);
+    assert_eq!(breaks(&e("  a @id(2)\n  b @id(1)\n"), &e("  b\n  a\n")), none);
+}
+
+#[test]
+fn enum_removal_is_reported_once() {
+    let (old, new) = (
+        parse_schema("enum E:\n  a\n  b\n  c\n  d\n").unwrap(),
+        parse_schema("enum E:\n  a\n  c\n  d\n").unwrap(),
+    );
+    let changes: Vec<String> = check_compatibility(&old, &new).iter().map(ToString::to_string).collect();
+    assert_eq!(changes.len(), 1, "{changes:?}");
+    assert!(
+        changes[0].contains("E.b: variant removed; later variants shift position") && changes[0].contains("@id"),
+        "{changes:?}"
+    );
+    // A real move among the kept variants is still reported (`c` keeps number 3).
+    let new = parse_schema("enum E:\n  a\n  d\n  c\n").unwrap();
+    let at: Vec<String> = check_compatibility(&old, &new).into_iter().map(|c| c.at).collect();
+    assert_eq!(at, ["E.b", "E.d"]);
+    // Removing the last variant shifts nothing.
+    let new = parse_schema("enum E:\n  a\n  b\n  c\n").unwrap();
+    let changes = check_compatibility(&old, &new);
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].message, "variant removed");
+}
+
+#[test]
+fn variant_ids() {
+    for src in [
+        "enum E:\n  a @id(2)\n  b(int @range(1..)) @id(1)\n",
+        "enum E = a @id(2) | b(int @range(1..)) @id(1)\n",
+    ] {
+        let s = parse_schema(src).unwrap();
+        let Some(novafile_schema::Def::Enum(vs)) = s.def("E") else { panic!() };
+        assert_eq!(vs.iter().map(|v| v.id).collect::<Vec<_>>(), [Some(2), Some(1)]);
+        assert_eq!(vs[1].payload.as_ref().unwrap().to_string(), "int @range(1..)");
+        // Canonical text and the descriptor keep the ids.
+        let text = s.to_canonical_text();
+        assert!(text.contains("  a @id(2)\n  b(int @range(1..)) @id(1)\n"), "{text}");
+        assert_eq!(parse_schema(&text).unwrap(), s);
+        let d = s.to_value();
+        novafile_schema::meta_schema().validate(&d).unwrap();
+        assert_eq!(novafile_schema::Schema::from_value(&d).unwrap(), s);
+    }
+
+    for (src, needle) in [
+        ("enum E:\n  a @id(1)\n  b @id(1)\n", "line 3: duplicate variant id 1"),
+        (
+            "enum E:\n  a @id(1)\n  b\n",
+            "line 3: variant \"b\": either every variant of an enum has @id or none does",
+        ),
+        ("enum E = a | b @id(2)\n", "either every variant"),
+        ("enum E:\n  a @id(0)\n", "@id(0) is not allowed"),
+        ("enum E:\n  a @id(x)\n", "invalid @id(x)"),
+        // An attribute inside the parentheses belongs to the payload type.
+        ("enum E:\n  a(int @id(1))\n", "only valid on record fields"),
+    ] {
+        let e = parse_schema(src).unwrap_err().to_string();
+        assert!(e.contains(needle), "{src:?}: {e}");
+    }
+
+    // A descriptor with partial ids is rejected like schema text.
+    let mut d = parse_schema("enum E:\n  a @id(1)\n  b @id(2)\n").unwrap();
+    let Some((_, novafile_schema::Def::Enum(vs))) = d.defs.first_mut() else {
+        panic!()
+    };
+    vs[1].id = None;
+    assert!(novafile_schema::Schema::from_value(&d.to_value()).unwrap_err().contains("either every variant"));
 }
 
 #[test]

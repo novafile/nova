@@ -318,6 +318,19 @@ pub struct VariantDef {
     pub name: String,
     /// Payload type of a `Tag(T)` variant; `None` for a bare tag.
     pub payload: Option<TypeRef>,
+    /// `@id(n)`: stable variant number (n >= 1), unique within the enum.
+    /// Either every variant of an enum has one or none does.
+    pub id: Option<u32>,
+}
+
+impl VariantDef {
+    /// The variant's number, given its 0-based position in the enum: its
+    /// `@id`, or `position + 1` without one. Protobuf uses it on the wire.
+    #[must_use]
+    pub fn number(&self, position: usize) -> u32 {
+        #[expect(clippy::cast_possible_truncation, reason = "a schema cannot hold 2^32 variants")]
+        self.id.unwrap_or(position as u32 + 1)
+    }
 }
 
 /// A named definition.
@@ -447,8 +460,13 @@ impl fmt::Display for Schema {
                     writeln!(f, "enum {name}:")?;
                     for v in vs {
                         match &v.payload {
-                            Some(t) => writeln!(f, "  {}({t})", v.name)?,
-                            None => writeln!(f, "  {}", v.name)?,
+                            Some(t) => write!(f, "  {}({t})", v.name)?,
+                            None => write!(f, "  {}", v.name)?,
+                        }
+
+                        match v.id {
+                            Some(id) => writeln!(f, " @id({id})")?,
+                            None => writeln!(f)?,
                         }
                     }
                 }

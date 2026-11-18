@@ -354,7 +354,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
             if let Some((name, alts)) = rest.split_once('=') {
                 let mut vs = Vec::new();
                 for alt in alts.split('|') {
-                    vs.push(parse_variant(alt.trim()).map_err(|m| err(i, m))?);
+                    push_variant(&mut vs, parse_variant(alt.trim()).map_err(|m| err(i, m))?).map_err(|m| err(i, m))?;
                 }
 
                 push_def(&mut schema, name.trim(), Def::Enum(vs)).map_err(|m| err(i, m))?;
@@ -374,7 +374,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
                     }
 
                     let Some(body) = l.strip_prefix("  ") else { break };
-                    vs.push(parse_variant(body.trim()).map_err(|m| err(i, m))?);
+                    push_variant(&mut vs, parse_variant(body.trim()).map_err(|m| err(i, m))?).map_err(|m| err(i, m))?;
                     i += 1;
                 }
 
@@ -446,21 +446,54 @@ fn push_def(s: &mut Schema, name: &str, d: Def) -> Result<(), String> {
     Ok(())
 }
 
-/// Parse an enum variant: `name` or `name(Type)`.
+/// Parse an enum variant: `name` or `name(Type)`, optionally followed by `@id(n)`.
 fn parse_variant(s: &str) -> Result<VariantDef, String> {
+    let (s, id) = match s.rsplit_once("@id(") {
+        Some((head, arg)) if head.ends_with(' ') && arg.ends_with(')') && !arg[..arg.len() - 1].contains(')') => {
+            let n = arg[..arg.len() - 1].trim();
+            (head.trim_end(), Some(n.parse().map_err(|_| format!("invalid @id({n})"))?))
+        }
+        _ => (s, None),
+    };
+
     match s.split_once('(') {
         Some((n, rest)) => {
             let inner = rest.strip_suffix(')').ok_or("expected `)` after variant payload")?;
             Ok(VariantDef {
                 name: check_name(n.trim())?,
                 payload: Some(parse_type(inner)?),
+                id,
             })
         }
         None => Ok(VariantDef {
             name: check_name(s)?,
             payload: None,
+            id,
         }),
     }
+}
+
+/// Add a variant to an enum. Fails if its `@id` is 0 or taken, or if it has
+/// an `@id` while earlier variants have none (or the other way round).
+fn push_variant(vs: &mut Vec<VariantDef>, v: VariantDef) -> Result<(), String> {
+    if let Some(first) = vs.first()
+        && first.id.is_some() != v.id.is_some()
+    {
+        return Err(format!("variant {:?}: either every variant of an enum has @id or none does", v.name));
+    }
+
+    if let Some(id) = v.id {
+        if id == 0 {
+            return Err(format!("variant {:?}: @id(0) is not allowed; variant ids start at 1", v.name));
+        }
+
+        if vs.iter().any(|w| w.id == Some(id)) {
+            return Err(format!("duplicate variant id {id}"));
+        }
+    }
+
+    vs.push(v);
+    Ok(())
 }
 
 /// Accept a field or variant name: a letter or `_`, then letters, digits, `_`

@@ -68,8 +68,7 @@ impl<'s> Encoder<'s> {
                     .enumerate()
                     .find(|(_, d)| d.name == *tag)
                     .ok_or_else(|| Fail::new(format!("unknown variant {tag:?} of {name}")))?;
-                #[expect(clippy::cast_possible_truncation, reason = "a schema cannot hold 2^32 variants")]
-                let number = i as u32 + 1;
+                let number = vd.number(i);
                 match (classify_payload(self.schema, name, vd)?, payload) {
                     (Single::Message(Message::Empty), None) => {
                         put_tag(buf, number, WireType::Len);
@@ -196,11 +195,12 @@ fn scalar(buf: &mut Vec<u8>, v: &Value, s: Scalar<'_>) -> Result<(), Fail> {
         (Scalar::Decimal, Value::Decimal(d)) => put_len(buf, d.to_string().as_bytes()),
         (Scalar::Rational, Value::Rational(r)) => put_len(buf, r.to_string().as_bytes()),
         (Scalar::Enum(name, vs), Value::Variant(tag, None)) => {
-            let i = vs
+            let (i, vd) = vs
                 .iter()
-                .position(|d| d.name == *tag)
+                .enumerate()
+                .find(|(_, d)| d.name == *tag)
                 .ok_or_else(|| Fail::new(format!("unknown variant {tag:?} of {name}")))?;
-            put_varint(buf, i as u64 + 1);
+            put_varint(buf, u64::from(vd.number(i)));
         }
         (s, v) => {
             let expected = match s {

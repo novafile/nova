@@ -459,3 +459,42 @@ message Infrastructure {
 "#;
     assert_eq!(proto, expected);
 }
+
+#[test]
+fn variant_ids_are_wire_numbers() {
+    // Unit-only enum: @id is the proto enum value; 0 stays UNSPECIFIED.
+    let s = schema("@root R\n\nrecord R:\n  k: Kind @id(1)\n\nenum Kind:\n  fancy @id(7)\n  plain @id(2)\n");
+    let proto = proto_file(&s).unwrap();
+    assert!(
+        proto.contains("enum Kind {\n  KIND_UNSPECIFIED = 0;\n  KIND_FANCY = 7; // fancy\n  KIND_PLAIN = 2; // plain\n}"),
+        "{proto}"
+    );
+    let v = value(&s, "k: !fancy\n");
+    assert_eq!(encode(&v, &s).unwrap(), [0x08, 0x07]);
+    assert_eq!(decode(&[0x08, 0x07], &s).unwrap(), v);
+    assert_eq!(decode(&[0x08, 0x02], &s).unwrap(), value(&s, "k: !plain\n"));
+    assert!(decode(&[0x08, 0x01], &s).unwrap_err().contains("unknown Kind value 1"));
+
+    // Payload enum: @id is the oneof field number.
+    let s = schema("@root U\n\nenum U = a(string) @id(5) | b @id(3)\n");
+    let proto = proto_file(&s).unwrap();
+    assert!(proto.contains("    string a = 5;") && proto.contains("google.protobuf.Empty b = 3;"), "{proto}");
+    let v = Value::Variant("a".into(), Some(Box::new(Value::String("q".into()))));
+    assert_eq!(encode(&v, &s).unwrap(), [0x2a, 0x01, b'q']);
+    assert_eq!(decode(&[0x2a, 0x01, b'q'], &s).unwrap(), v);
+    assert_eq!(decode(&[0x1a, 0x00], &s).unwrap(), Value::Variant("b".into(), None));
+    // Field 1 is not a variant number here, so it is skipped.
+    assert!(decode(&[0x0a, 0x01, b'q'], &s).unwrap_err().contains("no variant of U is set"));
+
+    // Ids must be valid Protobuf numbers.
+    assert!(
+        proto_file(&schema("@root U\n\nenum U = a(string) @id(19000) | b @id(1)\n"))
+            .unwrap_err()
+            .contains("19000")
+    );
+    assert!(
+        proto_file(&schema("@root R\n\nrecord R:\n  k: K @id(1)\n\nenum K = a @id(4294967295)\n"))
+            .unwrap_err()
+            .contains("int32")
+    );
+}

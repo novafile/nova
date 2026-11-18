@@ -1,7 +1,7 @@
 //! Schema evolution checks (spec §6.5). "Compatible" means every value valid
 //! under the old schema resolves under the new one (new readers, old data).
 
-use crate::model::{Def, IntKind, Num, Schema, TypeKind, TypeRef};
+use crate::model::{Def, IntKind, Num, Schema, TypeKind, TypeRef, VariantDef};
 
 /// One difference between two schema versions, as found by [`check_compatibility`].
 #[derive(Clone, Debug, PartialEq)]
@@ -96,7 +96,6 @@ pub fn widens(old: &TypeRef, new: &TypeRef) -> bool {
 /// judged for new readers of old data, so additions old readers would reject
 /// (such as new enum variants) are reported, but not as breaking.
 #[must_use]
-#[expect(clippy::too_many_lines, reason = "one arm per definition kind, each a flat list of rules")]
 pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
     let mut out = Vec::new();
     let mut push = |breaking, at: &str, m: String| {
@@ -123,33 +122,7 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
                     push(true, name, format!("type {a} narrowed or changed to {b}"));
                 }
             }
-            (Def::Enum(a), Def::Enum(b)) => {
-                for (i, v) in a.iter().enumerate() {
-                    let at = format!("{name}.{}", v.name);
-                    let Some(j) = b.iter().position(|w| w.name == v.name) else {
-                        push(true, &at, "variant removed".into());
-                        continue;
-                    };
-
-                    if i != j {
-                        push(
-                            true,
-                            &at,
-                            format!("variant moved from position {} to {} (Protobuf numbers variants by position)", i + 1, j + 1),
-                        );
-                    }
-
-                    match (&v.payload, &b[j].payload) {
-                        (None, None) => {}
-                        (Some(old_p), Some(new_p)) if widens(old_p, new_p) => {}
-                        _ => push(true, &at, "variant payload changed incompatibly".into()),
-                    }
-                }
-
-                for w in b.iter().filter(|w| !a.iter().any(|v| v.name == w.name)) {
-                    push(false, &format!("{name}.{}", w.name), "variant added (old readers will reject it)".into());
-                }
-            }
+            (Def::Enum(a), Def::Enum(b)) => enum_changes(name, a, b, &mut push),
             (Def::Record(a), Def::Record(b)) => {
                 if a.open && !b.open {
                     push(true, name, "record closed (@open removed)".into());
@@ -217,4 +190,71 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
     }
 
     out
+}
+
+/// Changes between two versions of enum `name`.
+///
+/// Variants are matched by name. Each variant has a number (its `@id`, or
+/// its position without one), which Protobuf puts on the wire, so a kept
+/// variant must keep its number and an added one must not take a number
+/// that old data uses. Without any `@id` on either side, a removal or an
+/// insertion shifts every later variant; that shift is reported once, at the
+/// removed or inserted variant, and only variants whose order among the kept
+/// ones changed are reported as moved.
+fn enum_changes(name: &str, a: &[VariantDef], b: &[VariantDef], push: &mut impl FnMut(bool, &str, String)) {
+    const HINT: &str = "Protobuf numbers variants without @id by position; give the variants @id(n) to make reordering safe";
+    let ids = a.iter().chain(b).any(|v| v.id.is_some());
+    let kept =
+        |xs: &[VariantDef], ys: &[VariantDef]| -> Vec<String> { xs.iter().filter(|x| ys.iter().any(|y| y.name == x.name)).map(|x| x.name.clone()).collect() };
+
+    let (kept_a, kept_b) = (kept(a, b), kept(b, a));
+    for (i, v) in a.iter().enumerate() {
+        let at = format!("{name}.{}", v.name);
+        let Some(j) = b.iter().position(|w| w.name == v.name) else {
+            let shifts = !ids && a[i + 1..].iter().any(|w| kept_a.contains(&w.name));
+            push(
+                true,
+                &at,
+                if shifts {
+                    format!("variant removed; later variants shift position ({HINT})")
+                } else {
+                    "variant removed".into()
+                },
+            );
+            continue;
+        };
+
+        let (old_n, new_n) = (v.number(i), b[j].number(j));
+        if old_n != new_n {
+            if ids {
+                push(
+                    true,
+                    &at,
+                    format!("variant number changed from {old_n} to {new_n} (its @id, or its position without one; Protobuf puts it on the wire)"),
+                );
+            } else if kept_a.iter().position(|n| *n == v.name) != kept_b.iter().position(|n| *n == v.name) {
+                push(true, &at, format!("variant moved from position {old_n} to {new_n} ({HINT})"));
+            }
+        }
+
+        match (&v.payload, &b[j].payload) {
+            (None, None) => {}
+            (Some(old_p), Some(new_p)) if widens(old_p, new_p) => {}
+            _ => push(true, &at, "variant payload changed incompatibly".into()),
+        }
+    }
+
+    for (j, w) in b.iter().enumerate().filter(|(_, w)| !a.iter().any(|v| v.name == w.name)) {
+        let at = format!("{name}.{}", w.name);
+        let n = w.number(j);
+        match a.iter().enumerate().find(|&(i, v)| v.number(i) == n) {
+            Some((_, v)) if ids => push(true, &at, format!("variant added with number {n}, which old variant {} had", v.name)),
+            Some((_, v)) => push(
+                true,
+                &at,
+                format!("variant inserted at position {n}, which old variant {} had ({HINT})", v.name),
+            ),
+            None => push(false, &at, "variant added (old readers will reject it)".into()),
+        }
+    }
 }

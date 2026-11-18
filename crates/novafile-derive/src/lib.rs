@@ -5,7 +5,7 @@
 //!
 //! Attributes — container: `#[nova(name = "…", version = "…", rename = "TypeName", open)]`;
 //! field: `#[nova(rename = "…", key, id = N, range = "1..65535", len = "..64, utf8",
-//! default = "flow literal", deprecated, skip)]`; variant: `#[nova(rename = "…")]`.
+//! default = "flow literal", deprecated, skip)]`; variant: `#[nova(rename = "…", id = N)]`.
 //! Serde attributes are honoured so the schema matches `novafile-serde`'s output:
 //! `rename`, `rename_all`, `default`, `skip`, `skip_serializing`/`skip_deserializing`.
 
@@ -405,7 +405,8 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
                     }
                 };
 
-                variants.push(quote!(#krate::VariantDef { name: #name.to_owned(), payload: #payload }));
+                let id = if let Some(n) = a.id { quote!(Some(#n)) } else { quote!(None) };
+                variants.push(quote!(#krate::VariantDef { name: #name.to_owned(), payload: #payload, id: #id }));
             }
 
             quote!(#krate::Def::Enum(vec![#(#variants),*]))

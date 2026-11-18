@@ -30,8 +30,8 @@
 //! | `duration` | `google.protobuf.Duration` | Same shape; seconds and nanos carry the same sign. |
 //! | `list<T>` `T[]` `set<T>` | `repeated T` | Packed for numeric scalars and enums; both packed and unpacked input is accepted. |
 //! | `map<K, V>` | `map<K, V>` | `K` must be `string` or an integer kind. |
-//! | `enum E` with only unit variants | `enum E` | `E_UNSPECIFIED = 0`, then `E_VARIANT = 1, 2, …` in declared order (`SCREAMING_SNAKE`, prefixed by the enum name). |
-//! | `enum E` with a payload variant | `message E { oneof variant { … } }` | Variant *i* (0-based) is field *i* + 1; a unit variant is a `google.protobuf.Empty` member. |
+//! | `enum E` with only unit variants | `enum E` | `E_UNSPECIFIED = 0`, then `E_VARIANT = n` (`SCREAMING_SNAKE`, prefixed by the enum name): `n` is the variant's `@id(n)` (at most 2147483647), or `1, 2, …` in declared order when the enum has no ids. |
+//! | `enum E` with a payload variant | `message E { oneof variant { … } }` | A variant's field number is its `@id(n)` (a valid field number, like a record field's), or *i* + 1 for variant *i* (0-based) when the enum has no ids; a unit variant is a `google.protobuf.Empty` member. |
 //! | `name?: T` (optional field), `T?` (nullable), field with `= default` | `optional T` | proto3 explicit presence, for scalar and enum fields; message fields always have presence. |
 //! | `@deprecated` | `[deprecated = true]` | |
 //! | type aliases | — | Inlined; their constraints are checked by validation, not by Protobuf. |
