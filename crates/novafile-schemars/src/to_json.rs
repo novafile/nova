@@ -29,7 +29,10 @@ pub fn to_json_schema(schema: &Schema) -> Json {
     }
 
     if let Some(r) = &schema.root {
-        root.insert("$ref".into(), def_ref(r).into());
+        // A named root is a `$ref`; any other root type is written inline.
+        if let Json::Object(o) = ty(schema, r) {
+            root.extend(o);
+        }
     }
 
     let mut defs = Map::new();

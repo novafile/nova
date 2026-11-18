@@ -122,7 +122,7 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
     if let Some(r) = root_ref {
         let n = c.names[&r].clone();
         c.root_name.clone_from(&n);
-        schema.root = Some(n);
+        schema.root = Some(TypeRef::new(TypeKind::Named(n)));
     } else if !structural.is_empty() || matches!(json, Json::Bool(true)) {
         let title = root_obj
             .get("title")
@@ -130,7 +130,7 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
             .filter(|t| novafile_schema::SchemaRef::parse(t).is_err());
         let n = c.fresh(&title.map_or_else(|| "Root".into(), sanitize_def_name));
         c.root_name.clone_from(&n);
-        schema.root = Some(n.clone());
+        schema.root = Some(TypeRef::new(TypeKind::Named(n.clone())));
         let d = c.def_of(&Json::Object(root_obj.clone()), "#", &n);
         c.defs.push((n, d));
     }

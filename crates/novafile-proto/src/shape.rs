@@ -430,7 +430,12 @@ impl<'s> Plan<'s> {
 
 /// Classify the `@root` definition, which must become a message.
 fn root_message(schema: &Schema) -> Result<Message<'_>, String> {
-    let root = schema.root.as_deref().ok_or("schema has no @root; Protobuf needs a root message")?;
+    let root = match &schema.root {
+        None => return Err("schema has no @root; Protobuf needs a root message".into()),
+        Some(t) => schema
+            .root_name()
+            .ok_or_else(|| format!("@root {t}: must name a record definition to become a Protobuf message"))?,
+    };
     let at = || format!("@root {root}");
     let not_a_message = || format!("{}: must be a record (or an enum with payloads) to become a Protobuf message", at());
     let (name, def) = schema.defs.iter().find(|(n, _)| n == root).ok_or_else(|| format!("{}: not defined", at()))?;

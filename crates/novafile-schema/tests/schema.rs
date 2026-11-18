@@ -439,7 +439,7 @@ fn deeply_nested_types_are_rejected() {
 #[test]
 fn positional_nova_lines() {
     use novafile_text::lines::{WriteMode, read_str, write_string};
-    let s = parse_schema("@schema logs@1.0.0\n@root Events\ntype Events = Event[]\nrecord Event:\n  id: u32\n  msg?: string\n").unwrap();
+    let s = parse_schema("@schema logs@1.0.0\n@root Event[]\nrecord Event:\n  id: u32\n  msg?: string\n").unwrap();
     let records = vec![
         novafile_text::parse_flow("{id: 1, msg: hi}").unwrap(),
         novafile_text::parse_flow("{id: 2}").unwrap(),
@@ -454,11 +454,34 @@ fn positional_nova_lines() {
     assert_eq!(back.records, records);
 
     // A different schema, or none, cannot read it.
-    let other = parse_schema("@schema logs@1.0.0\n@root Events\ntype Events = Event[]\nrecord Event:\n  id: u64\n  msg?: string\n").unwrap();
+    let other = parse_schema("@schema logs@1.0.0\n@root Event[]\nrecord Event:\n  id: u64\n  msg?: string\n").unwrap();
     assert!(read_str(&text, Some(&other)).errors[0].message.contains("fingerprint"));
 
     // The root must be a list.
     let flat = parse_schema("@schema one@1.0.0\n@root Event\nrecord Event:\n  id: u32\n").unwrap();
     let err = write_string(&records, WriteMode::Positional(&flat), None, None, None).unwrap_err();
     assert!(err.to_string().contains("list @root"), "{err}");
+}
+
+#[test]
+fn root_type_expressions() {
+    let s = parse_schema("@schema evs@1.0.0\n@root Event[]\nrecord Event:\n  id: u32\n").unwrap();
+    // Canonical text writes the root in long form; the descriptor carries it as a type.
+    assert!(s.to_canonical_text().contains("@root list<Event>"), "{}", s.to_canonical_text());
+    assert_eq!(parse_schema(&s.to_canonical_text()).unwrap().fingerprint(), s.fingerprint());
+    let back = novafile_schema::Schema::from_value(&s.to_value()).unwrap();
+    assert_eq!(back.fingerprint(), s.fingerprint());
+    assert_eq!(s.root_name(), None);
+
+    s.validate(&novafile_text::parse("- id: 1\n- id: 2\n").unwrap()).unwrap();
+    assert!(s.validate(&novafile_text::parse("id: 1\n").unwrap()).is_err());
+
+    let e = parse_schema("@root Missing[]\n").unwrap_err().to_string();
+    assert!(e.contains("@root: unknown type Missing"), "{e}");
+    assert!(parse_schema("@root list<\n").is_err());
+
+    // Named roots are unchanged in text and descriptor.
+    let named = parse_schema(SCHEMA).unwrap();
+    assert_eq!(named.root_name(), Some("Infrastructure"));
+    assert!(named.to_canonical_text().contains("@root Infrastructure\n"));
 }

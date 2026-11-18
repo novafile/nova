@@ -343,7 +343,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
             schema.version = Some(r.version);
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("@root ") {
-            schema.root = Some(rest.trim().to_owned());
+            schema.root = Some(parse_type(rest.trim()).map_err(|m| err(i, format!("@root: {m}")))?);
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("type ") {
             let (name, ty) = rest.split_once('=').ok_or_else(|| err(i, "expected `type Name = T`".into()))?;
@@ -592,7 +592,7 @@ fn check_refs(s: &Schema) -> Result<(), String> {
     }
 
     if let Some(r) = &s.root {
-        s.def(r).ok_or_else(|| format!("unknown root type {r}"))?;
+        walk(s, r).map_err(|m| format!("@root: {m}"))?;
     }
 
     Ok(())

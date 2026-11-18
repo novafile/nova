@@ -353,8 +353,8 @@ pub struct Schema {
     pub name: Option<String>,
     /// The version from the `@schema` line; set together with `name`.
     pub version: Option<crate::Version>,
-    /// `@root`: the definition documents resolve against, if any.
-    pub root: Option<String>,
+    /// `@root`: the type documents resolve against, if any; usually a named definition.
+    pub root: Option<TypeRef>,
     /// Definitions in declaration order; names are unique.
     pub defs: Vec<(String, Def)>,
 }
@@ -366,10 +366,19 @@ impl Schema {
         self.defs.iter().find(|(n, _)| n == name).map(|(_, d)| d)
     }
 
-    /// The `@root` definition as a named type, if the schema has a root.
+    /// The `@root` type, if the schema has a root.
     #[must_use]
     pub fn root_type(&self) -> Option<TypeRef> {
-        self.root.as_ref().map(|r| TypeRef::new(TypeKind::Named(r.clone())))
+        self.root.clone()
+    }
+
+    /// The name of the `@root` definition, if the root is a plain named type.
+    #[must_use]
+    pub fn root_name(&self) -> Option<&str> {
+        match &self.root.as_ref()?.kind {
+            TypeKind::Named(n) => Some(n),
+            _ => None,
+        }
     }
 }
 

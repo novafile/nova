@@ -39,7 +39,7 @@ fn compile(schema: &Schema) -> MessageDescriptor {
     }
 
     let pool: DescriptorPool = compiler.descriptor_pool();
-    let root = schema.root.as_deref().unwrap().replace('-', "_");
+    let root = schema.root_name().unwrap().replace('-', "_");
     let full = match novafile_proto::package_name(schema) {
         Some(p) => format!("{p}.{root}"),
         None => root,

@@ -2,7 +2,7 @@
 //!
 //! [`Schema::to_value`] produces the *descriptor* of a schema: an ordinary
 //! NOVA value described by the meta-schema [`meta_schema`]
-//! (`nova-schema@0.2.0`). [`Schema::from_value`] turns a descriptor back
+//! (`nova-schema@0.3.0`). [`Schema::from_value`] turns a descriptor back
 //! into a schema by rendering its canonical text and parsing that, so
 //! descriptors are validated exactly like hand-written schemas.
 
@@ -128,7 +128,7 @@ impl Schema {
         }
 
         if let Some(r) = &self.root {
-            top.push(("root", s(r)));
+            top.push(("root", type_value(r)));
         }
 
         let mut defs: Vec<&(String, Def)> = self.defs.iter().collect();
@@ -223,7 +223,7 @@ impl Schema {
         let mut schema = Schema {
             name: text("name"),
             version: None,
-            root: text("root"),
+            root: r.get("root").map(value_type).transpose()?,
             defs: Vec::new(),
         };
 

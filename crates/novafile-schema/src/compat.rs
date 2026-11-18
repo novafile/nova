@@ -107,7 +107,11 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
     };
 
     if old.root != new.root {
-        push(true, "@root", format!("root changed from {:?} to {:?}", old.root, new.root));
+        push(
+            true,
+            "@root",
+            format!("root changed from {} to {}", shown(old.root.as_ref()), shown(new.root.as_ref())),
+        );
     }
 
     for (name, od) in &old.defs {
@@ -257,4 +261,9 @@ fn enum_changes(name: &str, a: &[VariantDef], b: &[VariantDef], push: &mut impl 
             None => push(false, &at, "variant added (old readers will reject it)".into()),
         }
     }
+}
+
+/// A root type for messages: the type expression, or `none`.
+fn shown(t: Option<&crate::TypeRef>) -> String {
+    t.map_or_else(|| "none".into(), ToString::to_string)
 }

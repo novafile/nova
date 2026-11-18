@@ -53,7 +53,7 @@ impl SchemaGen {
     /// # Panics
     ///
     /// Panics if `version` is not a valid `SemVer` version (a bad `#[nova(version)]`).
-    pub fn into_schema(self, root: Option<String>, name: Option<&str>, version: Option<&str>) -> Schema {
+    pub fn into_schema(self, root: Option<TypeRef>, name: Option<&str>, version: Option<&str>) -> Schema {
         Schema {
             name: name.map(str::to_owned),
             version: version.map(|v| crate::Version::parse(v).unwrap_or_else(|e| panic!("#[nova(version)]: {e}"))),
@@ -97,12 +97,12 @@ pub trait NovaSchema {
 pub fn schema_for<T: NovaSchema>() -> Schema {
     let mut generator = SchemaGen::default();
     let ty = T::nova_type(&mut generator);
-    let root = if let TypeKind::Named(n) = ty.kind {
-        n
+    let root = if let TypeKind::Named(_) = ty.kind {
+        ty
     } else {
-        // Non-named roots (e.g. `Vec<Item>`) get an alias so they can be `@root`.
+        // Non-named roots (e.g. `Vec<Item>`) get a `Root` alias, which keeps their name stable.
         generator.defs.push(("Root".into(), Def::Alias(ty)));
-        "Root".into()
+        TypeRef::new(TypeKind::Named("Root".into()))
     };
 
     let (name, version) = T::nova_schema_id().map_or((None, None), |(n, v)| (Some(n), Some(v)));
