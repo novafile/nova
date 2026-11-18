@@ -214,3 +214,63 @@ fn schema_next_to_a_loose_file() {
     h.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
 }
+
+impl Client {
+    /// The next diagnostics published for `uri`, skipping those for other documents.
+    fn diagnostics_for(&self, uri: &str) -> Value {
+        loop {
+            if let Message::Notification(n) = self.conn.receiver.recv_timeout(Duration::from_secs(10)).unwrap()
+                && n.method == "textDocument/publishDiagnostics"
+                && n.params["uri"] == uri
+            {
+                return n.params["diagnostics"].clone();
+            }
+        }
+    }
+}
+
+/// A syntax error at a multibyte character gets a range on character
+/// boundaries instead of killing the server.
+#[test]
+fn syntax_error_at_a_multibyte_character() {
+    let (mut c, server, dir) = start();
+    let uri = format!("file://{}/nbsp.nova", dir.display());
+    open(&c, &uri, "a: 1\n\u{a0}b: 2\n");
+    let d = c.diagnostics();
+    assert_eq!(d[0]["code"], "nova::syntax", "{d}");
+    assert_eq!(d[0]["range"]["start"]["line"], 1, "{d}");
+
+    // Still answering.
+    c.request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri}}));
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    server.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Saving or closing a schema re-reads it from disk and revalidates open documents.
+#[test]
+fn schema_reloads_on_save_and_close() {
+    let (mut c, server, dir) = start();
+    let uri = format!("file://{}/infra.nova", dir.display());
+    let schema = format!("file://{}/infrastructure.novs", dir.display());
+    let relaxed = SCHEMA.replace("u16 @range(1..65535)", "u16 @range(0..65535)");
+    open(&c, &uri, &DOC.replace("port: 3000", "port: 0"));
+    assert_eq!(c.diagnostics().as_array().unwrap().len(), 1);
+
+    // Saved from another editor: the disk copy is read again.
+    std::fs::write(dir.join("infrastructure.novs"), &relaxed).unwrap();
+    c.notify("textDocument/didSave", json!({"textDocument": {"uri": schema}}));
+    assert_eq!(c.diagnostics_for(&uri), json!([]));
+
+    // Closing an unsaved strict edit falls back to the relaxed disk copy.
+    open(&c, &schema, SCHEMA);
+    assert_eq!(c.diagnostics_for(&uri).as_array().unwrap().len(), 1);
+    c.notify("textDocument/didClose", json!({"textDocument": {"uri": schema}}));
+    assert_eq!(c.diagnostics_for(&uri), json!([]));
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    server.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+}

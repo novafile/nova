@@ -10,14 +10,15 @@
 //! - document-preserving formatting (human profile): comments, blank lines
 //!   and spellings are kept (spec §3).
 
-use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
+use lsp_server::{Connection, Message, Notification, Request, Response};
 use lsp_types::notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument, Notification as _, PublishDiagnostics};
 use lsp_types::request::{Completion, DocumentSymbolRequest, Formatting, HoverRequest, Request as _};
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Hover,
-    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
-    PublishDiagnosticsParams, Range, ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams,
+    DocumentSymbolResponse, Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams, MarkupContent, MarkupKind, NumberOrString, OneOf,
+    Position, PublishDiagnosticsParams, Range, ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, TextEdit, Url,
 };
 
 use novafile_schema::{Def, Schema, SchemaRef, TypeKind};
@@ -44,7 +45,12 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 )]
 pub fn run(conn: Connection) -> Result<(), Error> {
     let caps = ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
+            open_close: Some(true),
+            change: Some(TextDocumentSyncKind::FULL),
+            save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+            ..Default::default()
+        })),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
@@ -137,12 +143,17 @@ fn line_range(src: &str, line: usize) -> Range {
 
 /// A token-sized range at a byte offset.
 fn point_range(src: &str, offset: usize) -> Range {
-    let rest = src.get(offset..).unwrap_or("");
+    let mut offset = offset.min(src.len());
+    while !src.is_char_boundary(offset) {
+        offset -= 1;
+    }
+
+    let rest = &src[offset..];
+    // At least one whole character, so the end never falls inside a multibyte one.
     let n = rest
         .find(|c: char| c.is_whitespace() || ",[]{}()".contains(c))
         .unwrap_or(rest.len())
-        .max(1)
-        .min(rest.len());
+        .max(rest.chars().next().map_or(0, char::len_utf8));
     range(src, offset, offset + n)
 }
 
@@ -222,6 +233,21 @@ impl Server<'_> {
                 self.disk_schemas.push((f, s));
             }
         }
+    }
+
+    /// Re-reads the `.novs` file at `uri` from disk into the known schemas, dropping it
+    /// if it is gone or no longer parses. Returns whether `uri` is a schema file.
+    fn reload_schema(&mut self, uri: &Url) -> bool {
+        let Some(path) = uri.to_file_path().ok().filter(|_| has_ext(uri.path(), "novs")) else {
+            return false;
+        };
+
+        self.disk_schemas.retain(|(p, _)| *p != path);
+        if let Some(s) = std::fs::read_to_string(&path).ok().and_then(|t| novafile_schema::parse_schema(&t).ok()) {
+            self.disk_schemas.push((path, s));
+        }
+
+        true
     }
 
     /// All known schemas; open editors take precedence over disk contents.
@@ -426,10 +452,20 @@ impl Server<'_> {
                     }
                 }
             }
-            DidSaveTextDocument::METHOD => {}
+            DidSaveTextDocument::METHOD => {
+                let p: DidSaveTextDocumentParams = serde_json::from_value(n.params)?;
+                if self.reload_schema(&p.text_document.uri) {
+                    self.publish_all()?;
+                }
+            }
             DidCloseTextDocument::METHOD => {
                 let p: DidCloseTextDocumentParams = serde_json::from_value(n.params)?;
                 self.docs.remove(&p.text_document.uri);
+                // The disk copy, possibly older than the editor's, takes over again.
+                if self.reload_schema(&p.text_document.uri) {
+                    self.publish_all()?;
+                }
+
                 let params = PublishDiagnosticsParams {
                     uri: p.text_document.uri,
                     diagnostics: vec![],
@@ -778,10 +814,4 @@ fn children_of(text: &str, p: &Parsed, parent: &Path) -> Vec<DocumentSymbol> {
             })
         })
         .collect()
-}
-
-/// Request id helper for tests.
-#[must_use]
-pub fn request_id(i: i32) -> RequestId {
-    RequestId::from(i)
 }
