@@ -36,7 +36,7 @@ detect-coding-agent = "0.2"
 facet = "=0.46.5"
 facet-reflect = "=0.46.5"
 jsonschema = { version = "0.61", default-features = false }
-lsp-server = "0.7"
+lsp-server = "0.10"
 lsp-types = "0.95"
 miette = "7"
 num-bigint = "0.4"
