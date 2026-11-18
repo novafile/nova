@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 
 use base64::Engine;
-use novafile_value::{Record, Value};
+use novafile_value::{Decimal, Record, Value};
 
 /// A lossy mapping performed while converting a NOVA value to JSON.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -146,7 +146,8 @@ impl P<'_> {
 
     /// Parse a number token. Integer-looking tokens become exact `int` values
     /// (error if out of range); anything with a fraction or exponent becomes a
-    /// `float`, which must not overflow binary64.
+    /// `float` if binary64 holds it exactly, else a `decimal` (error beyond 38
+    /// significant digits).
     ///
     /// The token is first scanned greedily and then validated against the strict
     /// JSON grammar (no leading zeros, no `+`, digits after `.` and `e`).
@@ -218,11 +219,12 @@ impl P<'_> {
         }
 
         let f: f64 = t.parse().map_err(|_| format!("invalid number {t}"))?;
-        if f.is_infinite() {
-            return Err(format!("number {t} overflows binary64"));
+        let exact = Decimal::parse(t).map_err(|e| format!("number {t} cannot be kept exactly: {e}"))?;
+        if f.is_finite() && Decimal::parse(&format!("{f:?}")) == Ok(exact) {
+            return Ok(Value::Float(f));
         }
 
-        Ok(Value::Float(f))
+        Ok(Value::Decimal(exact))
     }
 
     /// Parse a string literal starting at its opening quote, decoding escapes.
@@ -255,7 +257,11 @@ impl P<'_> {
                             if (0xD800..0xDC00).contains(&hi) && self.s[self.i..].starts_with("\\u") {
                                 self.i += 2;
                                 let lo = self.hex4()?;
-                                char::from_u32(0x10000 + ((hi - 0xD800) << 10) + (lo.wrapping_sub(0xDC00) & 0x3FF)).ok_or("JSON: bad surrogate")?
+                                if !(0xDC00..0xE000).contains(&lo) {
+                                    return self.err("unpaired surrogate");
+                                }
+
+                                char::from_u32(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)).ok_or("JSON: bad surrogate")?
                             } else {
                                 char::from_u32(hi).ok_or("JSON: unpaired surrogate")?
                             }
@@ -278,7 +284,8 @@ impl P<'_> {
 }
 
 /// Parse JSON text into a NOVA value. Numbers without fraction or exponent
-/// become `int` (exact); others become `float`. Duplicate keys are errors.
+/// become `int` (exact); others become `float`, or `decimal` where binary64
+/// would round them. Duplicate keys are errors.
 ///
 /// # Errors
 ///
@@ -493,6 +500,26 @@ mod tests {
             assert_eq!(w.len(), 1, "{w:?}"); // the big int
             assert_eq!(from_json_str(&j).unwrap(), v, "{j}");
         }
+    }
+
+    #[test]
+    fn numbers_binary64_would_round_stay_exact() {
+        let d = |s| Value::Decimal(Decimal::parse(s).unwrap());
+        assert_eq!(from_json_str("19.990000000000000000001").unwrap(), d("19.990000000000000000001"));
+        assert_eq!(from_json_str("1e-400").unwrap(), d("1e-400"));
+        assert_eq!(from_json_str("1e400").unwrap(), d("1e400"));
+        assert_eq!(from_json_str("0.1").unwrap(), Value::Float(0.1));
+        assert_eq!(from_json_str("-2.5e-3").unwrap(), Value::Float(-2.5e-3));
+        assert!(from_json_str("0.1000000000000000000000000000000000000001").is_err());
+    }
+
+    #[test]
+    fn rejects_unpaired_surrogates() {
+        for bad in [r#""\ud83dA""#, r#""\ud83d\u0041""#, r#""\ud83d""#, r#""\ude00""#] {
+            assert!(from_json_str(bad).is_err(), "{bad}");
+        }
+
+        assert_eq!(from_json_str(r#""\ud83d\ude00""#).unwrap(), Value::String("\u{1f600}".into()));
     }
 
     #[test]
