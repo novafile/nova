@@ -408,18 +408,13 @@ const META_REF: &str = "nova-schema@0.1.0";
 /// `.novs` files load as their schema descriptor. Protobuf input and positional text need
 /// `schema`; everything else ignores it.
 fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> {
-    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if ext == "novs" && from == InputFormat::Auto {
-        // Schema files load as their descriptor (spec §6.8), so every data tool works on them.
-        return Ok(Loaded {
-            directives: vec![("schema".into(), META_REF.into())],
-            value: load_schema(p)?.to_value(),
-        });
-    }
+    decode(p, read_bytes(p)?, from, schema)
+}
 
-    let bytes = read_bytes(p)?;
-    let ctx = |e: String| format!("{}: {e}", p.display());
-    let from = match from {
+/// Resolves `Auto` by magic bytes or by the extension of `p`; stays `Auto` when neither decides.
+fn detect(p: &Path, bytes: &[u8], from: InputFormat) -> InputFormat {
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    match from {
         InputFormat::Auto if bytes.starts_with(MAGIC) => InputFormat::Binary,
         InputFormat::Auto if ext == "jsonl" || ext == "ndjson" => InputFormat::Jsonl,
         InputFormat::Auto if ext == "json" => InputFormat::Json,
@@ -428,7 +423,22 @@ fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> 
         InputFormat::Auto if ext == "cbor" => InputFormat::Cbor,
         InputFormat::Auto if ext == "pb" || ext == "binpb" => InputFormat::Protobuf,
         f => f,
-    };
+    }
+}
+
+/// Decodes the already read contents of `p`, like [`load_with`].
+fn decode(p: &Path, bytes: Vec<u8>, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> {
+    let ctx = |e: String| format!("{}: {e}", p.display());
+    if p.extension().is_some_and(|e| e == "novs") && from == InputFormat::Auto {
+        // Schema files load as their descriptor (spec §6.8), so every data tool works on them.
+        let src = String::from_utf8(bytes).map_err(|_| ctx("not UTF-8".into()))?;
+        return Ok(Loaded {
+            directives: vec![("schema".into(), META_REF.into())],
+            value: schema_from_text(p, &src)?.to_value(),
+        });
+    }
+
+    let from = detect(p, &bytes, from);
 
     match from {
         InputFormat::Cbor => return Ok(json_loaded(novafile_formats::cbor::from_slice(&bytes).map_err(ctx)?)),
@@ -503,30 +513,33 @@ fn load_with(p: &Path, from: InputFormat, schema: Option<&Schema>) -> R<Loaded> 
     })
 }
 
-/// Is this file NOVA text (rather than JSON, JSON Lines or binary)?
+/// Is this file NOVA text (rather than another format by extension, or binary)?
 fn is_nova_text(p: &Path, text: &str) -> bool {
-    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-    !matches!(ext, "json" | "jsonl" | "ndjson") && !text.as_bytes().starts_with(MAGIC) && novafile_text::parse(text).is_ok()
+    matches!(detect(p, text.as_bytes(), InputFormat::Auto), InputFormat::Auto | InputFormat::Nova) && novafile_text::parse(text).is_ok()
 }
 
 /// Loads a schema from the schema language or from a schema descriptor (NOVA data).
 fn load_schema(p: &Path) -> R<Schema> {
-    let src = read_text(p)?;
+    schema_from_text(p, &read_text(p)?)
+}
+
+/// Parses `src`, the contents of the schema file `p`, like [`load_schema`].
+fn schema_from_text(p: &Path, src: &str) -> R<Schema> {
     // A schema descriptor (NOVA data, spec §6.8) is accepted wherever a schema is.
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
     if ext != "novs"
-        && let Ok(doc) = novafile_text::parse_document(&src)
+        && let Ok(doc) = novafile_text::parse_document(src)
         && doc.directive("schema").is_some_and(|r| r.starts_with("nova-schema@"))
     {
         let v = doc.body.to_value().map_err(|e| format!("{}: {e}", p.display()))?;
         return Ok(Schema::from_value(&v).map_err(|e| format!("{}: {e}", p.display()))?);
     }
 
-    parse_schema(&src).map_err(|e| {
+    parse_schema(src).map_err(|e| {
         if e.line == 0 {
             E::from(format!("{}: {}", p.display(), e.message))
         } else {
-            E::from(SourceDiagnostic::new("nova::schema", e.message.clone(), &name_of(p), &src).with_line_col(e.line, 1, "in this definition"))
+            E::from(SourceDiagnostic::new("nova::schema", e.message.clone(), &name_of(p), src).with_line_col(e.line, 1, "in this definition"))
         }
     })
 }
@@ -622,9 +635,50 @@ fn render_with(l: &Loaded, f: Format, strict: bool, schema: Option<&Schema>) -> 
 /// Writes bytes to the given file, or to stdout.
 fn out(bytes: &[u8], to: Option<&Path>) -> R<()> {
     match to {
-        Some(p) => Ok(std::fs::write(p, bytes).map_err(|e| format!("{}: {e}", p.display()))?),
+        // Devices and pipes (`-o /dev/stdout`) cannot be replaced by a rename.
+        Some(p) if std::fs::metadata(p).is_ok_and(|m| !m.is_file()) => Ok(std::fs::write(p, bytes).map_err(|e| format!("{}: {e}", p.display()))?),
+        Some(p) => write_atomic(p, bytes),
         None => Ok(std::io::stdout().write_all(bytes).map_err(|e| e.to_string())?),
     }
+}
+
+/// Replaces the file `p` with `bytes` atomically: a temporary file in the same directory,
+/// synced, then renamed over `p`, so readers never see a partial file.
+fn write_atomic(p: &Path, bytes: &[u8]) -> R<()> {
+    let err = |e: std::io::Error| format!("{}: {e}", p.display());
+    // Write through a symlink to its target instead of replacing the link.
+    let p = &std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let name = p.file_name().ok_or_else(|| format!("{}: not a file name", p.display()))?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = p.with_file_name(tmp_name);
+    let write = || -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        if let Ok(m) = std::fs::metadata(p) {
+            f.set_permissions(m.permissions())?;
+        }
+
+        f.sync_all()?;
+        std::fs::rename(&tmp, p)
+    };
+
+    write().map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        err(e).into()
+    })
+}
+
+/// Takes an exclusive lock for a read-modify-write of `p`; it lasts until the file is dropped.
+fn lock(p: &Path) -> R<std::fs::File> {
+    // A sidecar, since the atomic rename replaces the target's inode; it stays, as deleting it races other holders.
+    let mut name = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).into_os_string();
+    name.push(".lock");
+    let err = |e: std::io::Error| format!("{}: {e}", Path::new(&name).display());
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&name).map_err(err)?;
+    f.lock().map_err(err)?;
+    Ok(f)
 }
 
 /// Formats validation issues as an indented list, one per line.
@@ -688,19 +742,20 @@ fn run(cli: Cli) -> R<ExitCode> {
                 _ => None,
             };
 
-            let text = read_text(&file)
-                .ok()
-                .filter(|t| is_nova_text(&file, t) && file.extension().is_none_or(|e| e != "novs"));
             if file.extension().is_some_and(|e| e == "novs") && matches!(to, Format::Nova | Format::Canonical) {
                 out(load_schema(&file)?.to_canonical_text().as_bytes(), write.then_some(file.as_path()))?;
                 return Ok(ExitCode::SUCCESS);
             }
 
+            let input = read_bytes(&file)?;
+            let text = std::str::from_utf8(&input)
+                .ok()
+                .filter(|t| is_nova_text(&file, t) && file.extension().is_none_or(|e| e != "novs"));
             let bytes = match (profile, text) {
-                (Some(p), Some(t)) => novafile_text::format_preserving(&t, p)
-                    .map_err(|e| e.to_diagnostic(&name_of(&file), &t))?
+                (Some(p), Some(t)) => novafile_text::format_preserving(t, p)
+                    .map_err(|e| e.to_diagnostic(&name_of(&file), t))?
                     .into_bytes(),
-                _ => render_as(&load(&file)?, to, false)?,
+                _ => render_as(&decode(&file, input.clone(), InputFormat::Auto, None)?, to, false)?,
             };
 
             out(&bytes, write.then_some(file.as_path()))?;
@@ -823,7 +878,14 @@ fn run(cli: Cli) -> R<ExitCode> {
             }
         }
         Cmd::Patch { file, patch, schema, write } => {
-            let l = load(&file)?;
+            if write && file.as_os_str() == "-" {
+                return Err("-w needs a file to rewrite, not stdin".into());
+            }
+
+            // Held until the patched file is written, so a concurrent patch sees this one's result.
+            let _lock = write.then(|| lock(&file)).transpose()?;
+            let bytes = read_bytes(&file)?;
+            let l = decode(&file, bytes.clone(), InputFormat::Auto, None)?;
             let patch_src = read_text(&patch)?;
             let p = novafile_patch::parse_patch(&patch_src).map_err(|e| patch_error(&e, &patch, &patch_src))?;
             let s = schema.as_deref().map(load_schema).transpose()?;
@@ -838,10 +900,10 @@ fn run(cli: Cli) -> R<ExitCode> {
                 None => Ok(()),
             };
 
-            let text = read_text(&file).ok().filter(|t| is_nova_text(&file, t));
+            let text = std::str::from_utf8(&bytes).ok().filter(|t| is_nova_text(&file, t));
             let (bytes, applied) = if let Some(src) = text {
                 // Document-preserving: minimal edits to the source text.
-                let r = novafile_patch::apply_to_source(&src, &p, &validate).map_err(|e| patch_error(&e, &patch, &patch_src))?;
+                let r = novafile_patch::apply_to_source(src, &p, &validate).map_err(|e| patch_error(&e, &patch, &patch_src))?;
                 (r.text.into_bytes(), r.applied)
             } else {
                 let is_schema = file.extension().is_some_and(|e| e == "novs");
@@ -855,12 +917,28 @@ fn run(cli: Cli) -> R<ExitCode> {
                     eprintln!("note: {} is rewritten in canonical form (comments are not kept)", file.display());
                     (s.to_canonical_text().into_bytes(), applied)
                 } else {
+                    // Written back in the format it was read in.
+                    let to = match detect(&file, &bytes, InputFormat::Auto) {
+                        InputFormat::Binary => Some(Format::Binary),
+                        InputFormat::Json => Some(Format::Json),
+                        InputFormat::Yaml => Some(Format::Yaml),
+                        InputFormat::Toml => Some(Format::Toml),
+                        InputFormat::Cbor => Some(Format::Cbor),
+                        InputFormat::Jsonl | InputFormat::Protobuf => None,
+                        InputFormat::Auto | InputFormat::Nova if l.directives.iter().any(|(n, a)| n == "compat" && a == "json") => Some(Format::Json),
+                        InputFormat::Auto | InputFormat::Nova => Some(Format::Nova),
+                    };
+                    if write && to.is_none() {
+                        return Err(format!("{}: cannot write this format back; omit -w to print NOVA text", file.display()).into());
+                    }
+
                     let result = Loaded {
                         directives: l.directives,
                         value: applied.value.clone(),
                     };
 
-                    (render_as(&result, Format::Nova, false)?, applied)
+                    // In place, a lossy conversion would silently drop data from the file.
+                    (render_as(&result, to.unwrap_or(Format::Nova), write)?, applied)
                 }
             };
 
@@ -1006,6 +1084,7 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
     config.allow = allow;
     let mut warnings = 0;
     for file in files {
+        let _lock = (fix && file.as_os_str() != "-").then(|| lock(file)).transpose()?;
         let mut src = read_text(file)?;
         let is_schema = file.extension().is_some_and(|e| e == "novs");
         let run = |src: &str| -> R<Vec<novafile_lint::Finding>> {
@@ -1020,7 +1099,7 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
         if fix && findings.iter().any(|f| f.fix.is_some()) {
             let fixed = novafile_lint::apply_fixes(&src, &findings);
             let n = findings.iter().filter(|f| f.fix.is_some()).count();
-            std::fs::write(file, &fixed).map_err(|e| format!("{}: {e}", file.display()))?;
+            write_atomic(file, fixed.as_bytes())?;
             eprintln!("{}: applied {n} fix{}", file.display(), if n == 1 { "" } else { "es" });
             src = fixed;
             findings = run(&src)?;
