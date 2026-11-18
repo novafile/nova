@@ -481,8 +481,8 @@ impl<'a> Decoder<'a> {
     fn string(&mut self) -> Result<&'a str, DecodeError> {
         let h = self.varint()?;
         if h & 1 == 1 {
-            let idx = (h >> 1) as usize;
-            return match self.strings.get(idx) {
+            let idx = h >> 1;
+            return match usize::try_from(idx).ok().and_then(|i| self.strings.get(i)) {
                 Some(s) => Ok(s),
                 None => self.err(format!("string back-reference {idx} out of range")),
             };
@@ -642,9 +642,10 @@ impl<'a> Decoder<'a> {
                 let n = self.count()?;
                 let k = self.count()?;
                 let mut fields: Vec<&'a str> = Vec::with_capacity(k);
+                let mut seen = HashSet::with_capacity(k);
                 for _ in 0..k {
                     let f = self.string()?;
-                    if fields.contains(&f) {
+                    if !seen.insert(f) {
                         return Err(DecodeError {
                             offset: start,
                             message: format!("duplicate record-list field {f:?}"),
@@ -1138,6 +1139,14 @@ mod tests {
     }
 
     #[test]
+    fn rejects_back_reference_past_usize() {
+        // Index 2^64 used to truncate to 0 and resolve to the first string.
+        let mut b = vec![tag::LIST, 2, tag::STRING, 2, b'a', tag::STRING];
+        put_varint(&mut b, (1 << 65) | 1);
+        assert!(decode(&b).is_err());
+    }
+
+    #[test]
     fn revision_prefix() {
         let r = revision(&sample());
         let s = r.to_string();
@@ -1247,5 +1256,28 @@ mod table_tests {
         let v = decode(&nested_record_lists(64)).unwrap();
         assert_eq!(decode(&canonical_bytes(&v)).unwrap(), v);
         assert!(decode(&nested_record_lists(65)).is_err());
+    }
+
+    #[test]
+    fn many_record_list_fields() {
+        // 50 000 distinct fields and no rows: duplicate checking must not be quadratic.
+        let fields = |n: u128, dup: bool| {
+            let mut b = vec![tag::RECORD_LIST, 0];
+            put_varint(&mut b, n + u128::from(dup));
+            for i in 0..n {
+                let f = format!("f{i}");
+                put_varint(&mut b, (f.len() as u128) << 1);
+                b.extend(f.as_bytes());
+            }
+
+            if dup {
+                b.push(1); // back-reference to field 0
+            }
+
+            b.push(0);
+            b
+        };
+        assert_eq!(decode(&fields(50_000, false)).unwrap(), Value::List(vec![]));
+        assert!(decode(&fields(50_000, true)).is_err());
     }
 }
