@@ -95,7 +95,7 @@ let bytes = novafile::serde::to_vec(&svc)?;         // binary frame
 Schemas can be derived from the same types:
 
 ```rust
-use novafile::NovaSchema;                               // novafile = { features = ["derive"] }
+use novafile::NovaSchema;                               // cargo add novafile --features derive
 
 #[derive(Serialize, Deserialize, NovaSchema)]
 #[nova(name = "infrastructure", version = "1.0.0")]
@@ -141,7 +141,8 @@ let schema = Infrastructure::novafile_schema();             // == the hand-writt
 ## CLI
 
 ```bash
-cargo install --path crates/novafile-cli
+cargo install novafile-cli                 # from crates.io
+cargo install --path crates/novafile-cli   # from a checkout
 ```
 
 ```bash
@@ -186,7 +187,8 @@ When `nvf` runs under a coding agent (detected with [`detect-coding-agent`](http
 `nvf-lsp` speaks the Language Server Protocol over stdio:
 
 ```bash
-cargo install --path crates/novafile-lsp
+cargo install novafile-lsp                 # from crates.io
+cargo install --path crates/novafile-lsp   # from a checkout
 ```
 
 It reports syntax errors in documents, templates, patches and `.novs` schemas. A document that declares `@schema name@version` is validated against the newest `.novs` file in the workspace that can read that version. Hover shows the path, value and declared type. Completion offers missing record fields and enum variants. Formatting is only offered for documents without comments.
