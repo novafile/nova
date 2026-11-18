@@ -376,3 +376,58 @@ fn tab_after_dash_is_a_list_marker() {
         assert_eq!(parse(&t).unwrap_or_else(|e| panic!("{e}\n{t}")), v, "{t}");
     }
 }
+
+#[test]
+fn deep_template_conditions_hit_the_depth_limit() {
+    // Plain `parse` reads the template before rejecting it, so these must fail cleanly rather than
+    // overflow the stack.
+    let nots = format!("@template\n@if {}true:\n  a: 1\n", "not ".repeat(20_000));
+    let parens = format!("@template\n@if {}true{}:\n  a: 1\n", "(".repeat(5_000), ")".repeat(5_000));
+    let elses = format!("@template\n@if true:\n  a: 1\n{}", "@else if true:\n  a: 1\n".repeat(20_000));
+    for src in [&nots, &parens, &elses] {
+        let e = parse_document(src).unwrap_err().to_string();
+        assert!(e.contains("depth"), "{e}");
+        assert!(parse(src).is_err());
+    }
+
+    assert!(parse_document("@template\n@if not (not true):\n  a: 1\n@else if false:\n  b: 2\n").is_ok());
+}
+
+#[test]
+fn key_like_strings_round_trip() {
+    let header_key = rec(vec![(
+        "k",
+        Value::List(vec![rec(vec![("a}", Value::Int(1))]), rec(vec![("a}", Value::Int(2))])]),
+    )]);
+    for v in [
+        rec(vec![("s", "a:#b".into()), ("l", Value::List(vec!["x:#".into()]))]),
+        Value::List(vec!["a:#b".into()]),
+        Value::List(vec![header_key.clone()]),
+        header_key,
+    ] {
+        for p in [Profile::Human, Profile::Compact] {
+            let t = to_text(&v, p);
+            assert_eq!(parse(&t).unwrap_or_else(|e| panic!("{e}\n{t}")), v, "{t}");
+        }
+    }
+}
+
+#[test]
+fn many_directives_columns_and_comments_stay_linear() {
+    // Regression test for per-directive line counting, per-column duplicate checks and per-container
+    // comment scans, each quadratic before.
+    let start = std::time::Instant::now();
+    let directives = format!("{}a: 1\n", "@x-a 1\n".repeat(80_000));
+    assert_eq!(parse_document(&directives).unwrap().directives[79_999].line, 80_000);
+    let cols: Vec<String> = (0..20_000).map(|i| format!("c{i}")).collect();
+    let table = format!("t[1]{{{}}}:\n  {}\n", cols.join(","), vec!["1"; 20_000].join(","));
+    parse(&table).unwrap();
+    let wide = Value::List(vec![rec(cols.iter().map(|c| (c.as_str(), Value::Int(1))).collect()); 2]);
+    let _ = to_text(&wide, Profile::Compact);
+    let commented = (0..20_000).fold(String::new(), |mut s, i| {
+        let _ = writeln!(s, "k{i}: [1]  # c{i}");
+        s
+    });
+    novafile_text::format_preserving(&commented, Profile::Human).unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(20), "took {:?}", start.elapsed());
+}

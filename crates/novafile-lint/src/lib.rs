@@ -26,7 +26,7 @@ pub use case::{Case, split_words};
 use novafile_text::spans::{SpanKind, SpanMap};
 use novafile_text::{Path, Segment};
 use novafile_value::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Severity of a finding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -109,8 +109,7 @@ impl Config {
 
 /// Whether `s` is a bare key that needs no quotes.
 fn is_ident(s: &str) -> bool {
-    let b = s.as_bytes();
-    !b.is_empty() && (b[0].is_ascii_alphabetic() || b[0] == b'_') && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-')
+    novafile_text::key_text(s) == s
 }
 
 /// Lint a NOVA text document.
@@ -186,7 +185,7 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
         config.allow.push("key-case".into());
     }
 
-    keys(src, &spans, &value, &config, has_schema, &mut out);
+    keys(&spans, &config, has_schema, &mut out);
     scalars(src, &spans, &value, &config, has_schema, &mut out);
     out.sort_by_key(|f| (f.start, f.rule));
     Ok(out)
@@ -194,7 +193,7 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
 
 /// Key rules: `key-collision` and `quoted-key` within each record, and `key-case`
 /// (with a fix when the new name is free) unless the document has a schema.
-fn keys(_src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schema: bool, out: &mut Vec<Finding>) {
+fn keys(spans: &SpanMap, config: &Config, has_schema: bool, out: &mut Vec<Finding>) {
     // Group record entries by their parent record.
     let mut by_parent: HashMap<String, Vec<(&novafile_text::spans::Span, String)>> = HashMap::new();
     for s in spans.iter() {
@@ -206,9 +205,16 @@ fn keys(_src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schema:
         }
     }
 
-    let _ = value;
     for entries in by_parent.values() {
-        let names: Vec<&str> = entries.iter().map(|(_, k)| k.as_str()).collect();
+        let names: HashSet<&str> = entries.iter().map(|(_, k)| k.as_str()).collect();
+        // How many keys `key-case` would rename to each name; two renames to one name collide.
+        let mut renamed: HashMap<String, usize> = HashMap::new();
+        for (_, k) in entries {
+            if (!config.on("quoted-key") || is_ident(k)) && !config.case.matches(k) {
+                *renamed.entry(config.case.convert(k)).or_default() += 1;
+            }
+        }
+
         // key-collision: same words, different spelling.
         if config.on("key-collision") {
             let mut seen: HashMap<Vec<String>, &str> = HashMap::new();
@@ -254,18 +260,20 @@ fn keys(_src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schema:
             }
 
             let want = config.case.convert(k);
-            let collides = names.contains(&want.as_str());
+            let note = if names.contains(want.as_str()) {
+                " (not fixed: that key exists)"
+            } else if renamed[&want] > 1 {
+                " (not fixed: another key would get that name too)"
+            } else {
+                ""
+            };
             out.push(Finding {
                 rule: "key-case",
                 level: Level::Warning,
-                message: format!(
-                    "key `{k}` is not {}: `{want}`{}",
-                    config.case.name(),
-                    if collides { " (not fixed: that key exists)" } else { "" }
-                ),
+                message: format!("key `{k}` is not {}: `{want}`{note}", config.case.name()),
                 start: a,
                 end: b,
-                fix: (!collides && is_ident(&want)).then_some(Fix {
+                fix: (note.is_empty() && is_ident(&want)).then_some(Fix {
                     start: a,
                     end: b,
                     replacement: want,

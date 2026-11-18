@@ -147,6 +147,31 @@ fn output_budget_stops_exponential_reuse() {
 }
 
 #[test]
+fn output_budget_counts_interpolated_bytes() {
+    // Each `@let` doubles the string: 2^24 bytes, over the default budget yet charged as one node before.
+    let mut src = String::from("@template\n@let s0 = \"xx\"\n");
+    for i in 1..24 {
+        let _ = writeln!(src, "@let s{i} = \"${{s{p}}}${{s{p}}}\"", p = i - 1);
+    }
+
+    src.push_str("x: $s23\n");
+    let e = render(&src, &Record::new(), &Options::default()).unwrap_err().to_string();
+    assert!(e.contains("exceeds the limit"), "{e}");
+}
+
+#[test]
+fn many_record_keys_render_in_linear_time() {
+    // Regression test for a linear duplicate-key scan per field.
+    let start = std::time::Instant::now();
+    let src = (0..100_000).fold(String::from("@template\n"), |mut s, i| {
+        let _ = writeln!(s, "k{i}: {i}");
+        s
+    });
+    render(&src, &Record::new(), &Options::default()).unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(20), "took {:?}", start.elapsed());
+}
+
+#[test]
 fn data_documents_render_to_themselves_and_templates_need_rendering() {
     let v = render("a: 1\n", &Record::new(), &Options::default()).unwrap();
     assert_eq!(v, novafile_text::parse("a: 1\n").unwrap());
