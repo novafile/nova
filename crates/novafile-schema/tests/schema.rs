@@ -298,3 +298,13 @@ fn schemas_as_data() {
 fn nova_patch_free_select(v: &Value, path: &str) -> String {
     novafile_text::flow_string(novafile_text::Path::parse(path).unwrap().get(v).unwrap())
 }
+
+#[test]
+fn deeply_nested_types_are_rejected() {
+    let deep = format!("{}int{}", "list<".repeat(100_000), ">".repeat(100_000));
+    assert!(novafile_schema::parse_type(&deep).unwrap_err().contains("nested deeper"));
+    let tuples = format!("{}int{}", "(".repeat(100_000), ")".repeat(100_000));
+    assert!(novafile_schema::parse_type(&tuples).is_err());
+    let ok = format!("{}int{}", "list<".repeat(60), ">".repeat(60));
+    assert!(novafile_schema::parse_type(&ok).is_ok());
+}
