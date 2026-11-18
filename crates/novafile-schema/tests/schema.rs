@@ -165,6 +165,11 @@ fn semver_bumps_are_enforced() {
         check_versions(&old, &with(&broken, "2.0.0-rc.1")).unwrap().problems,
         [] as [std::string::String; 0]
     );
+    // In 0.y a minor bump is the major one; over-bumping additions is fine.
+    let r = check_versions(&with(SCHEMA, "0.2.3"), &with(&added, "0.3.0")).unwrap();
+    assert_eq!((r.kind, r.problems.len()), (ChangeKind::Compatible, 0), "{:?}", r.problems);
+    let r = check_versions(&with(SCHEMA, "0.2.3"), &with(&added, "0.2.4")).unwrap();
+    assert_eq!((r.kind, r.problems.len()), (ChangeKind::Compatible, 0), "{:?}", r.problems);
 }
 
 #[test]
@@ -177,6 +182,14 @@ fn document_references() {
     assert!(s.accepts_reference("billing@1.0.0").unwrap_err().contains("not"));
     assert!(
         s.accepts_reference("infrastructure@1.3.0#0000000000000000")
+            .unwrap_err()
+            .contains("fingerprint")
+    );
+    // Build metadata does not change the version, so the fingerprint is still checked.
+    let built = parse_schema(&SCHEMA.replace("@1.0.0", "@1.3.0+b")).unwrap();
+    assert!(
+        built
+            .accepts_reference("infrastructure@1.3.0+a#0000000000000000")
             .unwrap_err()
             .contains("fingerprint")
     );

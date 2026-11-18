@@ -72,7 +72,7 @@ impl Schema {
         }
 
         if let Some(fp) = &r.fingerprint
-            && r.version == mine.version
+            && r.version.precedence(&mine.version) == std::cmp::Ordering::Equal
             && *fp != self.fingerprint_hex()
         {
             return Err(format!("fingerprint mismatch: document expects #{fp}, schema is #{}", self.fingerprint_hex()));
@@ -142,10 +142,12 @@ pub fn check_versions(old: &Schema, new: &Schema) -> Result<VersionCheck, String
         let ok = match kind {
             // A breaking change must leave the old compatibility range.
             ChangeKind::Breaking => !n.version.can_read(&o.version),
-            // Additions need at least a minor bump (0.y: patch), and must stay readable.
+            // Additions need at least a minor bump (0.y: patch), and must stay
+            // readable unless they over-bump to a major (0.y: minor) release.
             ChangeKind::Compatible => {
-                n.version.precedence(&minimum) != std::cmp::Ordering::Less
-                    && (n.version.major != o.version.major || n.version.can_read(&o.version) || (o.version.major == 0 && o.version.minor == 0))
+                let (nv, ov) = (&n.version, &o.version);
+                nv.precedence(&minimum) != std::cmp::Ordering::Less
+                    && (nv.major != ov.major || (nv.major == 0 && nv.minor != ov.minor) || nv.can_read(ov) || (ov.major == 0 && ov.minor == 0))
             }
             ChangeKind::None => true,
         };
