@@ -1,5 +1,6 @@
 //! NOVA binary value encoding (spec §5.1–5.3) and revisions.
 
+use crate::record::INDEX_THRESHOLD;
 use crate::{Decimal, DuplicateKey, Duration, Rational, Record, Timestamp, Value, ValueRef};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -49,9 +50,6 @@ pub(crate) mod tag {
     /// mode byte, then per row an optional presence bitmap and the present values.
     pub const RECORD_LIST: u8 = 0x13;
 }
-
-/// Records up to this many fields are checked for duplicate keys by scanning.
-const RECORD_SCAN: usize = 16;
 
 /// The single NaN bit pattern written for every NaN, so all NaNs encode (and compare) equal.
 const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
@@ -483,8 +481,8 @@ impl<'a> Decoder<'a> {
     fn string(&mut self) -> Result<&'a str, DecodeError> {
         let h = self.varint()?;
         if h & 1 == 1 {
-            let idx = (h >> 1) as usize;
-            return match self.strings.get(idx) {
+            let idx = h >> 1;
+            return match usize::try_from(idx).ok().and_then(|i| self.strings.get(i)) {
                 Some(s) => Ok(s),
                 None => self.err(format!("string back-reference {idx} out of range")),
             };
@@ -515,7 +513,13 @@ impl<'a> Decoder<'a> {
     fn value<T: Build<'a>>(&mut self) -> Result<T, DecodeError> {
         let start = self.pos;
         let kind = self.byte()?;
-        if self.depth >= self.limits.max_depth && matches!(kind, tag::LIST..=tag::MAP | tag::VARIANT) {
+        // A record list nests twice (list, then records), as its canonical re-encoding does.
+        let nesting = match kind {
+            tag::LIST..=tag::MAP | tag::VARIANT => 1,
+            tag::RECORD_LIST => 2,
+            _ => 0,
+        };
+        if self.depth + nesting > self.limits.max_depth {
             return self.err("nesting depth limit exceeded");
         }
 
@@ -582,7 +586,9 @@ impl<'a> Decoder<'a> {
                 let mut seen = HashSet::new();
                 for _ in 0..n {
                     let v = self.value::<T>()?;
-                    if kind == tag::SET && !seen.insert(v.canonical()) {
+                    // shortcut: each set or map with two or more members re-encodes them, so a
+                    // chain of them costs up to max_depth x the input; cache child encodings if that bites.
+                    if kind == tag::SET && n > 1 && !seen.insert(v.canonical()) {
                         return Err(DecodeError {
                             offset: start,
                             message: "duplicate set element".into(),
@@ -620,7 +626,7 @@ impl<'a> Decoder<'a> {
                 let mut seen = HashSet::new();
                 for _ in 0..n {
                     let k = self.value::<T>()?;
-                    if !seen.insert(k.canonical()) {
+                    if n > 1 && !seen.insert(k.canonical()) {
                         return Err(DecodeError {
                             offset: start,
                             message: "duplicate map key".into(),
@@ -638,9 +644,10 @@ impl<'a> Decoder<'a> {
                 let n = self.count()?;
                 let k = self.count()?;
                 let mut fields: Vec<&'a str> = Vec::with_capacity(k);
+                let mut seen = HashSet::with_capacity(k);
                 for _ in 0..k {
                     let f = self.string()?;
-                    if fields.contains(&f) {
+                    if !seen.insert(f) {
                         return Err(DecodeError {
                             offset: start,
                             message: format!("duplicate record-list field {f:?}"),
@@ -872,7 +879,7 @@ impl<'a> Build<'a> for ValueRef<'a> {
 
     fn insert((entries, keys): &mut RecordRef<'a>, key: &'a str, v: Self) -> Result<(), DuplicateKey> {
         // Small records are scanned; past that, keys go into a set (as `Record` indexes them).
-        let duplicate = if entries.len() < RECORD_SCAN {
+        let duplicate = if entries.len() < INDEX_THRESHOLD {
             entries.iter().any(|(e, _)| *e == key)
         } else {
             !keys.get_or_insert_with(|| Box::new(entries.iter().map(|(e, _)| *e).collect())).insert(key)
@@ -895,7 +902,83 @@ impl<'a> Build<'a> for ValueRef<'a> {
     }
 
     fn canonical(&self) -> Vec<u8> {
-        canonical_bytes(&self.to_value())
+        let mut out = Vec::new();
+        canonical_ref(self, &mut out);
+        out
+    }
+}
+
+/// Append the canonical encoding of `v` (as [`canonical_bytes`] of its
+/// [`ValueRef::to_value`]) without copying it into a [`Value`] first.
+fn canonical_ref(v: &ValueRef<'_>, out: &mut Vec<u8>) {
+    /// The canonical encoding of `v` on its own.
+    fn part(v: &ValueRef<'_>) -> Vec<u8> {
+        let mut out = Vec::new();
+        canonical_ref(v, &mut out);
+        out
+    }
+
+    /// Append a literal string header and body.
+    fn string(out: &mut Vec<u8>, s: &str) {
+        put_varint(out, (s.len() as u128) << 1);
+        out.extend_from_slice(s.as_bytes());
+    }
+
+    match v {
+        ValueRef::String(s) => {
+            out.push(tag::STRING);
+            string(out, s);
+        }
+        ValueRef::Bytes(b) => {
+            out.push(tag::BYTES);
+            put_varint(out, b.len() as u128);
+            out.extend_from_slice(b);
+        }
+        ValueRef::List(items) | ValueRef::Tuple(items) => {
+            out.push(if matches!(v, ValueRef::List(_)) { tag::LIST } else { tag::TUPLE });
+            put_varint(out, items.len() as u128);
+            for i in items {
+                canonical_ref(i, out);
+            }
+        }
+        ValueRef::Set(items) => {
+            out.push(tag::SET);
+            put_varint(out, items.len() as u128);
+            let mut parts: Vec<Vec<u8>> = items.iter().map(part).collect();
+            parts.sort();
+            for p in parts {
+                out.extend_from_slice(&p);
+            }
+        }
+        ValueRef::Record(entries) => {
+            out.push(tag::RECORD);
+            put_varint(out, entries.len() as u128);
+            let mut sorted: Vec<_> = entries.iter().collect();
+            sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+            for (k, v) in sorted {
+                string(out, k);
+                canonical_ref(v, out);
+            }
+        }
+        ValueRef::Map(entries) => {
+            out.push(tag::MAP);
+            put_varint(out, entries.len() as u128);
+            let mut parts: Vec<(Vec<u8>, Vec<u8>)> = entries.iter().map(|(k, v)| (part(k), part(v))).collect();
+            parts.sort();
+            for (k, v) in parts {
+                out.extend_from_slice(&k);
+                out.extend_from_slice(&v);
+            }
+        }
+        ValueRef::Variant(name, p) => {
+            out.push(if p.is_some() { tag::VARIANT } else { tag::UNIT_VARIANT });
+            string(out, name);
+            if let Some(p) = p {
+                canonical_ref(p, out);
+            }
+        }
+        // The remaining kinds hold no heap data, so converting them copies nothing.
+        scalar => out.extend_from_slice(&canonical_bytes(&scalar.to_value())),
     }
 }
 
@@ -1134,6 +1217,24 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_canonical_matches_owned() {
+        let v = sample();
+        let r = encode(&v, EncodeOptions::default());
+        assert_eq!(decode_ref(&r).unwrap().canonical(), canonical_bytes(&v));
+        // Records equal up to field order are duplicate set elements either way.
+        let set = [tag::SET, 2, tag::RECORD, 2, 2, b'a', 0, 2, b'b', 0, tag::RECORD, 2, 2, b'b', 0, 2, b'a', 0];
+        assert!(decode(&set).is_err() && decode_ref(&set).is_err());
+    }
+
+    #[test]
+    fn rejects_back_reference_past_usize() {
+        // Index 2^64 used to truncate to 0 and resolve to the first string.
+        let mut b = vec![tag::LIST, 2, tag::STRING, 2, b'a', tag::STRING];
+        put_varint(&mut b, (1 << 65) | 1);
+        assert!(decode(&b).is_err());
+    }
+
+    #[test]
     fn revision_prefix() {
         let r = revision(&sample());
         let s = r.to_string();
@@ -1222,5 +1323,49 @@ mod table_tests {
         assert!(decode(&[tag::RECORD_LIST, 1, 1, 2, b'a', 1, 0b10, tag::NULL]).is_err()); // stray presence bit
         assert!(decode(&[tag::RECORD_LIST, 1, 1, 2, b'a', 7, tag::NULL]).is_err());
         // bad mode
+    }
+
+    /// `n` record lists, each one row holding the next in field `a`, around a null.
+    fn nested_record_lists(n: usize) -> Vec<u8> {
+        let mut b = vec![tag::RECORD_LIST, 1, 1, 2, b'a', 0];
+        for _ in 1..n {
+            b.extend([tag::RECORD_LIST, 1, 1, 1, 0]);
+        }
+
+        b.push(tag::NULL);
+        b
+    }
+
+    #[test]
+    fn record_lists_count_toward_depth() {
+        // Record lists used to skip the depth check and overflowed the stack.
+        assert!(decode(&nested_record_lists(200_000)).is_err());
+        // Each record list nests twice, so 64 fill the default depth of 128 and re-encode canonically.
+        let v = decode(&nested_record_lists(64)).unwrap();
+        assert_eq!(decode(&canonical_bytes(&v)).unwrap(), v);
+        assert!(decode(&nested_record_lists(65)).is_err());
+    }
+
+    #[test]
+    fn many_record_list_fields() {
+        // 50 000 distinct fields and no rows: duplicate checking must not be quadratic.
+        let fields = |n: u128, dup: bool| {
+            let mut b = vec![tag::RECORD_LIST, 0];
+            put_varint(&mut b, n + u128::from(dup));
+            for i in 0..n {
+                let f = format!("f{i}");
+                put_varint(&mut b, (f.len() as u128) << 1);
+                b.extend(f.as_bytes());
+            }
+
+            if dup {
+                b.push(1); // back-reference to field 0
+            }
+
+            b.push(0);
+            b
+        };
+        assert_eq!(decode(&fields(50_000, false)).unwrap(), Value::List(vec![]));
+        assert!(decode(&fields(50_000, true)).is_err());
     }
 }
