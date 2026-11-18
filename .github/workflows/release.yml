@@ -2,11 +2,18 @@ name: Release
 on:
   push:
     tags: ["v*.*.*"]
+  # Builds and releases an existing tag, e.g. one cut before this workflow existed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and release (vX.Y.Z)
+        required: true
 
 permissions: {}
 
 env:
   CARGO_AUDITABLE_VERSION: 0.7.7
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   # Auditable builds embed the exact dependency tree in each binary; the SBOMs
@@ -25,8 +32,12 @@ jobs:
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
           - { os: macos-latest, target: aarch64-apple-darwin }
     steps:
+      - name: Check tag
+        shell: bash
+        run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG"; exit 1; }'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
@@ -74,10 +85,11 @@ jobs:
           - x86_64-pc-windows-msvc
           - aarch64-apple-darwin
     env:
-      NAME: nvf-${{ github.ref_name }}-${{ matrix.target }}
+      NAME: nvf-${{ inputs.tag || github.ref_name }}-${{ matrix.target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -137,5 +149,4 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
         run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes dist/*
