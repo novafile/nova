@@ -54,7 +54,7 @@ pub fn widens(old: &TypeRef, new: &TypeRef) -> bool {
     }
 
     let kinds = match (&old.kind, &new.kind) {
-        (TypeKind::Int(_), TypeKind::Int(_) | TypeKind::Decimal | TypeKind::Rational) | (TypeKind::Decimal, TypeKind::Rational) => true,
+        (TypeKind::Int(_), TypeKind::Int(_) | TypeKind::Decimal | TypeKind::Rational) => true,
         (TypeKind::Int(k), TypeKind::Float) => matches!(k, IntKind::I8 | IntKind::I16 | IntKind::I32 | IntKind::U8 | IntKind::U16 | IntKind::U32),
         (TypeKind::List(a), TypeKind::List(b) | TypeKind::Set(b)) | (TypeKind::Set(a), TypeKind::Set(b)) => {
             widens(a, b) && !matches!((&old.kind, &new.kind), (TypeKind::List(_), TypeKind::Set(_)))
@@ -96,6 +96,7 @@ pub fn widens(old: &TypeRef, new: &TypeRef) -> bool {
 /// judged for new readers of old data, so additions old readers would reject
 /// (such as new enum variants) are reported, but not as breaking.
 #[must_use]
+#[expect(clippy::too_many_lines, reason = "one arm per definition kind, each a flat list of rules")]
 pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
     let mut out = Vec::new();
     let mut push = |breaking, at: &str, m: String| {
@@ -123,14 +124,25 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
                 }
             }
             (Def::Enum(a), Def::Enum(b)) => {
-                for v in a {
-                    match b.iter().find(|w| w.name == v.name) {
-                        None => push(true, &format!("{name}.{}", v.name), "variant removed".into()),
-                        Some(w) => match (&v.payload, &w.payload) {
-                            (None, None) => {}
-                            (Some(old_p), Some(new_p)) if widens(old_p, new_p) => {}
-                            _ => push(true, &format!("{name}.{}", v.name), "variant payload changed incompatibly".into()),
-                        },
+                for (i, v) in a.iter().enumerate() {
+                    let at = format!("{name}.{}", v.name);
+                    let Some(j) = b.iter().position(|w| w.name == v.name) else {
+                        push(true, &at, "variant removed".into());
+                        continue;
+                    };
+
+                    if i != j {
+                        push(
+                            true,
+                            &at,
+                            format!("variant moved from position {} to {} (Protobuf numbers variants by position)", i + 1, j + 1),
+                        );
+                    }
+
+                    match (&v.payload, &b[j].payload) {
+                        (None, None) => {}
+                        (Some(old_p), Some(new_p)) if widens(old_p, new_p) => {}
+                        _ => push(true, &at, "variant payload changed incompatibly".into()),
                     }
                 }
 
@@ -168,8 +180,13 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
                         push(true, &at, format!("type {} changed incompatibly to {}", f.ty, g.ty));
                     }
 
-                    if f.optional && !g.optional && g.default.is_none() {
-                        push(true, &at, "optional field became required".into());
+                    if f.id.is_some() && g.id != f.id {
+                        let id = g.id.map_or_else(|| "removed".into(), |n| format!("changed to {n}"));
+                        push(true, &at, format!("@id {id} (Protobuf uses it as the field number)"));
+                    }
+
+                    if (f.optional || f.default.is_some()) && !g.optional && g.default.is_none() {
+                        push(true, &at, "field may no longer be absent (optional or default removed)".into());
                     }
 
                     if f.key != g.key {
