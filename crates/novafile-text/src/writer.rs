@@ -64,6 +64,8 @@ fn common_unsafe(s: &str) -> bool {
         // A leading byte order mark is stripped at the start of a document.
         || s.starts_with('\u{feff}')
         || s.chars().any(char::is_control)
+        // `key:` followed by `#` reads as a key with a comment after it.
+        || s.contains(":#")
         || !matches!(classify(s), Ok(Value::String(_)))
 }
 
@@ -239,16 +241,22 @@ pub(crate) struct W<'t> {
     pub(crate) trivia: Option<&'t crate::format::Trivia>,
     /// Path of the value being written (for trivia lookups).
     pub(crate) path: Vec<crate::path::Segment>,
+    /// Sorted paths that carry a leading or trailing comment, so hoisting can search by prefix.
+    commented: Vec<&'t str>,
 }
 
 impl<'t> W<'t> {
     /// A writer with empty output, positioned at the root path.
     pub(crate) fn new(compact: bool, trivia: Option<&'t crate::format::Trivia>) -> Self {
+        let mut commented: Vec<&str> = trivia.map_or_else(Vec::new, |t| t.leading.keys().chain(t.trailing.keys()).map(String::as_str).collect());
+        commented.sort_unstable();
+        commented.dedup();
         W {
             out: String::new(),
             compact,
             trivia,
             path: Vec::new(),
+            commented,
         }
     }
 
@@ -278,17 +286,21 @@ impl<'t> W<'t> {
     fn emit_hoisted(&mut self, indent: usize) {
         let Some(t) = self.trivia else { return };
         let here = self.here();
-        let below = |p: &String| p.len() > here.len() && p.starts_with(&here) && (here == "." || matches!(p.as_bytes()[here.len()], b'.' | b'['));
+        let prefixes = if here == "." { vec![here.clone()] } else { vec![format!("{here}."), format!("{here}[")] };
         let mut found: Vec<(&usize, &String)> = Vec::new();
-        for (p, cs) in &t.leading {
-            if below(p) {
-                found.extend(cs.iter().map(|c| (t.order.get(p).unwrap_or(&0), c)));
+        // Paths sharing a prefix are contiguous in sorted order.
+        let below = prefixes.iter().flat_map(|pre| {
+            let from = self.commented.partition_point(|p| *p < pre.as_str());
+            self.commented[from..].iter().take_while(move |p| p.starts_with(pre.as_str()))
+        });
+        for &p in below.filter(|p| p.len() > here.len()) {
+            let order = t.order.get(p).unwrap_or(&0);
+            if let Some(cs) = t.leading.get(p) {
+                found.extend(cs.iter().map(|c| (order, c)));
             }
-        }
 
-        for (p, c) in &t.trailing {
-            if below(p) {
-                found.push((t.order.get(p).unwrap_or(&0), c));
+            if let Some(c) = t.trailing.get(p) {
+                found.push((order, c));
             }
         }
 
@@ -368,6 +380,11 @@ impl<'t> W<'t> {
                 }
 
                 if !fields.contains(k) {
+                    // Bail before the scan grows past the column limit.
+                    if fields.len() == 64 {
+                        return None;
+                    }
+
                     fields.push(k.clone());
                 }
 
@@ -376,7 +393,7 @@ impl<'t> W<'t> {
         }
 
         // Require a mostly-dense table; sparse data reads better as records.
-        (fields.len() <= 64 && present * 2 >= fields.len() * l.len()).then_some(fields)
+        (present * 2 >= fields.len() * l.len()).then_some(fields)
     }
 
     /// The text the writer would put after `key: ` / `- ` if `v` stays on one line.
