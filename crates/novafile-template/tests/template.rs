@@ -148,15 +148,48 @@ fn output_budget_stops_exponential_reuse() {
 
 #[test]
 fn output_budget_counts_interpolated_bytes() {
-    // Each `@let` doubles the string: 2^24 bytes, over the default budget yet charged as one node before.
+    // Each `@let` doubles the string: s26 would be 2^27 bytes, over the default 64 MiB byte budget.
     let mut src = String::from("@template\n@let s0 = \"xx\"\n");
-    for i in 1..24 {
+    for i in 1..27 {
         let _ = writeln!(src, "@let s{i} = \"${{s{p}}}${{s{p}}}\"", p = i - 1);
     }
 
-    src.push_str("x: $s23\n");
+    src.push_str("x: $s26\n");
     let e = render(&src, &Record::new(), &Options::default()).unwrap_err().to_string();
-    assert!(e.contains("exceeds the limit"), "{e}");
+    assert!(e.contains("exceeds the limit of 67108864 bytes"), "{e}");
+}
+
+#[test]
+fn output_budget_allows_megabytes_of_strings() {
+    // 2^21 bytes (2 MiB) of strings: within the byte budget and only a few dozen nodes.
+    let mut src = String::from("@template\n@let s0 = \"xx\"\n");
+    for i in 1..21 {
+        let _ = writeln!(src, "@let s{i} = \"${{s{p}}}${{s{p}}}\"", p = i - 1);
+    }
+
+    src.push_str("x: $s20\n");
+    let v = render(&src, &Record::new(), &Options::default()).unwrap();
+    let Value::Record(r) = v else { panic!("{v:?}") };
+    assert!(matches!(r.get("x"), Some(Value::String(s)) if s.len() == 1 << 21));
+}
+
+#[test]
+fn long_else_if_chains_render() {
+    // The arms are flat, so a chain far longer than the parser's depth limit is fine.
+    let mut src = String::from("@template\n@param n: int\nx:\n  @if $n == 0:\n    v: 0\n");
+    for i in 1..1000 {
+        let _ = writeln!(src, "  @else if $n == {i}:\n    v: {i}");
+    }
+
+    src.push_str("  @else:\n    v: -1\n");
+    for (n, want) in [(0, 0), (999, 999), (5000, -1)] {
+        let v = render(&src, &args(&format!("n: {n}\n")), &Options::default()).unwrap();
+        assert_eq!(
+            v,
+            render(&format!("x:\n  v: {want}\n"), &Record::new(), &Options::default()).unwrap(),
+            "n = {n}"
+        );
+    }
 }
 
 #[test]

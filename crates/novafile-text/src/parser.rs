@@ -1566,48 +1566,46 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse `@if cond:` (cursor at `@if `) with its body and an optional `@else:` or `@else if`
-    /// at the same indentation.
+    /// Parse `@if cond:` (cursor at `@if `) with its body, any `@else if` arms and an optional
+    /// `@else:` at the same indentation. The arms are read in a loop, so a long chain costs no depth.
     fn if_block(&mut self, indent: usize, kind: BlockKind) -> R<Ctl> {
         self.pos += 4; // "@if "
-        let cond = self.cond()?;
-        self.skip_inline_ws();
-        self.expect(b':', "`:` after @if condition")?;
-        self.end_line()?;
-        let then = self.children(indent + 2, kind)?;
-        // Optional @else / @else if at the same indentation.
-        let save = self.pos;
-        self.skip_blank_lines();
-        let mut els = match kind {
-            BlockKind::Record => Ctl2::Entries(Vec::new()),
-            BlockKind::List => Ctl2::Items(Vec::new()),
-        };
+        let mut arms = Vec::new();
+        let mut els = None;
+        loop {
+            let cond = self.cond()?;
+            self.skip_inline_ws();
+            self.expect(b':', "`:` after @if condition")?;
+            self.end_line()?;
+            arms.push((cond, self.children(indent + 2, kind)?));
+            let save = self.pos;
+            self.skip_blank_lines();
+            if !(matches!(self.line_indent()?, Some(i) if i == indent) && self.src[self.pos + indent..].starts_with("@else")) {
+                self.pos = save;
+                break;
+            }
 
-        if matches!(self.line_indent()?, Some(i) if i == indent) && self.src[self.pos + indent..].starts_with("@else") {
             self.pos += indent + 5;
             self.skip_inline_ws();
             if self.starts_with("if ") {
-                // `@else if C:` is `@else:` containing a single `@if C:`; step back so the cursor sits
-                // where `if_block` expects the 4 bytes of `@if `.
-                self.pos -= 1;
-                let c = self.nested(|p| p.if_block(indent, kind))?;
-                els = match c {
-                    Ctl::Entry(e) => Ctl2::Entries(vec![e]),
-                    Ctl::Item(i) => Ctl2::Items(vec![i]),
-                };
+                self.pos += 3;
             } else {
                 self.expect(b':', "`:` after @else")?;
                 self.end_line()?;
-                els = self.children(indent + 2, kind)?;
+                els = Some(self.children(indent + 2, kind)?);
+                break;
             }
-        } else {
-            self.pos = save;
         }
 
-        Ok(match (then, els) {
-            (Ctl2::Entries(t), Ctl2::Entries(e)) => Ctl::Entry(Entry::If(Box::new(cond), t, e)),
-            (Ctl2::Items(t), Ctl2::Items(e)) => Ctl::Item(Item::If(Box::new(cond), t, e)),
-            _ => unreachable!(),
+        Ok(match kind {
+            BlockKind::Record => Ctl::Entry(Entry::If(
+                arms.into_iter().map(|(c, b)| (c, b.entries())).collect(),
+                els.map_or_else(Vec::new, Ctl2::entries),
+            )),
+            BlockKind::List => Ctl::Item(Item::If(
+                arms.into_iter().map(|(c, b)| (c, b.items())).collect(),
+                els.map_or_else(Vec::new, Ctl2::items),
+            )),
         })
     }
 
@@ -1976,4 +1974,22 @@ enum Ctl2 {
     Entries(Vec<Entry>),
     /// List context.
     Items(Vec<Item>),
+}
+
+impl Ctl2 {
+    /// The entries of a body parsed in record context.
+    fn entries(self) -> Vec<Entry> {
+        match self {
+            Ctl2::Entries(e) => e,
+            Ctl2::Items(_) => unreachable!("record body parsed as list"),
+        }
+    }
+
+    /// The items of a body parsed in list context.
+    fn items(self) -> Vec<Item> {
+        match self {
+            Ctl2::Items(i) => i,
+            Ctl2::Entries(_) => unreachable!("list body parsed as record"),
+        }
+    }
 }

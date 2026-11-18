@@ -383,14 +383,17 @@ fn deep_template_conditions_hit_the_depth_limit() {
     // overflow the stack.
     let nots = format!("@template\n@if {}true:\n  a: 1\n", "not ".repeat(20_000));
     let parens = format!("@template\n@if {}true{}:\n  a: 1\n", "(".repeat(5_000), ")".repeat(5_000));
-    let elses = format!("@template\n@if true:\n  a: 1\n{}", "@else if true:\n  a: 1\n".repeat(20_000));
-    for src in [&nots, &parens, &elses] {
+    for src in [&nots, &parens] {
         let e = parse_document(src).unwrap_err().to_string();
         assert!(e.contains("depth"), "{e}");
         assert!(parse(src).is_err());
     }
 
     assert!(parse_document("@template\n@if not (not true):\n  a: 1\n@else if false:\n  b: 2\n").is_ok());
+
+    // `@else if` arms are flat, so a long chain costs no depth.
+    let elses = format!("@template\n@if true:\n  a: 1\n{}", "@else if true:\n  a: 1\n".repeat(20_000));
+    assert!(parse_document(&elses).is_ok());
 }
 
 #[test]

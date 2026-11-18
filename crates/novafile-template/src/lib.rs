@@ -95,9 +95,12 @@ impl Loader for FsLoader {
 /// Resource limits that keep every render bounded.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// Maximum number of value nodes produced, each string byte counting as one (guards against
-    /// exponential `@let` reuse).
+    /// Maximum number of value nodes produced, counting every copy (guards against exponential
+    /// `@let` reuse).
     pub max_nodes: usize,
+    /// Maximum total bytes of string and byte-string content produced, counting every copy
+    /// (guards against strings doubled by repeated `${}` interpolation).
+    pub max_bytes: usize,
     /// Maximum nesting depth of `@import` chains.
     pub max_import_depth: usize,
 }
@@ -106,6 +109,7 @@ impl Default for Limits {
     fn default() -> Self {
         Limits {
             max_nodes: 1_000_000,
+            max_bytes: 64 << 20,
             max_import_depth: 16,
         }
     }
@@ -138,14 +142,14 @@ impl Default for Options<'_> {
 /// Returns a [`TemplateError`] if `src` is not a valid template; an argument is
 /// unknown, missing, or does not match its `@param` type (resolved against
 /// `opts.schema`); an import fails, cycles, or nests too deeply; evaluation
-/// fails; or the output exceeds the node budget in `opts.limits`.
+/// fails; or the output exceeds the node or byte budget in `opts.limits`.
 pub fn render(src: &str, args: &Record, opts: &Options) -> Result<Value, TemplateError> {
-    render_inner(src, None, args, opts, &mut Vec::new(), &mut 0)
+    render_inner(src, None, args, opts, &mut Vec::new(), &mut Cost::default())
 }
 
 /// Render `src`, identified by `id` when imported. `stack` holds the importing documents
-/// (for cycle detection) and `budget` the nodes produced so far, shared across imports.
-fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stack: &mut Vec<String>, budget: &mut usize) -> Result<Value, TemplateError> {
+/// (for cycle detection) and `budget` the output produced so far, shared across imports.
+fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stack: &mut Vec<String>, budget: &mut Cost) -> Result<Value, TemplateError> {
     let where_ = || id.map(|i| format!(" in {i}")).unwrap_or_default();
     let doc = parse_document(src).map_err(|e| TemplateError(format!("{e}{}", where_())))?;
     let Some(h) = &doc.template else {
@@ -159,7 +163,7 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stac
     let mut ev = Eval {
         scopes: vec![Vec::new()],
         budget,
-        max: opts.limits.max_nodes,
+        limits: opts.limits,
     };
 
     // Parameters.
@@ -226,32 +230,62 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stac
 struct Eval<'b> {
     /// Bindings, innermost scope last; `@for` pushes a scope per iteration.
     scopes: Vec<Vec<(String, Value)>>,
-    /// Nodes produced so far, shared with importing templates.
-    budget: &'b mut usize,
-    /// Maximum number of nodes (from [`Limits::max_nodes`]).
-    max: usize,
+    /// Output produced so far, shared with importing templates.
+    budget: &'b mut Cost,
+    /// The node and byte maxima.
+    limits: Limits,
 }
 
-/// Number of value nodes in `v`, counting containers and their contents. Every byte of a string
-/// or byte string counts as a node too, or repeated interpolation could grow strings unbounded.
-fn size(v: &Value) -> usize {
-    1 + match v {
-        Value::String(s) => s.len(),
-        Value::Bytes(b) => b.len(),
-        Value::List(l) | Value::Tuple(l) | Value::Set(l) => l.iter().map(size).sum(),
-        Value::Record(r) => r.iter().map(|(_, v)| size(v)).sum(),
-        Value::Map(m) => m.iter().map(|(k, v)| size(k) + size(v)).sum(),
-        Value::Variant(_, Some(p)) => size(p),
-        _ => 0,
+/// Output produced: value nodes and string/byte-string content bytes.
+#[derive(Clone, Copy, Default)]
+struct Cost {
+    /// Value nodes, containers and their contents alike.
+    nodes: usize,
+    /// Bytes of string and byte-string content.
+    bytes: usize,
+}
+
+impl Cost {
+    /// The nodes and content bytes of `v`.
+    fn of(v: &Value) -> Cost {
+        let mut c = Cost::default();
+        c.add(v);
+        c
+    }
+
+    /// Add the nodes and content bytes of `v`.
+    fn add(&mut self, v: &Value) {
+        self.nodes += 1;
+        match v {
+            Value::String(s) => self.bytes += s.len(),
+            Value::Bytes(b) => self.bytes += b.len(),
+            Value::List(l) | Value::Tuple(l) | Value::Set(l) => l.iter().for_each(|v| self.add(v)),
+            Value::Record(r) => r.iter().for_each(|(_, v)| self.add(v)),
+            Value::Map(m) => m.iter().for_each(|(k, v)| {
+                self.add(k);
+                self.add(v);
+            }),
+            Value::Variant(_, Some(p)) => self.add(p),
+            _ => {}
+        }
     }
 }
 
 impl Eval<'_> {
-    /// Count `n` produced nodes against the budget; fails once it is exceeded.
-    fn charge(&mut self, n: usize) -> Result<(), TemplateError> {
-        *self.budget += n;
-        if *self.budget > self.max {
-            return err(format!("template output exceeds the limit of {} nodes", self.max));
+    /// Count `nodes` produced nodes and `bytes` content bytes against the budget; fails once
+    /// either limit is exceeded.
+    fn charge(&mut self, nodes: usize, bytes: usize) -> Result<(), TemplateError> {
+        self.budget.nodes += nodes;
+        self.budget.bytes += bytes;
+        if self.budget.nodes > self.limits.max_nodes {
+            return err(format!("template output exceeds the limit of {} nodes", self.limits.max_nodes));
+        }
+
+        if self.budget.bytes > self.limits.max_bytes {
+            return err(format!(
+                "template output exceeds the limit of {} bytes of string and bytes content",
+                self.limits.max_bytes
+            ));
         }
 
         Ok(())
@@ -283,7 +317,8 @@ impl Eval<'_> {
             .map(|(_, v)| v)
             .ok_or_else(|| TemplateError(format!("undefined reference ${name}")))?;
         let v = Path(rest.to_vec()).get(base).map_err(|e| TemplateError(format!("${p}: {e}")))?.clone();
-        self.charge(size(&v))?;
+        let c = Cost::of(&v);
+        self.charge(c.nodes, c.bytes)?;
         Ok(v)
     }
 
@@ -292,7 +327,11 @@ impl Eval<'_> {
         let mut s = String::new();
         for p in parts {
             match p {
-                Part::Text(t) => s.push_str(t),
+                Part::Text(t) => {
+                    // Referenced values are charged by `lookup`; literal text is charged here.
+                    self.charge(0, t.len())?;
+                    s.push_str(t);
+                }
                 Part::Ref(r) => {
                     let v = self.lookup(r)?;
                     match &v {
@@ -336,6 +375,17 @@ impl Eval<'_> {
         })
     }
 
+    /// The body of the first `@if` / `@else if` arm whose condition holds, else `els`.
+    fn pick<'a, T>(&mut self, arms: &'a [(Cond, Vec<T>)], els: &'a [T]) -> Result<&'a [T], TemplateError> {
+        for (c, body) in arms {
+            if self.cond(c)? {
+                return Ok(body);
+            }
+        }
+
+        Ok(els)
+    }
+
     /// Run `body` once per element of the iterable, with loop variables in a new scope.
     fn each<T>(&mut self, head: &ForHead, mut body: impl FnMut(&mut Self) -> Result<T, TemplateError>) -> Result<Vec<T>, TemplateError> {
         let pairs: Vec<(Value, Value)> = match self.node(&head.iter)? {
@@ -370,8 +420,8 @@ impl Eval<'_> {
                     Value::List(l) | Value::Tuple(l) | Value::Set(l) => out.extend(l),
                     other => return err(format!("cannot spread a {} into a list", other.kind())),
                 },
-                Item::If(c, t, e) => {
-                    let branch = if self.cond(c)? { t } else { e };
+                Item::If(arms, e) => {
+                    let branch = self.pick(arms, e)?;
                     self.items(branch, out)?;
                 }
                 Item::For(h, body) => {
@@ -416,8 +466,8 @@ impl Eval<'_> {
                     }
                     other => return err(format!("cannot spread a {} into a record", other.kind())),
                 },
-                Entry::If(c, t, e) => {
-                    let branch = if self.cond(c)? { t } else { e };
+                Entry::If(arms, e) => {
+                    let branch = self.pick(arms, e)?;
                     self.entries(branch, out, explicit)?;
                 }
                 Entry::For(h, body) => {
@@ -447,10 +497,11 @@ impl Eval<'_> {
 
     /// Evaluate a node to a value, charging every produced node against the budget.
     fn node(&mut self, n: &Node) -> Result<Value, TemplateError> {
-        self.charge(1)?;
+        self.charge(1, 0)?;
         Ok(match n {
             Node::Lit(v) => {
-                self.charge(size(v) - 1)?;
+                let c = Cost::of(v);
+                self.charge(c.nodes - 1, c.bytes)?;
                 v.clone()
             }
             Node::List(items) => {

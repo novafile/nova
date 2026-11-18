@@ -44,8 +44,9 @@ pub enum Item {
     Node(Node),
     /// `...expr`: splice the elements of a list (templates only).
     Spread(Node),
-    /// `@if cond:` with the then-items and the (possibly empty) `@else` items.
-    If(Box<Cond>, Vec<Item>, Vec<Item>),
+    /// `@if cond:` and its `@else if` arms as `(cond, items)` in order, then the (possibly empty)
+    /// `@else` items.
+    If(Vec<(Cond, Vec<Item>)>, Vec<Item>),
     /// `@for [index,] var in expr:` with the items produced per iteration.
     For(ForHead, Vec<Item>),
 }
@@ -57,8 +58,9 @@ pub enum Entry {
     Field(Key, Node),
     /// `...expr`: merge the fields of a record (templates only).
     Spread(Node),
-    /// `@if cond:` with the then-entries and the (possibly empty) `@else` entries.
-    If(Box<Cond>, Vec<Entry>, Vec<Entry>),
+    /// `@if cond:` and its `@else if` arms as `(cond, entries)` in order, then the (possibly
+    /// empty) `@else` entries.
+    If(Vec<(Cond, Vec<Entry>)>, Vec<Entry>),
     /// `@for [index,] var in expr:` with the entries produced per iteration.
     For(ForHead, Vec<Entry>),
 }
