@@ -1,5 +1,6 @@
 //! NOVA binary value encoding (spec §5.1–5.3) and revisions.
 
+use crate::record::INDEX_THRESHOLD;
 use crate::{Decimal, DuplicateKey, Duration, Rational, Record, Timestamp, Value, ValueRef};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -49,9 +50,6 @@ pub(crate) mod tag {
     /// mode byte, then per row an optional presence bitmap and the present values.
     pub const RECORD_LIST: u8 = 0x13;
 }
-
-/// Records up to this many fields are checked for duplicate keys by scanning.
-const RECORD_SCAN: usize = 16;
 
 /// The single NaN bit pattern written for every NaN, so all NaNs encode (and compare) equal.
 const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
@@ -872,7 +870,7 @@ impl<'a> Build<'a> for ValueRef<'a> {
 
     fn insert((entries, keys): &mut RecordRef<'a>, key: &'a str, v: Self) -> Result<(), DuplicateKey> {
         // Small records are scanned; past that, keys go into a set (as `Record` indexes them).
-        let duplicate = if entries.len() < RECORD_SCAN {
+        let duplicate = if entries.len() < INDEX_THRESHOLD {
             entries.iter().any(|(e, _)| *e == key)
         } else {
             !keys.get_or_insert_with(|| Box::new(entries.iter().map(|(e, _)| *e).collect())).insert(key)
