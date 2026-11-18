@@ -286,7 +286,11 @@ impl<'t> W<'t> {
     fn emit_hoisted(&mut self, indent: usize) {
         let Some(t) = self.trivia else { return };
         let here = self.here();
-        let prefixes = if here == "." { vec![here.clone()] } else { vec![format!("{here}."), format!("{here}[")] };
+        let prefixes = if here == "." {
+            vec![here.clone()]
+        } else {
+            vec![format!("{here}."), format!("{here}[")]
+        };
         let mut found: Vec<(&usize, &String)> = Vec::new();
         // Paths sharing a prefix are contiguous in sorted order.
         let below = prefixes.iter().flat_map(|pre| {
