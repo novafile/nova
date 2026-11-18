@@ -13,6 +13,9 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
+default = ["revision"]
+# Content revisions (`revision`, `Revision`): SHA-256 of the canonical encoding.
+revision = ["dep:sha2"]
 serde = ["dep:serde"]
 facet = ["dep:facet"]
 # `schemars::JsonSchema` for the value types, so derived JSON Schemas map back
@@ -20,7 +23,7 @@ facet = ["dep:facet"]
 schemars = ["dep:schemars", "dep:serde_json"]
 
 [dependencies]
-sha2.workspace = true
+sha2 = { workspace = true, optional = true }
 num-bigint.workspace = true
 serde = { workspace = true, optional = true }
 facet = { workspace = true, optional = true }

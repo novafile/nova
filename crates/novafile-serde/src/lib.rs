@@ -104,6 +104,7 @@ pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T, Error> {
 ///
 /// Fails if `s` is not valid NOVA text, does not conform to `schema`
 /// (all issues are joined into one message), or if [`from_value`] fails.
+#[cfg(feature = "schema")]
 pub fn from_str_with_schema<T: DeserializeOwned>(s: &str, schema: &novafile_schema::Schema) -> Result<T, Error> {
     let v = novafile_text::parse(s).map_err(|e| Error::new(e.with_source(s)))?;
     let v = schema
@@ -117,6 +118,7 @@ pub fn from_str_with_schema<T: DeserializeOwned>(s: &str, schema: &novafile_sche
 /// # Errors
 ///
 /// Fails if [`to_value`] does.
+#[cfg(feature = "binary")]
 pub fn to_vec<T: ?Sized + Serialize>(v: &T) -> Result<Vec<u8>, Error> {
     let frame = novafile_binary::Frame {
         schema: None,
@@ -133,6 +135,7 @@ pub fn to_vec<T: ?Sized + Serialize>(v: &T) -> Result<Vec<u8>, Error> {
 ///
 /// Fails if `b` is not a valid frame, has trailing bytes, or if
 /// [`from_value`] fails.
+#[cfg(feature = "binary")]
 pub fn from_slice<T: DeserializeOwned>(b: &[u8]) -> Result<T, Error> {
     let (frame, n) = novafile_binary::decode_frame(b).map_err(|e| Error::new(e.to_string()))?;
     if n != b.len() {

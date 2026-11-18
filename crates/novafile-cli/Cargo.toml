@@ -17,7 +17,7 @@ name = "nvf"
 path = "src/main.rs"
 
 [dependencies]
-novafile-value.workspace = true
+novafile-value = { workspace = true, features = ["revision"] }
 novafile-binary.workspace = true
 novafile-text = { workspace = true, features = ["miette"] }
 novafile-schema.workspace = true

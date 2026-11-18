@@ -13,6 +13,8 @@ mod facet_support;
 mod numeric;
 mod rational;
 mod record;
+#[cfg(feature = "revision")]
+mod revision;
 #[cfg(feature = "schemars")]
 pub mod schemars_support;
 #[cfg(feature = "serde")]
@@ -20,11 +22,13 @@ pub mod serde_support;
 mod time;
 mod value_ref;
 
-pub use codec::{DecodeError, EncodeOptions, Limits, Revision, canonical_bytes, decode, decode_prefix, decode_ref, decode_ref_prefix, encode, revision};
+pub use codec::{DecodeError, EncodeOptions, Limits, canonical_bytes, decode, decode_prefix, decode_ref, decode_ref_prefix, encode};
 pub use decimal::Decimal;
 pub use numeric::{f32_to_f64, numeric_cmp};
 pub use rational::Rational;
 pub use record::{DuplicateKey, Record};
+#[cfg(feature = "revision")]
+pub use revision::{Revision, revision};
 pub use time::{Duration, Timestamp};
 pub use value_ref::ValueRef;
 

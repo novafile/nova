@@ -13,23 +13,31 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["serde"]
+default = ["serde", "binary", "patch", "schema", "revision"]
+# Content revisions (`value::revision`): SHA-256, via `sha2`. Implied by `patch` and `schema`.
+revision = ["novafile-value/revision"]
 serde = ["dep:novafile-serde"]
-derive = ["novafile-schema/derive"]
+# Binary frames and streams; with `serde`, also `serde::to_vec` / `from_slice`.
+binary = ["dep:novafile-binary", "novafile-serde?/binary"]
+# Paths, queries and patches.
+patch = ["dep:novafile-patch"]
+# Schemas; with `serde`, also `serde::from_str_with_schema`.
+schema = ["dep:novafile-schema", "novafile-serde?/schema"]
+derive = ["schema", "novafile-schema/derive"]
 facet = ["dep:novafile-facet"]
 formats = ["dep:novafile-formats", "dep:novafile-json"]
 proto = ["dep:novafile-proto"]
 template = ["dep:novafile-template"]
 lint = ["dep:novafile-lint"]
 schemars = ["dep:novafile-schemars"]
-full = ["serde", "derive", "facet", "formats", "proto", "template", "lint", "schemars"]
+full = ["serde", "binary", "patch", "schema", "revision", "derive", "facet", "formats", "proto", "template", "lint", "schemars"]
 
 [dependencies]
 novafile-value.workspace = true
 novafile-text.workspace = true
-novafile-binary.workspace = true
-novafile-schema.workspace = true
-novafile-patch.workspace = true
+novafile-binary = { workspace = true, optional = true }
+novafile-schema = { workspace = true, optional = true }
+novafile-patch = { workspace = true, optional = true }
 novafile-serde = { workspace = true, optional = true }
 novafile-facet = { workspace = true, optional = true }
 novafile-json = { workspace = true, optional = true }

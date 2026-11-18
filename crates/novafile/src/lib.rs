@@ -23,8 +23,11 @@
 //! assert_eq!(r.value, novafile::Value::Int(5));
 //! ```
 
+#[cfg(feature = "binary")]
 pub use novafile_binary as binary;
+#[cfg(feature = "patch")]
 pub use novafile_patch as patch;
+#[cfg(feature = "schema")]
 pub use novafile_schema as schema;
 pub use novafile_text as text;
 pub use novafile_value as value;

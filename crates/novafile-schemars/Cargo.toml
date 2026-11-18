@@ -23,7 +23,7 @@ serde_json.workspace = true
 [dev-dependencies]
 novafile-value = { workspace = true, features = ["serde", "schemars"] }
 novafile-text.workspace = true
-novafile-serde.workspace = true
+novafile-serde = { workspace = true, features = ["binary", "schema"] }
 serde.workspace = true
 jsonschema.workspace = true
 

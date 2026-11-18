@@ -14,7 +14,7 @@ categories.workspace = true
 publish = false
 
 [dependencies]
-novafile-value.workspace = true
+novafile-value = { workspace = true, features = ["revision"] }
 novafile-text.workspace = true
 novafile-binary.workspace = true
 novafile-schema.workspace = true

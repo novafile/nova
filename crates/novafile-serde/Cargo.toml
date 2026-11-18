@@ -12,11 +12,18 @@ readme.workspace = true
 keywords = ["nova", "serde", "serialization", "deserialization"]
 categories = ["encoding"]
 
+[features]
+default = ["binary", "schema"]
+# `to_vec` / `from_slice`: binary frames.
+binary = ["dep:novafile-binary"]
+# `from_str_with_schema`: schema resolution before deserializing.
+schema = ["dep:novafile-schema"]
+
 [dependencies]
 novafile-value = { workspace = true, features = ["serde"] }
 novafile-text.workspace = true
-novafile-binary.workspace = true
-novafile-schema.workspace = true
+novafile-binary = { workspace = true, optional = true }
+novafile-schema = { workspace = true, optional = true }
 serde.workspace = true
 
 [dev-dependencies]

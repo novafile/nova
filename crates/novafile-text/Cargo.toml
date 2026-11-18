@@ -21,6 +21,7 @@ base64.workspace = true
 miette = { workspace = true, optional = true }
 
 [dev-dependencies]
+novafile-value = { workspace = true, features = ["revision"] }
 criterion.workspace = true
 proptest.workspace = true
 

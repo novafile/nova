@@ -2,10 +2,8 @@
 
 use crate::record::INDEX_THRESHOLD;
 use crate::{Decimal, DuplicateKey, Duration, Rational, Record, Timestamp, Value, ValueRef};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::fmt::Write as _;
 
 /// Type tags: the first byte of every encoded value (spec §5.1).
 pub(crate) mod tag {
@@ -1030,47 +1028,6 @@ fn decode_whole<'a, T: Build<'a>>(buf: &'a [u8]) -> Result<T, DecodeError> {
     Ok(v)
 }
 
-/// A content revision: SHA-256 of the canonical encoding (spec §2.13).
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Revision(pub [u8; 32]);
-
-impl Revision {
-    /// The digest as 64 lowercase hex digits, without the `sha256:` prefix.
-    #[must_use]
-    pub fn hex(&self) -> String {
-        self.0.iter().fold(String::with_capacity(64), |mut s, b| {
-            let _ = write!(s, "{b:02x}");
-            s
-        })
-    }
-
-    /// Does `text` (`sha256:<hex>`, possibly abbreviated to ≥ 8 hex digits)
-    /// identify this revision?
-    #[must_use]
-    pub fn matches(&self, text: &str) -> bool {
-        let h = text.strip_prefix("sha256:").unwrap_or(text).to_ascii_lowercase();
-        h.len() >= 8 && h.len() <= 64 && h.bytes().all(|c| c.is_ascii_hexdigit()) && self.hex().starts_with(&h)
-    }
-}
-
-impl fmt::Display for Revision {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "sha256:{}", self.hex())
-    }
-}
-
-impl fmt::Debug for Revision {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-/// The [`Revision`] of `v`: SHA-256 of its canonical encoding.
-#[must_use]
-pub fn revision(v: &Value) -> Revision {
-    Revision(Sha256::digest(canonical_bytes(v)).into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1150,7 +1107,8 @@ mod tests {
         let a = rec(vec![("a", Value::Int(1)), ("b", Value::Int(2))]);
         let b = rec(vec![("b", Value::Int(2)), ("a", Value::Int(1))]);
         assert_eq!(a, b);
-        assert_eq!(revision(&a), revision(&b));
+        #[cfg(feature = "revision")]
+        assert_eq!(crate::revision(&a), crate::revision(&b));
         assert_ne!(Value::List(vec![]), Value::Tuple(vec![]));
         assert_ne!(Value::Int(1), Value::Float(1.0));
         assert_ne!(Value::Float(0.0), Value::Float(-0.0));
@@ -1269,15 +1227,6 @@ mod tests {
         let mut b = vec![tag::LIST, 2, tag::STRING, 2, b'a', tag::STRING];
         put_varint(&mut b, (1 << 65) | 1);
         assert!(decode(&b).is_err());
-    }
-
-    #[test]
-    fn revision_prefix() {
-        let r = revision(&sample());
-        let s = r.to_string();
-        assert!(r.matches(&s));
-        assert!(r.matches(&s[..15]));
-        assert!(!r.matches("sha256:abc"));
     }
 }
 

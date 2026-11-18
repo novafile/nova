@@ -13,7 +13,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-novafile-value.workspace = true
+novafile-value = { workspace = true, features = ["revision"] }
 novafile-text.workspace = true
 
 [lints]

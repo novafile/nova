@@ -17,7 +17,7 @@ categories.workspace = true
 derive = ["dep:novafile-derive"]
 
 [dependencies]
-novafile-value.workspace = true
+novafile-value = { workspace = true, features = ["revision"] }
 novafile-text.workspace = true
 base64.workspace = true
 unicode-segmentation.workspace = true

@@ -22,7 +22,7 @@ facet.workspace = true
 facet-reflect.workspace = true
 
 [dev-dependencies]
-novafile-serde.workspace = true
+novafile-serde = { workspace = true, features = ["binary", "schema"] }
 novafile-value = { workspace = true, features = ["facet", "serde"] }
 serde.workspace = true
 
