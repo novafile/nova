@@ -7,7 +7,8 @@ use std::fmt::Write as _;
 use base64::Engine;
 use novafile_value::{Decimal, Record, Value};
 
-/// A lossy mapping performed while converting a NOVA value to JSON.
+/// A lossy mapping performed while converting a NOVA value to JSON, or JSON
+/// to NOVA with [`from_json_str_lossy`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Warning {
     /// Where the mapping happened: `.key` and `[i]` segments from the root, empty
@@ -33,6 +34,13 @@ struct P<'a> {
     i: usize,
     /// Current nesting depth of arrays and objects, capped at 128.
     depth: usize,
+    /// Round numbers that no `decimal` holds to `float` (with a warning)
+    /// instead of failing.
+    lossy: bool,
+    /// Path of the value being parsed, in [`Warning::path`] notation.
+    path: String,
+    /// Lossy mappings recorded so far (only with `lossy`).
+    warnings: Vec<Warning>,
 }
 
 impl P<'_> {
@@ -82,7 +90,10 @@ impl P<'_> {
                     self.i += 1;
                 } else {
                     loop {
+                        let mark = self.path.len();
+                        let _ = write!(self.path, "[{}]", out.len());
                         out.push(self.value()?);
+                        self.path.truncate(mark);
                         self.ws();
                         match self.b.get(self.i) {
                             Some(b',') => self.i += 1,
@@ -118,7 +129,11 @@ impl P<'_> {
                         }
 
                         self.i += 1;
+                        let mark = self.path.len();
+                        self.path.push('.');
+                        self.path.push_str(&k);
                         let v = self.value()?;
+                        self.path.truncate(mark);
                         if r.insert(k.clone(), v).is_err() {
                             return Err(format!("JSON byte {at}: duplicate key {k:?}"));
                         }
@@ -146,8 +161,10 @@ impl P<'_> {
 
     /// Parse a number token. Integer-looking tokens become exact `int` values
     /// (error if out of range); anything with a fraction or exponent becomes a
-    /// `float` if binary64 holds it exactly, else a `decimal` (error beyond 38
-    /// significant digits).
+    /// `float` if binary64 holds it exactly, else a `decimal`. A `decimal` holds
+    /// at most 38 significant digits; a longer number is an error, or with
+    /// `lossy` the nearest `float` plus a [`Warning`] (still an error if it
+    /// overflows or underflows binary64).
     ///
     /// The token is first scanned greedily and then validated against the strict
     /// JSON grammar (no leading zeros, no `+`, digits after `.` and `e`).
@@ -219,7 +236,20 @@ impl P<'_> {
         }
 
         let f: f64 = t.parse().map_err(|_| format!("invalid number {t}"))?;
-        let exact = Decimal::parse(t).map_err(|e| format!("number {t} cannot be kept exactly: {e}"))?;
+        let exact = match Decimal::parse(t) {
+            Ok(d) => d,
+            Err(_) if self.lossy && f.is_finite() && f != 0.0 => {
+                let mantissa = t.split(['e', 'E']).next().unwrap_or(t);
+                let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+                let n = digits.trim_start_matches('0').trim_end_matches('0').len();
+                self.warnings.push(Warning {
+                    path: self.path.clone(),
+                    message: format!("number with {n} significant digits rounded to float"),
+                });
+                return Ok(Value::Float(f));
+            }
+            Err(e) => return Err(format!("number {t} cannot be kept exactly: {e}")),
+        };
         if f.is_finite() && Decimal::parse(&format!("{f:?}")) == Ok(exact) {
             return Ok(Value::Float(f));
         }
@@ -285,19 +315,42 @@ impl P<'_> {
 
 /// Parse JSON text into a NOVA value. Numbers without fraction or exponent
 /// become `int` (exact); others become `float`, or `decimal` where binary64
-/// would round them. Duplicate keys are errors.
+/// would round them. Duplicate keys are errors. This is the strict parser: a
+/// number no `decimal` holds (more than 38 significant digits) is an error;
+/// [`from_json_str_lossy`] rounds it to `float` instead.
 ///
 /// # Errors
 ///
 /// Returns a message with the byte offset if the text is not valid JSON,
-/// nests too deeply, repeats an object key, or has trailing content.
+/// nests too deeply, repeats an object key, has trailing content, or has a
+/// number that cannot be kept exactly.
 pub fn from_json_str(s: &str) -> Result<Value, String> {
+    parse(s, false).map(|(v, _)| v)
+}
+
+/// Like [`from_json_str`], but a number with more than 38 significant digits
+/// becomes the nearest `float` and is reported as a [`Warning`]. Callers that
+/// want strict conversion treat a non-empty warning list as a failure.
+///
+/// # Errors
+///
+/// As [`from_json_str`], except for numbers that round to a finite, nonzero
+/// `float`.
+pub fn from_json_str_lossy(s: &str) -> Result<(Value, Vec<Warning>), String> {
+    parse(s, true)
+}
+
+/// Shared body of [`from_json_str`] and [`from_json_str_lossy`].
+fn parse(s: &str, lossy: bool) -> Result<(Value, Vec<Warning>), String> {
     let s = s.strip_prefix('\u{feff}').unwrap_or(s);
     let mut p = P {
         b: s.as_bytes(),
         s,
         i: 0,
         depth: 0,
+        lossy,
+        path: String::new(),
+        warnings: Vec::new(),
     };
 
     let v = p.value()?;
@@ -306,7 +359,7 @@ pub fn from_json_str(s: &str) -> Result<Value, String> {
         return p.err("trailing content");
     }
 
-    Ok(v)
+    Ok((v, p.warnings))
 }
 
 /// Parse JSON Lines: one value per non-empty line.
@@ -321,6 +374,33 @@ pub fn from_jsonl_str(s: &str) -> Result<Vec<Value>, String> {
         .filter(|(_, l)| !l.trim().is_empty())
         .map(|(n, l)| from_json_str(l).map_err(|e| format!("line {}: {e}", n + 1)))
         .collect()
+}
+
+/// Like [`from_jsonl_str`], but numbers are handled as in
+/// [`from_json_str_lossy`]. Warning paths start with the value's 0-based
+/// index, e.g. `[2].price`, matching the list the lines form.
+///
+/// # Errors
+///
+/// Returns the first line that fails [`from_json_str_lossy`], prefixed with
+/// its 1-based line number.
+pub fn from_jsonl_str_lossy(s: &str) -> Result<(Vec<Value>, Vec<Warning>), String> {
+    let mut warnings = Vec::new();
+    let values = s
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .enumerate()
+        .map(|(i, (n, l))| {
+            let (v, w) = from_json_str_lossy(l).map_err(|e| format!("line {}: {e}", n + 1))?;
+            warnings.extend(w.into_iter().map(|w| Warning {
+                path: format!("[{i}]{}", w.path),
+                ..w
+            }));
+            Ok(v)
+        })
+        .collect::<Result<_, String>>()?;
+    Ok((values, warnings))
 }
 
 /// Append `s` to `out` as a JSON string literal, escaping quotes, backslashes
@@ -511,6 +591,39 @@ mod tests {
         assert_eq!(from_json_str("0.1").unwrap(), Value::Float(0.1));
         assert_eq!(from_json_str("-2.5e-3").unwrap(), Value::Float(-2.5e-3));
         assert!(from_json_str("0.1000000000000000000000000000000000000001").is_err());
+    }
+
+    #[test]
+    fn numbers_beyond_decimal_round_to_float_with_a_warning() {
+        let pi = "3.1415926535897932384626433832795028841971693993751";
+        let src = format!(r#"{{"a":[1,{pi}],"b":19.990000000000000000001}}"#);
+
+        // Strict: rejected.
+        assert!(from_json_str(&src).unwrap_err().contains("38 significant digits"));
+
+        // Lossy: nearest float, warned at its path; <=38 digits stay exact.
+        let (v, w) = from_json_str_lossy(&src).unwrap();
+        let r = v.as_record().unwrap();
+        assert_eq!(r.get("a"), Some(&Value::List(vec![Value::Int(1), Value::Float(std::f64::consts::PI)])));
+        assert_eq!(r.get("b"), Some(&Value::Decimal(Decimal::parse("19.990000000000000000001").unwrap())));
+        assert_eq!(
+            w,
+            [Warning {
+                path: ".a[1]".into(),
+                message: "number with 50 significant digits rounded to float".into(),
+            }]
+        );
+
+        // Exactly 38 significant digits is still an exact decimal, without warning.
+        let d38 = format!("0.{}", "1".repeat(38));
+        assert_eq!(from_json_str_lossy(&d38).unwrap(), (Value::Decimal(Decimal::parse(&d38).unwrap()), vec![]));
+
+        // Underflow to zero is not a rounding: still an error.
+        assert!(from_json_str_lossy(&format!("{pi}e-400")).is_err());
+
+        let (l, w) = from_jsonl_str_lossy(&format!("1\n\n{{\"x\":{pi}}}\n")).unwrap();
+        assert_eq!(l.len(), 2);
+        assert_eq!(w[0].path, "[1].x");
     }
 
     #[test]
