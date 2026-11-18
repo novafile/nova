@@ -96,3 +96,67 @@ fn concurrent_patches_are_not_lost() {
     got.sort_unstable();
     assert_eq!(got, (0..8).collect::<Vec<_>>());
 }
+
+#[cfg(unix)]
+#[test]
+fn locking_leaves_no_lock_file() {
+    let d = scratch("nolock");
+    std::fs::write(d.join("doc.nova"), "a: 1\n").unwrap();
+    std::fs::write(d.join("add.patch"), "@patch\n+ b: 2\n").unwrap();
+    assert!(nvf(&d, &["patch", "doc.nova", "add.patch", "-w"], "").status.success());
+    let mut names: Vec<_> = std::fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name()).collect();
+    names.sort();
+    assert_eq!(names, ["add.patch", "doc.nova"]);
+}
+
+#[test]
+fn fmt_refuses_other_formats() {
+    let d = scratch("fmt-yaml");
+    // Also valid NOVA text: the extension decides, not the content.
+    std::fs::write(d.join("config.yaml"), "a: 1\n").unwrap();
+    let o = nvf(&d, &["fmt", "config.yaml", "-w"], "");
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("nvf convert config.yaml --to nova -o config.nova"),
+        "{o:?}"
+    );
+    assert_eq!(std::fs::read_to_string(d.join("config.yaml")).unwrap(), "a: 1\n");
+}
+
+#[test]
+fn patch_prints_in_the_input_format() {
+    let d = scratch("patch-format");
+    std::fs::write(d.join("x.json"), "{\"a\": 1}\n").unwrap();
+    std::fs::write(d.join("x.yaml"), "a: 1\n").unwrap();
+    std::fs::write(d.join("x.jsonl"), "{\"a\": 1}\n").unwrap();
+    std::fs::write(d.join("set.patch"), "@patch\na: 1 -> 2\n").unwrap();
+    std::fs::write(d.join("add.patch"), "@patch\n+ [0].b: 2\n").unwrap();
+
+    let o = nvf(&d, &["patch", "x.json", "set.patch"], "");
+    assert!(o.status.success(), "{o:?}");
+    assert_eq!(stdout(&o).split_whitespace().collect::<String>(), "{\"a\":2}");
+
+    let o = nvf(&d, &["patch", "x.yaml", "set.patch"], "");
+    assert!(o.status.success(), "{o:?}");
+    assert_eq!(stdout(&o).trim(), "a: 2");
+
+    // JSON Lines has no writer: printed as NOVA, refused in place.
+    let o = nvf(&d, &["patch", "x.jsonl", "add.patch"], "");
+    assert!(o.status.success(), "{o:?}");
+    assert!(stdout(&o).contains("@compat json"), "{o:?}");
+    let o = nvf(&d, &["patch", "x.jsonl", "add.patch", "-w"], "");
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+}
+
+#[test]
+fn imprecise_json_number_warns_or_fails_with_strict() {
+    let d = scratch("pi");
+    std::fs::write(d.join("pi.json"), "{\"pi\": 3.1415926535897932384626433832795028841971693993751}\n").unwrap();
+    let o = nvf(&d, &["convert", "pi.json", "--to", "nova"], "");
+    assert!(o.status.success(), "{o:?}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("warning: conversion to NOVA"), "{o:?}");
+    assert!(stdout(&o).contains("pi: 3.14159"), "{o:?}");
+
+    let o = nvf(&d, &["convert", "pi.json", "--to", "nova", "--strict"], "");
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+}

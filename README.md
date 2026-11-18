@@ -168,6 +168,12 @@ nvf stats infrastructure.nova         # bytes and estimated tokens per represent
 nvf schema check old.novs new.novs    # exits 1 on breaking changes
 ```
 
+`nvf fmt` formats NOVA text (and `.novs` schemas) only. Other input, detected by extension or magic bytes (`.json`, `.jsonl`, `.yaml`/`.yml`, `.toml`, `.cbor`, `.pb`, binary frames), is refused: convert it with `nvf convert config.yaml --to nova -o config.nova`.
+
+`nvf patch` prints the result, or with `-w` writes it back, in the input's format. NOVA text keeps its comments and layout. JSON, YAML, TOML, CBOR and binary documents are rendered in the same format, so `nvf patch x.json p.patch` prints JSON (YAML and TOML comments are not kept). `.novs` schemas are rewritten in canonical form. JSON Lines and Protobuf have no writer: their result is printed as NOVA text, and `-w` refuses them. For another output format, pipe the result through `nvf convert`.
+
+`nvf patch -w` and `nvf lint --fix` lock the file while they read, change and rewrite it, so parallel patches are not lost. The new contents are written to a temporary file and renamed over the old one. On Unix the lock is on the file itself. On Windows it is a `<file>.lock` file next to it, which stays on disk: ignore it in version control with patterns such as `*.nova.lock` (not `*.lock`, which also matches `Cargo.lock`).
+
 ## Conventions and `nvf lint`
 
 JSON never settled on naming conventions; NOVA has them: `snake_case` keys and variants, and `@id` on all fields or on none. `nvf lint` checks documents and schemas, and `--fix` applies the safe fixes (renaming keys, typing timestamps) without disturbing comments. Data that mirrors an external JSON, YAML or TOML contract is marked `@compat json` (added automatically by `nvf convert`). For such data, names are left alone and anything the format cannot represent is flagged. See [spec Appendix E](https://github.com/novafile/spec/blob/main/SPEC.md#appendix-e--conventions-and-lints).
