@@ -150,8 +150,20 @@ const CRC_TABLES: [[u32; 256]; 8] = {
 /// CRC-32 (IEEE 802.3, reflected, poly 0xEDB88320).
 #[must_use]
 pub fn crc32(data: &[u8]) -> u32 {
+    !crc32_update(0xFFFF_FFFF, data)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Bytes fed to [`crc32_update`] on this thread, for the recovery-cost test.
+    static HASHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Advance the raw (non-inverted) CRC-32 register `crc` over `data`.
+fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
+    #[cfg(test)]
+    HASHED.with(|h| h.set(h.get() + data.len()));
     let t = &CRC_TABLES;
-    let mut crc = 0xFFFF_FFFFu32;
     let (chunks, rest) = data.as_chunks::<8>();
     for c in chunks {
         let lo = crc ^ u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
@@ -169,7 +181,88 @@ pub fn crc32(data: &[u8]) -> u32 {
         crc = (crc >> 8) ^ t[0][((crc ^ u32::from(b)) & 0xFF) as usize];
     }
 
-    !crc
+    crc
+}
+
+/// `a * b` modulo the CRC-32 polynomial, bit-reflected (zlib `multmodp`).
+const fn crc_mul(a: u32, mut b: u32) -> u32 {
+    let mut m = 1u32 << 31;
+    let mut p = 0;
+    while m != 0 {
+        if a & m != 0 {
+            p ^= b;
+        }
+
+        m >>= 1;
+        b = if b & 1 != 0 { (b >> 1) ^ 0xEDB8_8320 } else { b >> 1 };
+    }
+
+    p
+}
+
+/// `X2N[k]` is `x^(2^k)` modulo the CRC-32 polynomial; the sequence repeats after 32.
+const X2N: [u32; 32] = {
+    let mut t = [0u32; 32];
+    t[0] = 1 << 30; // x^1
+    let mut k = 1;
+    while k < 32 {
+        t[k] = crc_mul(t[k - 1], t[k - 1]);
+        k += 1;
+    }
+
+    t
+};
+
+/// `crc` advanced over `n` zero bytes without the init/final inversion, i.e.
+/// `crc * x^(8n)`: `crc32(a ++ b) == crc_shift(crc32(a), b.len()) ^ crc32(b)`.
+fn crc_shift(crc: u32, mut n: usize) -> u32 {
+    let mut p = crc;
+    let mut k = 3; // x^(8n) = x^(n * 2^3)
+    while n != 0 {
+        if n & 1 != 0 {
+            p = crc_mul(X2N[k & 31], p);
+        }
+
+        n >>= 1;
+        k += 1;
+    }
+
+    p
+}
+
+/// Prefix CRCs over a buffer, so any range's CRC costs O(log n) instead of O(range).
+struct PrefixCrc {
+    /// `marks[k]` is `crc32(&buf[..k * PrefixCrc::STEP])`.
+    marks: Vec<u32>,
+}
+
+impl PrefixCrc {
+    /// Checkpoint spacing; trades memory (4 bytes per `STEP`) against per-query hashing.
+    const STEP: usize = 64;
+
+    /// Hash `buf` once, recording a checkpoint every `STEP` bytes.
+    fn new(buf: &[u8]) -> Self {
+        let mut marks = Vec::with_capacity(buf.len() / Self::STEP + 1);
+        let mut c = 0; // crc32 of the empty prefix
+        marks.push(c);
+        for chunk in buf.as_chunks::<{ Self::STEP }>().0 {
+            c = !crc32_update(!c, chunk);
+            marks.push(c);
+        }
+
+        PrefixCrc { marks }
+    }
+
+    /// `crc32(&buf[..i])`.
+    fn prefix(&self, buf: &[u8], i: usize) -> u32 {
+        let k = i / Self::STEP;
+        !crc32_update(!self.marks[k], &buf[k * Self::STEP..i])
+    }
+
+    /// `crc32(&buf[i..j])`.
+    fn range(&self, buf: &[u8], i: usize, j: usize) -> u32 {
+        self.prefix(buf, j) ^ crc_shift(self.prefix(buf, i), j - i)
+    }
 }
 
 /// Append `v` as an unsigned LEB128 varint.
@@ -270,6 +363,11 @@ pub fn encode_frame(frame: &Frame, opts: FrameOptions) -> Vec<u8> {
 /// unsupported version, sets unknown flags, has a non-UTF-8 schema reference,
 /// fails its CRC-32 check, or carries a payload that does not decode.
 pub fn decode_frame(buf: &[u8]) -> Result<(Frame, usize), FrameError> {
+    decode_frame_with(buf, |r| crc32(&buf[r]))
+}
+
+/// [`decode_frame`] with the payload CRC taken from `crc`, given the payload's range in `buf`.
+fn decode_frame_with(buf: &[u8], crc: impl FnOnce(std::ops::Range<usize>) -> u32) -> Result<(Frame, usize), FrameError> {
     if buf.len() < 6 {
         return Err(if buf.len() >= 4 && &buf[..4] != MAGIC {
             FrameError::BadMagic
@@ -302,21 +400,19 @@ pub fn decode_frame(buf: &[u8]) -> Result<(Frame, usize), FrameError> {
     };
 
     let len = usize::try_from(get_varint(buf, &mut pos)?).map_err(|_| FrameError::Truncated)?;
-    // shortcut: a recovering reader still re-hashes overlapping payloads, O(stream x
-    // min(stream, MAX_PAYLOAD)) on hostile streams; combine prefix CRCs (zlib crc32_combine)
-    // if recovery must be linear.
     if len > MAX_PAYLOAD {
         return Err(FrameError::Malformed(format!("payload length {len} exceeds {MAX_PAYLOAD}")));
     }
 
     let end = pos.checked_add(len).ok_or(FrameError::Truncated)?;
+    let start = pos;
     let payload = buf.get(pos..end).ok_or(FrameError::Truncated)?;
     pos = end;
     if f & flags::CRC32 != 0 {
         let c: [u8; 4] = buf.get(pos..pos + 4).and_then(|c| c.try_into().ok()).ok_or(FrameError::Truncated)?;
         pos += 4;
         let expected = u32::from_be_bytes(c);
-        let actual = crc32(payload);
+        let actual = crc(start..end);
         if expected != actual {
             return Err(FrameError::Checksum { expected, actual });
         }
@@ -342,6 +438,9 @@ pub struct FrameReader<'a> {
     recover: bool,
     /// Set after an error in strict mode; ends iteration.
     failed: bool,
+    /// Built at the first error in recovery mode, so retries at `NOVA` markers inside a
+    /// rejected frame don't re-hash overlapping payloads (quadratic on hostile streams).
+    crcs: Option<PrefixCrc>,
 }
 
 impl<'a> FrameReader<'a> {
@@ -353,6 +452,7 @@ impl<'a> FrameReader<'a> {
             pos: 0,
             recover: false,
             failed: false,
+            crcs: None,
         }
     }
 
@@ -373,13 +473,23 @@ impl Iterator for FrameReader<'_> {
         }
 
         let at = self.pos;
-        match decode_frame(&self.buf[at..]) {
+        let buf = self.buf;
+        let decoded = match &self.crcs {
+            Some(p) => decode_frame_with(&buf[at..], |r| p.range(buf, at + r.start, at + r.end)),
+            None => decode_frame(&buf[at..]),
+        };
+
+        match decoded {
             Ok((f, n)) => {
                 self.pos += n;
                 Some(Ok(f))
             }
             Err(e) => {
                 if self.recover {
+                    if self.crcs.is_none() {
+                        self.crcs = Some(PrefixCrc::new(buf));
+                    }
+
                     let rest = &self.buf[at + 1..];
                     self.pos = match rest.windows(4).position(|w| w == MAGIC) {
                         Some(i) => at + 1 + i,
@@ -468,5 +578,45 @@ mod tests {
         assert_eq!(all[2].as_ref().unwrap().value, val(2));
         let strict: Vec<_> = FrameReader::new(&stream).collect();
         assert_eq!(strict.len(), 2);
+    }
+
+    #[test]
+    fn prefix_crc_ranges() {
+        let buf: Vec<u8> = (0..1000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13).to_le_bytes()[0]).collect();
+        let p = PrefixCrc::new(&buf);
+        for (i, j) in [(0, 0), (0, 1000), (3, 3), (5, 64), (64, 128), (63, 129), (1, 999), (700, 1000)] {
+            assert_eq!(p.range(&buf, i, j), crc32(&buf[i..j]), "{i}..{j}");
+        }
+    }
+
+    /// Bytes hashed by a recovering reader over `n` overlapping fake headers, and the stream length.
+    fn hostile_recovery_cost(n: usize) -> (usize, usize) {
+        // Each header claims a CRC-checked payload of `len` bytes that runs over all later
+        // headers; before prefix CRCs every one of them hashed `len` bytes: O(n^2).
+        let len = 9 * n;
+        let mut stream = Vec::new();
+        for _ in 0..n {
+            stream.extend_from_slice(b"NOVA\x01\x04");
+            put_varint(&mut stream, len as u64);
+            assert_eq!(stream.len() % 9, 0, "headers must be 9 bytes");
+        }
+
+        stream.resize(stream.len() + len + 4, 0);
+        HASHED.with(|h| h.set(0));
+        let all: Vec<_> = FrameReader::new(&stream).recovering().collect();
+        assert_eq!(all.len(), n);
+        assert!(all.iter().all(|r| matches!(r, Err((_, FrameError::Checksum { .. })))));
+        (HASHED.with(std::cell::Cell::get), stream.len())
+    }
+
+    #[test]
+    fn recovery_is_linear_on_overlapping_fake_headers() {
+        let (small, small_len) = hostile_recovery_cost(4000);
+        let (large, large_len) = hostile_recovery_cost(8000);
+        // One pass over the stream plus a bounded amount per candidate.
+        assert!(small <= 16 * small_len, "{small} bytes hashed for {small_len}");
+        assert!(large <= 16 * large_len, "{large} bytes hashed for {large_len}");
+        // Doubling the headers roughly doubles the work (quadratic would quadruple it).
+        assert!(large <= 5 * small / 2, "{small} -> {large}");
     }
 }
