@@ -1,0 +1,141 @@
+name: Release
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions: {}
+
+env:
+  CARGO_AUDITABLE_VERSION: 0.7.7
+
+jobs:
+  # Auditable builds embed the exact dependency tree in each binary; the SBOMs
+  # below are generated from that embedded data.
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - run: cargo install cargo-auditable --locked --version "$CARGO_AUDITABLE_VERSION"
+        shell: bash
+      - run: cargo auditable build --release --locked --target "$TARGET" -p novafile-cli -p novafile-lsp
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+      - name: Collect binaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          ext=""
+          if [[ "$TARGET" == *windows* ]]; then ext=".exe"; fi
+          mkdir out
+          cp "target/$TARGET/release/nvf$ext" "target/$TARGET/release/nvf-lsp$ext" out/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bin-${{ matrix.target }}
+          path: out
+          if-no-files-found: error
+
+  # Per target: package the archive, generate its SBOM from the binaries, and
+  # attest the archive's build provenance and SBOM. Only these jobs can mint
+  # attestations.
+  attest:
+    name: attest (${{ matrix.target }})
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - x86_64-pc-windows-msvc
+          - aarch64-apple-darwin
+    env:
+      NAME: nvf-${{ github.ref_name }}-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bin-${{ matrix.target }}
+          path: stage/${{ env.NAME }}
+      - name: Package
+        id: package
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          cp LICENSE-EUPL LICENSE-MPL README.md "stage/$NAME/"
+          mkdir dist
+          if [[ "$TARGET" == *windows* ]]; then
+            archive="dist/$NAME.zip"
+            (cd stage && zip -qr "../$archive" "$NAME")
+          else
+            chmod +x "stage/$NAME/nvf" "stage/$NAME/nvf-lsp"
+            archive="dist/$NAME.tar.gz"
+            tar -C stage -czf "$archive" "$NAME"
+          fi
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: stage/${{ env.NAME }}
+          format: spdx-json
+          output-file: dist/${{ env.NAME }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}
+      - name: Attest SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}
+          sbom-path: dist/${{ env.NAME }}.spdx.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist
+          if-no-files-found: error
+
+  release:
+    needs: attest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum -- * > SHA256SUMS
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes dist/*
