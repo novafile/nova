@@ -576,16 +576,8 @@ fn render_with(l: &Loaded, f: Format, strict: bool, schema: Option<&Schema>) -> 
         Format::Compact => text(Profile::Compact),
         Format::Canonical => text(Profile::Canonical),
         Format::Json | Format::JsonCompact => {
-            let (s, warnings) = novafile_json::to_json_string(&l.value, matches!(f, Format::Json));
-            if !warnings.is_empty() {
-                let msg = warnings.iter().map(|w| format!("  {w}")).collect::<Vec<_>>().join("\n");
-                if strict {
-                    return Err(format!("conversion to JSON is lossy:\n{msg}").into());
-                }
-
-                eprintln!("warning: conversion to JSON is lossy:\n{msg}");
-            }
-
+            let (s, w) = novafile_json::to_json_string(&l.value, matches!(f, Format::Json));
+            lossy("JSON", &w, strict)?;
             (s + "\n").into_bytes()
         }
         Format::Yaml => {
@@ -835,7 +827,7 @@ fn run(cli: Cli) -> R<ExitCode> {
         } => {
             let l = load_as(&file, from)?;
             let r = novafile_patch::get(&l.value, &path)?;
-            let multi = !novafile_text::Path::parse(path.trim().trim_start_matches("@get").trim_start_matches("@select")).map_or(true, |p| p.is_singular());
+            let multi = !novafile_patch::parse_request(&path)?.is_singular();
             let json = matches!(to, Format::Json | Format::JsonCompact);
             let one_line = |v: &Value| -> String {
                 match v {
