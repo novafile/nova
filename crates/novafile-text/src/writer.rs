@@ -351,6 +351,11 @@ impl<'t> W<'t> {
 
     /// Is this a non-empty container that should be laid out as a block?
     fn wants_block(&self, v: &Value, used: usize) -> bool {
+        // A container written in flow syntax in the source stays on one line while it fits.
+        if v.is_container() && self.trivia.is_some_and(|t| t.flow.contains(&self.here())) && used + self.flow(v).len() <= FLOW_WIDTH {
+            return false;
+        }
+
         match v {
             Value::Record(r) => !r.is_empty(),
             Value::List(l) => !l.is_empty() && (l.iter().any(Value::is_container) || used + self.flow(v).len() > FLOW_WIDTH || self.table_fields(l).is_some()),

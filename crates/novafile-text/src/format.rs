@@ -26,6 +26,8 @@ pub struct Trivia {
     pub spelling: HashMap<String, (String, Value)>,
     /// Lists written as tables.
     pub tables: HashSet<String>,
+    /// Non-empty records and lists written on one line in flow syntax (`{a: 1}`, `[1, 2]`).
+    pub flow: HashSet<String>,
     /// Source order of paths (for hoisting comments out of inline values).
     pub order: HashMap<String, usize>,
     /// Comments before the body, with their byte offsets.
@@ -133,6 +135,10 @@ impl Trivia {
             let text = &src[vs.min(s.end)..s.end];
             if text.is_empty() || text.contains('\n') || text.starts_with('|') {
                 continue;
+            }
+
+            if s.kind != SpanKind::TableCell && (text.starts_with('{') || text.starts_with('[')) && s.path.get(value).is_ok_and(Value::is_container) {
+                t.flow.insert(s.path.to_string());
             }
 
             if let Ok(v) = s.path.get(value)

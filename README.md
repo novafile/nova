@@ -114,6 +114,8 @@ struct Service {
 let schema = Infrastructure::novafile_schema();             // == the hand-written .novs
 ```
 
+Put `#[nova(name = …, version = …)]` on the root type. It gives the schema its identity (`@schema infrastructure@1.0.0`), which documents name in their `@schema` line and which version checks use. Without it the schema is anonymous: it still validates, but cannot check a document's `@schema` reference. Other types need no attribute.
+
 ## Workspace
 
 | Crate | Purpose |

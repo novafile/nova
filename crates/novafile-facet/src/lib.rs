@@ -137,7 +137,7 @@ pub fn to_string_with<'a, T: ?Sized + Facet<'a>>(v: &T, profile: Profile) -> Res
 ///
 /// Fails if `s` is not valid NOVA text or if [`from_value`] fails.
 pub fn from_str<T: Facet<'static>>(s: &str) -> Result<T, Error> {
-    let v = novafile_text::parse(s).map_err(|e| Error::new(e.to_string()))?;
+    let v = novafile_text::parse(s).map_err(|e| Error::new(e.with_source(s)))?;
     from_value(v)
 }
 
@@ -148,7 +148,7 @@ pub fn from_str<T: Facet<'static>>(s: &str) -> Result<T, Error> {
 /// Fails if `s` is not valid NOVA text, does not conform to `schema`
 /// (all issues are joined into one message), or if [`from_value`] fails.
 pub fn from_str_with_schema<T: Facet<'static>>(s: &str, schema: &novafile_schema::Schema) -> Result<T, Error> {
-    let v = novafile_text::parse(s).map_err(|e| Error::new(e.to_string()))?;
+    let v = novafile_text::parse(s).map_err(|e| Error::new(e.with_source(s)))?;
     let v = schema
         .resolve(&v)
         .map_err(|issues| Error::new(issues.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")))?;

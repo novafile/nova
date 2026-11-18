@@ -491,3 +491,30 @@ fn table_row_count_errors_carry_a_fix() {
     assert_eq!(novafile_text::fix_syntax("a: 1\n"), None);
     assert_eq!(novafile_text::fix_syntax("a: [\n"), None);
 }
+
+#[test]
+fn formatting_keeps_hand_written_tables_and_flow_records() {
+    use novafile_text::{Profile, format_preserving};
+    let table = "rules[3]{name, tags, limit}:\n  a, [x, y], 1\n  b, [], \n  c, , 3\n";
+    let out = format_preserving(table, Profile::Human).unwrap();
+    assert!(
+        out.starts_with("rules[3]{name,tags,limit}:\n") || out.starts_with("rules[3]{name, tags, limit}:\n"),
+        "{out}"
+    );
+    assert_eq!(parse(&out).unwrap(), parse(table).unwrap());
+
+    let flow = "eyes: {color: blue, size: 2}\npos: [1, 2]\nbig:\n  a: 1\n";
+    let out = format_preserving(flow, Profile::Human).unwrap();
+    assert!(out.contains("eyes: {color: blue, size: 2}\n") && out.contains("pos: [1, 2]\n"), "{out}");
+    assert!(out.contains("big:\n  a: 1\n"), "{out}");
+}
+
+#[test]
+fn parse_error_with_source_points_at_the_column() {
+    let src = "a: 1\nport: [80, }\n";
+    let e = parse(src).unwrap_err();
+    let shown = e.with_source(src);
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(lines[2], format!("{} | port: [80, }}", e.line));
+    assert_eq!(lines[3].find('^').unwrap() - lines[3].find('|').unwrap() - 2, e.col - 1, "{shown}");
+}

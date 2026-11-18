@@ -31,6 +31,28 @@ pub struct ParseError {
 }
 
 impl ParseError {
+    /// The error with the source line it points at and a caret under the column:
+    ///
+    /// ```text
+    /// 2:9: expected a value
+    ///   |
+    /// 2 | port: [80,
+    ///   |         ^
+    /// ```
+    ///
+    /// For a full report with labels, enable the `miette` feature and use `to_diagnostic`.
+    #[must_use]
+    pub fn with_source(&self, src: &str) -> String {
+        let Some(line) = src.split('\n').nth(self.line.saturating_sub(1)).map(|l| l.trim_end_matches('\r')) else {
+            return self.to_string();
+        };
+
+        let n = self.line.to_string();
+        let pad = " ".repeat(n.len());
+        let caret = " ".repeat(self.col.saturating_sub(1));
+        format!("{self}\n{pad} |\n{n} | {line}\n{pad} | {caret}^")
+    }
+
     /// Attach a fix: replace `range` of the source with `text`.
     #[must_use]
     pub fn with_fix(mut self, range: std::ops::Range<usize>, text: impl Into<String>) -> Self {
@@ -864,6 +886,7 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     break;
                 }
+                Some(b':') => return self.err("expected `,` or `)`; `(…)` is a tuple of values, write a record as `{x: 1}` or as a block"),
                 _ => return self.err("expected `,` or `)`"),
             }
         }
@@ -1095,7 +1118,10 @@ impl<'a> Parser<'a> {
         match self.line_indent()? {
             None => Ok(false),
             Some(i) if i < indent => Ok(false),
-            Some(i) if i > indent => Err(self.error_at(self.pos + i, "unexpected indentation")),
+            Some(i) if i > indent => Err(self.error_at(
+                self.pos + i,
+                format!("unexpected indentation; entries of this block start at column {}, and a value cannot continue on the next line (use a flow value `[…]`/`{{…}}` or a `|` block string)", indent + 1),
+            )),
             Some(i) => {
                 self.pos += i;
                 Ok(true)

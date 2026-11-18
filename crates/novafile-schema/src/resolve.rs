@@ -83,7 +83,12 @@ impl<'s> Ctx<'s> {
 
     /// Record that a value of the `expected` type was required.
     fn mismatch(&mut self, expected: &str, v: &Value) {
-        self.issue(format!("expected {expected}, found {}", v.kind()));
+        let hint = match v {
+            // `port: 80,` in a block is the plain string "80,": a habit from RON or JSON.
+            Value::String(s) if s.len() > 1 && s.ends_with(',') => "; block entries end at the line break, drop the trailing `,`",
+            _ => "",
+        };
+        self.issue(format!("expected {expected}, found {}{hint}", v.kind()));
     }
 
     /// Resolve against a built-in type kind, applying the lexical and numeric

@@ -3,6 +3,11 @@
 //! `use novafile_schema::NovaSchema;`. The generated code finds whichever of the two the
 //! deriving crate depends on.
 //!
+//! The root type carries `#[nova(name = "…", version = "…")]`: that is the schema's identity
+//! (`@schema name@version`), which documents reference and version checks compare. Without it the
+//! derived schema is anonymous and cannot check a document's `@schema` line. Nested types need no
+//! attribute.
+//!
 //! Attributes — container: `#[nova(name = "…", version = "…", rename = "TypeName", open)]`;
 //! field: `#[nova(rename = "…", key, id = N, range = "1..65535", len = "..64, utf8",
 //! default = "flow literal", deprecated, skip)]`; variant: `#[nova(rename = "…", id = N)]`.
