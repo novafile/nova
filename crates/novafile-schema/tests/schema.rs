@@ -68,7 +68,44 @@ fn compatibility() {
     let broken = parse_schema(&SCHEMA.replace("port: Port @id(3)", "port: u8 @id(3)").replace("  draining\n", "")).unwrap();
     let changes = check_compatibility(&old, &broken);
     let b: Vec<_> = changes.iter().filter(|c| c.breaking).map(|c| c.at.as_str()).collect();
-    assert_eq!(b, ["Service.port", "Status.draining"], "{changes:#?}");
+    // Removing `draining` also moves `failed` up, which Protobuf numbering sees.
+    assert_eq!(b, ["Service.port", "Status.draining", "Status.failed"], "{changes:#?}");
+}
+
+/// The places `old` -> `new` breaks, for two schemas given as bodies.
+fn breaks(old: &str, new: &str) -> Vec<String> {
+    let (old, new) = (parse_schema(old).unwrap(), parse_schema(new).unwrap());
+    check_compatibility(&old, &new).into_iter().filter(|c| c.breaking).map(|c| c.at).collect()
+}
+
+#[test]
+fn compatibility_rules() {
+    let none: [&str; 0] = [];
+    let rec = |body: &str| format!("record R:\n{body}");
+    // Removing a default makes absent fields fail to resolve.
+    assert_eq!(breaks(&rec("  x: int = 5\n"), &rec("  x: int\n")), ["R.x"]);
+    assert_eq!(breaks(&rec("  x?: int\n"), &rec("  x: int\n")), ["R.x"]);
+    assert_eq!(breaks(&rec("  x?: int\n"), &rec("  x: int = 5\n")), none);
+    // A rational rejects floats and decimal strings that a decimal accepts.
+    assert_eq!(breaks("type T = decimal\n", "type T = rational\n"), ["T"]);
+    assert_eq!(breaks("type T = int\n", "type T = rational\n"), none);
+    // Ints widen to float only where every value is exact.
+    assert_eq!(breaks("type T = u16\n", "type T = float\n"), none);
+    assert_eq!(breaks("type T = i64\n", "type T = float\n"), ["T"]);
+    assert_eq!(breaks("type T = int?\n", "type T = int\n"), ["T"]);
+    assert_eq!(breaks("type T = int\n", "type T = int?\n"), none);
+    assert_eq!(breaks("type T = list<u8>\n", "type T = list<int>\n"), none);
+    assert_eq!(breaks("type T = list<int>\n", "type T = set<int>\n"), ["T"]);
+    assert_eq!(breaks("record R @open:\n  x: int\n", &rec("  x: int\n")), ["R"]);
+    // Protobuf uses @id as the field number.
+    assert_eq!(breaks(&rec("  port: u16 @id(1)\n"), &rec("  port: u16 @id(2)\n")), ["R.port"]);
+    assert_eq!(breaks(&rec("  port: u16 @id(1)\n"), &rec("  port: u16\n")), ["R.port"]);
+    assert_eq!(breaks(&rec("  port: u16\n"), &rec("  port: u16 @id(1)\n")), none);
+    // Protobuf numbers variants by position: only appending is safe.
+    let e = |vs: &str| format!("enum E:\n{vs}");
+    assert_eq!(breaks(&e("  a\n  b\n"), &e("  a\n  b\n  c(int)\n")), none);
+    assert_eq!(breaks(&e("  a\n  b\n"), &e("  z\n  a\n  b\n")), ["E.a", "E.b"]);
+    assert_eq!(breaks(&e("  a\n  b(int)\n"), &e("  b(int)\n  a\n")), ["E.a", "E.b"]);
 }
 
 #[test]
