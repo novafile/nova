@@ -11,7 +11,7 @@ mod source;
 pub use diff::diff;
 pub use nav::get_mut;
 pub use patch::{Applied, Op, OpKind, Patch, PatchError, apply, parse_patch};
-pub use query::{Response, get, select};
+pub use query::{Response, get, parse_request, select};
 pub use source::{SourceEdit, apply_to_source};
 
 /// Apply with no extra validation.
