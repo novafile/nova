@@ -183,6 +183,21 @@ fn depth_limit() {
 }
 
 #[test]
+fn aliases_count_toward_the_depth_limit() {
+    // Each anchor nests the previous one 100 levels deeper; parse nesting
+    // alone never exceeds the limit.
+    let mut doc = String::from("a0: &a0 1\n");
+    for i in 1..120 {
+        let p = i - 1;
+        writeln!(doc, "a{i}: &a{i} {}*a{p}{}", "[".repeat(100), "]".repeat(100)).unwrap();
+    }
+
+    assert!(from_str(&doc).unwrap_err().contains("nesting deeper"));
+    // Shallow aliases inside nesting still load.
+    assert!(from_str("a: &a [[1]]\nb: [[[*a]]]\n").is_ok());
+}
+
+#[test]
 fn documents() {
     assert_eq!(from_str("").unwrap(), Value::Null);
     assert!(from_str("a\n---\nb\n").unwrap_err().contains("more than one document"));

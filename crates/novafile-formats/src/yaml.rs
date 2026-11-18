@@ -120,8 +120,8 @@ fn err_at(m: &Marker, msg: impl Display) -> String {
 struct Loader<'a> {
     /// The underlying event parser.
     parser: Parser<Chars<'a>>,
-    /// Completed anchored nodes with their node counts.
-    anchors: HashMap<usize, (Value, usize)>,
+    /// Completed anchored nodes with their node counts and nesting heights.
+    anchors: HashMap<usize, (Value, usize, usize)>,
     /// Value nodes produced so far in the whole stream, including alias copies;
     /// checked against [`NODE_BUDGET`].
     nodes: usize,
@@ -165,7 +165,7 @@ impl<'a> Loader<'a> {
                 Event::DocumentStart => {
                     self.anchors.clear();
                     let (ev, m) = self.next()?;
-                    let (v, _) = self.node(ev, m)?;
+                    let (v, ..) = self.node(ev, m)?;
                     let (end, m) = self.next()?;
                     if end != Event::DocumentEnd {
                         return Err(err_at(&m, "expected the end of the document"));
@@ -227,31 +227,37 @@ impl<'a> Loader<'a> {
     }
 
     /// Store a completed node under `anchor` (0 means "no anchor") together with
-    /// its node count, so aliases can charge the full size when copied.
-    fn remember(&mut self, anchor: usize, v: &Value, size: usize) {
+    /// its node count and nesting height, so aliases can charge the full size
+    /// and depth when copied.
+    fn remember(&mut self, anchor: usize, v: &Value, size: usize, height: usize) {
         if anchor != 0 {
-            self.anchors.insert(anchor, (v.clone(), size));
+            self.anchors.insert(anchor, (v.clone(), size, height));
         }
     }
 
-    /// Build the node that starts with `ev`; returns it with its node count.
-    fn node(&mut self, ev: Event, m: Marker) -> Result<(Value, usize), String> {
+    /// Build the node that starts with `ev`; returns it with its node count
+    /// and nesting height (0 for a scalar).
+    fn node(&mut self, ev: Event, m: Marker) -> Result<(Value, usize, usize), String> {
         match ev {
             Event::Alias(id) => {
-                let Some(&(_, n)) = self.anchors.get(&id) else {
+                let Some(&(_, n, h)) = self.anchors.get(&id) else {
                     return Err(err_at(&m, "alias refers to a node that is not complete (recursive alias)"));
                 };
 
-                // Charge the budget before copying, so a bomb fails before
-                // it grows.
+                // Charge the budget and depth before copying, so a bomb fails
+                // before it grows.
                 self.charge(n, &m)?;
-                Ok((self.anchors[&id].0.clone(), n))
+                if self.depth + h > MAX_DEPTH {
+                    return Err(err_at(&m, format!("alias expands to nesting deeper than {MAX_DEPTH} levels")));
+                }
+
+                Ok((self.anchors[&id].0.clone(), n, h))
             }
             Event::Scalar(text, style, anchor, tag) => {
                 self.charge(1, &m)?;
                 let v = scalar(text, style, Self::tag(tag, &m)?).map_err(|e| err_at(&m, e))?;
-                self.remember(anchor, &v, 1);
-                Ok((v, 1))
+                self.remember(anchor, &v, 1, 0);
+                Ok((v, 1, 0))
             }
             Event::SequenceStart(anchor, tag) => {
                 match Self::tag(tag, &m)? {
@@ -262,22 +268,23 @@ impl<'a> Loader<'a> {
 
                 self.enter(&m)?;
                 self.charge(1, &m)?;
-                let (mut items, mut size) = (Vec::new(), 1);
+                let (mut items, mut size, mut height) = (Vec::new(), 1, 1);
                 loop {
                     let (ev, m) = self.next()?;
                     if ev == Event::SequenceEnd {
                         break;
                     }
 
-                    let (v, n) = self.node(ev, m)?;
+                    let (v, n, h) = self.node(ev, m)?;
                     size += n;
+                    height = height.max(h + 1);
                     items.push(v);
                 }
 
                 self.depth -= 1;
                 let v = Value::List(items);
-                self.remember(anchor, &v, size);
-                Ok((v, size))
+                self.remember(anchor, &v, size, height);
+                Ok((v, size, height))
             }
             Event::MappingStart(anchor, tag) => {
                 match Self::tag(tag, &m)? {
@@ -288,7 +295,7 @@ impl<'a> Loader<'a> {
 
                 self.enter(&m)?;
                 self.charge(1, &m)?;
-                let (mut entries, mut size) = (Vec::new(), 1);
+                let (mut entries, mut size, mut height) = (Vec::new(), 1, 1);
                 loop {
                     let (ev, km) = self.next()?;
                     if ev == Event::MappingEnd {
@@ -302,10 +309,11 @@ impl<'a> Loader<'a> {
                         ));
                     }
 
-                    let (k, kn) = self.node(ev, km)?;
+                    let (k, kn, kh) = self.node(ev, km)?;
                     let (ev, vm) = self.next()?;
-                    let (v, vn) = self.node(ev, vm)?;
+                    let (v, vn, vh) = self.node(ev, vm)?;
                     size += kn + vn;
+                    height = height.max(kh.max(vh) + 1);
                     entries.push((k, v, km));
                 }
 
@@ -324,8 +332,8 @@ impl<'a> Loader<'a> {
                     Value::map(entries.into_iter().map(|(k, v, _)| (k, v)).collect()).map_err(|e| err_at(&m, e))?
                 };
 
-                self.remember(anchor, &v, size);
-                Ok((v, size))
+                self.remember(anchor, &v, size, height);
+                Ok((v, size, height))
             }
             other => Err(err_at(&m, format!("unexpected event {other:?}"))),
         }
