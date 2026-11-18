@@ -513,7 +513,13 @@ impl<'a> Decoder<'a> {
     fn value<T: Build<'a>>(&mut self) -> Result<T, DecodeError> {
         let start = self.pos;
         let kind = self.byte()?;
-        if self.depth >= self.limits.max_depth && matches!(kind, tag::LIST..=tag::MAP | tag::VARIANT) {
+        // A record list nests twice (list, then records), as its canonical re-encoding does.
+        let nesting = match kind {
+            tag::LIST..=tag::MAP | tag::VARIANT => 1,
+            tag::RECORD_LIST => 2,
+            _ => 0,
+        };
+        if self.depth + nesting > self.limits.max_depth {
             return self.err("nesting depth limit exceeded");
         }
 
@@ -1220,5 +1226,26 @@ mod table_tests {
         assert!(decode(&[tag::RECORD_LIST, 1, 1, 2, b'a', 1, 0b10, tag::NULL]).is_err()); // stray presence bit
         assert!(decode(&[tag::RECORD_LIST, 1, 1, 2, b'a', 7, tag::NULL]).is_err());
         // bad mode
+    }
+
+    /// `n` record lists, each one row holding the next in field `a`, around a null.
+    fn nested_record_lists(n: usize) -> Vec<u8> {
+        let mut b = vec![tag::RECORD_LIST, 1, 1, 2, b'a', 0];
+        for _ in 1..n {
+            b.extend([tag::RECORD_LIST, 1, 1, 1, 0]);
+        }
+
+        b.push(tag::NULL);
+        b
+    }
+
+    #[test]
+    fn record_lists_count_toward_depth() {
+        // Record lists used to skip the depth check and overflowed the stack.
+        assert!(decode(&nested_record_lists(200_000)).is_err());
+        // Each record list nests twice, so 64 fill the default depth of 128 and re-encode canonically.
+        let v = decode(&nested_record_lists(64)).unwrap();
+        assert_eq!(decode(&canonical_bytes(&v)).unwrap(), v);
+        assert!(decode(&nested_record_lists(65)).is_err());
     }
 }
