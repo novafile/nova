@@ -520,13 +520,13 @@ impl<'a> Decoder<'a> {
         }
 
         Ok(match kind {
-            tag::NULL => T::scalar(Value::Null),
-            tag::FALSE => T::scalar(Value::Bool(false)),
-            tag::TRUE => T::scalar(Value::Bool(true)),
-            tag::INT => T::scalar(Value::Int(unzigzag(self.varint()?))),
+            tag::NULL => T::scalar(Scalar::Null),
+            tag::FALSE => T::scalar(Scalar::Bool(false)),
+            tag::TRUE => T::scalar(Scalar::Bool(true)),
+            tag::INT => T::scalar(Scalar::Int(unzigzag(self.varint()?))),
             tag::FLOAT => {
                 let b = self.take(8)?;
-                T::scalar(Value::Float(f64::from_bits(u64::from_be_bytes(b.try_into().unwrap()))))
+                T::scalar(Scalar::Float(f64::from_bits(u64::from_be_bytes(b.try_into().unwrap()))))
             }
             tag::DECIMAL => {
                 let coeff = unzigzag(self.varint()?);
@@ -539,7 +539,7 @@ impl<'a> Decoder<'a> {
                     return self.err("decimal is not normalized");
                 }
 
-                T::scalar(Value::Decimal(d))
+                T::scalar(Scalar::Decimal(d))
             }
             tag::RATIONAL => {
                 let num = unzigzag(self.varint()?);
@@ -549,7 +549,7 @@ impl<'a> Decoder<'a> {
                 };
 
                 match Rational::new(num, den) {
-                    Ok(r) if r.numerator() == num && r.denominator() == den => T::scalar(Value::Rational(r)),
+                    Ok(r) if r.numerator() == num && r.denominator() == den => T::scalar(Scalar::Rational(r)),
                     Ok(_) => return self.err("rational is not normalized"),
                     Err(e) => return self.err(e),
                 }
@@ -567,12 +567,12 @@ impl<'a> Decoder<'a> {
                 };
 
                 match Timestamp::new(secs, nanos) {
-                    Ok(t) => T::scalar(Value::Timestamp(t)),
+                    Ok(t) => T::scalar(Scalar::Timestamp(t)),
                     Err(e) => return self.err(e),
                 }
             }
             tag::DURATION => match Duration::from_nanos(unzigzag(self.varint()?)) {
-                Ok(d) => T::scalar(Value::Duration(d)),
+                Ok(d) => T::scalar(Scalar::Duration(d)),
                 Err(e) => return self.err(e),
             },
             tag::LIST | tag::TUPLE | tag::SET => {
@@ -704,6 +704,26 @@ impl<'a> Decoder<'a> {
     }
 }
 
+/// The value kinds without heap data, as the decoder hands them to [`Build::scalar`].
+pub(crate) enum Scalar {
+    /// `null`.
+    Null,
+    /// `true` or `false`.
+    Bool(bool),
+    /// An integer.
+    Int(i128),
+    /// A binary64 float.
+    Float(f64),
+    /// A normalized decimal.
+    Decimal(Decimal),
+    /// A normalized rational.
+    Rational(Rational),
+    /// A timestamp.
+    Timestamp(Timestamp),
+    /// A duration.
+    Duration(Duration),
+}
+
 /// What the decoder builds: owned [`Value`]s or borrowed [`ValueRef`]s.
 ///
 /// The decoder owns every check of the wire format; implementations only
@@ -712,8 +732,8 @@ pub(crate) trait Build<'a>: Sized {
     /// A record under construction.
     type Record;
 
-    /// A value of a kind without heap data (not a string, byte string or container).
-    fn scalar(v: Value) -> Self;
+    /// A value of a kind without heap data.
+    fn scalar(v: Scalar) -> Self;
     /// A string borrowed from the input.
     fn string(s: &'a str) -> Self;
     /// A byte string borrowed from the input.
@@ -739,8 +759,17 @@ pub(crate) trait Build<'a>: Sized {
 impl<'a> Build<'a> for Value {
     type Record = Record;
 
-    fn scalar(v: Value) -> Self {
-        v
+    fn scalar(v: Scalar) -> Self {
+        match v {
+            Scalar::Null => Value::Null,
+            Scalar::Bool(b) => Value::Bool(b),
+            Scalar::Int(i) => Value::Int(i),
+            Scalar::Float(f) => Value::Float(f),
+            Scalar::Decimal(d) => Value::Decimal(d),
+            Scalar::Rational(r) => Value::Rational(r),
+            Scalar::Timestamp(t) => Value::Timestamp(t),
+            Scalar::Duration(d) => Value::Duration(d),
+        }
     }
 
     fn string(s: &'a str) -> Self {
@@ -794,22 +823,22 @@ impl<'a> Build<'a> for Value {
 }
 
 /// A borrowed record under construction: its fields, and its keys once it outgrows scanning.
-pub(crate) type RecordRef<'a> = (Vec<(&'a str, ValueRef<'a>)>, Option<HashSet<&'a str>>);
+/// The key set is boxed so a small record under construction stays four words.
+pub(crate) type RecordRef<'a> = (Vec<(&'a str, ValueRef<'a>)>, Option<Box<HashSet<&'a str>>>);
 
 impl<'a> Build<'a> for ValueRef<'a> {
     type Record = RecordRef<'a>;
 
-    fn scalar(v: Value) -> Self {
+    fn scalar(v: Scalar) -> Self {
         match v {
-            Value::Null => ValueRef::Null,
-            Value::Bool(b) => ValueRef::Bool(b),
-            Value::Int(i) => ValueRef::Int(i),
-            Value::Float(f) => ValueRef::Float(f),
-            Value::Decimal(d) => ValueRef::Decimal(d),
-            Value::Rational(r) => ValueRef::Rational(r),
-            Value::Timestamp(t) => ValueRef::Timestamp(t),
-            Value::Duration(d) => ValueRef::Duration(d),
-            _ => unreachable!("the decoder passes only heap-free kinds"),
+            Scalar::Null => ValueRef::Null,
+            Scalar::Bool(b) => ValueRef::Bool(b),
+            Scalar::Int(i) => ValueRef::Int(i),
+            Scalar::Float(f) => ValueRef::Float(f),
+            Scalar::Decimal(d) => ValueRef::Decimal(d),
+            Scalar::Rational(r) => ValueRef::Rational(r),
+            Scalar::Timestamp(t) => ValueRef::Timestamp(t),
+            Scalar::Duration(d) => ValueRef::Duration(d),
         }
     }
 
@@ -846,7 +875,7 @@ impl<'a> Build<'a> for ValueRef<'a> {
         let duplicate = if entries.len() < RECORD_SCAN {
             entries.iter().any(|(e, _)| *e == key)
         } else {
-            !keys.get_or_insert_with(|| entries.iter().map(|(e, _)| *e).collect()).insert(key)
+            !keys.get_or_insert_with(|| Box::new(entries.iter().map(|(e, _)| *e).collect())).insert(key)
         };
 
         if duplicate {
