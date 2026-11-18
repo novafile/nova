@@ -108,15 +108,65 @@ impl fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
+/// The largest payload [`decode_frame`] accepts, in bytes (64 MiB).
+///
+/// Bounds the work a corrupt length can cause: the payload is checksummed
+/// before it is decoded, and a recovering [`FrameReader`] retries at every
+/// `NOVA` marker inside a rejected frame.
+pub const MAX_PAYLOAD: usize = 64 << 20;
+
+/// Slicing-by-8 tables for [`crc32`]: `CRC_TABLES[j][b]` is the CRC
+/// contribution of byte `b` followed by `j` zero bytes.
+const CRC_TABLES: [[u32; 256]; 8] = {
+    let mut t = [[0u32; 256]; 8];
+    let mut i = 0u32;
+    while i < 256 {
+        let mut c = i;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+            k += 1;
+        }
+
+        t[0][i as usize] = c;
+        i += 1;
+    }
+
+    let mut j = 1;
+    while j < 8 {
+        let mut i = 0;
+        while i < 256 {
+            let prev = t[j - 1][i];
+            t[j][i] = (prev >> 8) ^ t[0][(prev & 0xFF) as usize];
+            i += 1;
+        }
+
+        j += 1;
+    }
+
+    t
+};
+
 /// CRC-32 (IEEE 802.3, reflected, poly 0xEDB88320).
 #[must_use]
 pub fn crc32(data: &[u8]) -> u32 {
+    let t = &CRC_TABLES;
     let mut crc = 0xFFFF_FFFFu32;
-    for &b in data {
-        crc ^= u32::from(b);
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
-        }
+    let (chunks, rest) = data.as_chunks::<8>();
+    for c in chunks {
+        let lo = crc ^ u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+        crc = t[7][(lo & 0xFF) as usize]
+            ^ t[6][((lo >> 8) & 0xFF) as usize]
+            ^ t[5][((lo >> 16) & 0xFF) as usize]
+            ^ t[4][(lo >> 24) as usize]
+            ^ t[3][usize::from(c[4])]
+            ^ t[2][usize::from(c[5])]
+            ^ t[1][usize::from(c[6])]
+            ^ t[0][usize::from(c[7])];
+    }
+
+    for &b in rest {
+        crc = (crc >> 8) ^ t[0][((crc ^ u32::from(b)) & 0xFF) as usize];
     }
 
     !crc
@@ -252,6 +302,13 @@ pub fn decode_frame(buf: &[u8]) -> Result<(Frame, usize), FrameError> {
     };
 
     let len = usize::try_from(get_varint(buf, &mut pos)?).map_err(|_| FrameError::Truncated)?;
+    // shortcut: a recovering reader still re-hashes overlapping payloads, O(stream x
+    // min(stream, MAX_PAYLOAD)) on hostile streams; combine prefix CRCs (zlib crc32_combine)
+    // if recovery must be linear.
+    if len > MAX_PAYLOAD {
+        return Err(FrameError::Malformed(format!("payload length {len} exceeds {MAX_PAYLOAD}")));
+    }
+
     let end = pos.checked_add(len).ok_or(FrameError::Truncated)?;
     let payload = buf.get(pos..end).ok_or(FrameError::Truncated)?;
     pos = end;
@@ -387,6 +444,13 @@ mod tests {
         assert!(matches!(decode_frame(&overflow), Err(FrameError::Malformed(_))));
         // Payload length 1 padded with a zero byte.
         assert!(matches!(decode_frame(b"NOVA\x01\x00\x81\x00\x00"), Err(FrameError::Malformed(_))));
+    }
+
+    #[test]
+    fn rejects_oversized_payload_before_reading_it() {
+        let mut b = b"NOVA\x01\x04".to_vec();
+        put_varint(&mut b, MAX_PAYLOAD as u64 + 1);
+        assert!(matches!(decode_frame(&b), Err(FrameError::Malformed(_))));
     }
 
     #[test]
