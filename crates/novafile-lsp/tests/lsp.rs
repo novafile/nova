@@ -41,6 +41,58 @@ impl Client {
     }
 }
 
+/// The client end of a session with a server for the test directory `dir`:
+/// in-process by default, or over stdio to the command in `NVF_LSP_CMD` (split on
+/// whitespace). A `{dir}` in the command is replaced by `dir`, which the server then
+/// sees as `/workspace/0` (see [`base`]), as under the VS Code WASI host:
+/// `NVF_LSP_CMD="wasmtime run -S threads=y -W threads=y --dir {dir}::/workspace/0 nvf-lsp.wasm"`.
+/// The handle finishes once the server has exited.
+fn serve(dir: &std::path::Path) -> (Connection, std::thread::JoinHandle<()>) {
+    let (server, client) = Connection::memory();
+    let Ok(cmd) = std::env::var("NVF_LSP_CMD") else {
+        return (client, std::thread::spawn(move || novafile_lsp::run(server).unwrap()));
+    };
+    let cmd = cmd.replace("{dir}", &dir.display().to_string());
+    let mut args = cmd.split_whitespace();
+    let mut child = std::process::Command::new(args.next().expect("NVF_LSP_CMD is empty"))
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let sender = server.sender;
+    std::thread::spawn(move || {
+        while let Some(m) = Message::read(&mut stdout).unwrap() {
+            if sender.send(m).is_err() {
+                break;
+            }
+        }
+    });
+    let mut stdin = child.stdin.take().unwrap();
+    let h = std::thread::spawn(move || {
+        for m in &server.receiver {
+            let exit = matches!(&m, Message::Notification(n) if n.method == "exit");
+            m.write(&mut stdin).unwrap();
+            if exit {
+                break;
+            }
+        }
+        drop(stdin);
+        assert!(child.wait().unwrap().success(), "server exited with an error");
+    });
+    (client, h)
+}
+
+/// The `file:` URI under which the server sees the test directory `dir`.
+fn base(dir: &std::path::Path) -> String {
+    if std::env::var("NVF_LSP_CMD").is_ok_and(|c| c.contains("{dir}")) {
+        "file:///workspace/0".into()
+    } else {
+        format!("file://{}", dir.display())
+    }
+}
+
 const SCHEMA: &str = include_str!("../../../examples/infrastructure.novs");
 const DOC: &str = include_str!("../../../examples/infrastructure.nova");
 
@@ -48,10 +100,9 @@ fn start() -> (Client, std::thread::JoinHandle<()>, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("novafile-lsp-{}-{:?}", std::process::id(), std::thread::current().id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("infrastructure.novs"), SCHEMA).unwrap();
-    let (server, client) = Connection::memory();
-    let h = std::thread::spawn(move || novafile_lsp::run(server).unwrap());
+    let (client, h) = serve(&dir);
     let mut c = Client { conn: client, next: 0 };
-    let root = format!("file://{}", dir.display());
+    let root = base(&dir);
     c.request(
         "initialize",
         json!({"capabilities": {}, "rootUri": root, "workspaceFolders": [{"uri": root, "name": "t"}]}),
@@ -71,7 +122,7 @@ fn open(c: &Client, uri: &str, text: &str) {
 #[expect(clippy::too_many_lines, reason = "one end-to-end session exercising every feature in order")]
 fn end_to_end() {
     let (mut c, server, dir) = start();
-    let uri = format!("file://{}/infra.nova", dir.display());
+    let uri = format!("{}/infra.nova", base(&dir));
 
     // A valid document: no diagnostics.
     open(&c, &uri, DOC);
@@ -169,7 +220,7 @@ fn end_to_end() {
         new_text.contains("region: eu-central-1\n") && new_text.contains("# a string until the schema resolves it"),
         "{edits}"
     );
-    let plain = format!("file://{}/plain.nova", dir.display());
+    let plain = format!("{}/plain.nova", base(&dir));
     open(&c, &plain, "b:   1\na: [1,2]\n");
     c.diagnostics();
     let edits = c.request(
@@ -179,7 +230,7 @@ fn end_to_end() {
     assert_eq!(edits[0]["newText"], "b: 1\na: [1, 2]\n");
 
     // Patch files get patch diagnostics.
-    let patch = format!("file://{}/x.patch", dir.display());
+    let patch = format!("{}/x.patch", base(&dir));
     open(&c, &patch, "@patch\nreplicas: 1\n");
     let d = c.diagnostics();
     assert_eq!(d[0]["code"], "nova::patch::syntax");
@@ -197,13 +248,12 @@ fn schema_next_to_a_loose_file() {
     let dir = std::env::temp_dir().join(format!("novafile-lsp-loose-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("infrastructure.novs"), SCHEMA).unwrap();
-    let (server, client) = Connection::memory();
-    let h = std::thread::spawn(move || novafile_lsp::run(server).unwrap());
+    let (client, h) = serve(&dir);
     let mut c = Client { conn: client, next: 0 };
     c.request("initialize", json!({"capabilities": {}}));
     c.notify("initialized", json!({}));
 
-    let uri = format!("file://{}/infra.nova", dir.display());
+    let uri = format!("{}/infra.nova", base(&dir));
     open(&c, &uri, &DOC.replace("port: 3000", "port: 0"));
     let d = c.diagnostics();
     assert_eq!(d.as_array().unwrap().len(), 1, "{d}");
@@ -234,7 +284,7 @@ impl Client {
 #[test]
 fn syntax_error_at_a_multibyte_character() {
     let (mut c, server, dir) = start();
-    let uri = format!("file://{}/nbsp.nova", dir.display());
+    let uri = format!("{}/nbsp.nova", base(&dir));
     open(&c, &uri, "a: 1\n\u{a0}b: 2\n");
     let d = c.diagnostics();
     assert_eq!(d[0]["code"], "nova::syntax", "{d}");
@@ -252,8 +302,8 @@ fn syntax_error_at_a_multibyte_character() {
 #[test]
 fn schema_reloads_on_save_and_close() {
     let (mut c, server, dir) = start();
-    let uri = format!("file://{}/infra.nova", dir.display());
-    let schema = format!("file://{}/infrastructure.novs", dir.display());
+    let uri = format!("{}/infra.nova", base(&dir));
+    let schema = format!("{}/infrastructure.novs", base(&dir));
     let relaxed = SCHEMA.replace("u16 @range(1..65535)", "u16 @range(0..65535)");
     open(&c, &uri, &DOC.replace("port: 3000", "port: 0"));
     assert_eq!(c.diagnostics().as_array().unwrap().len(), 1);
@@ -289,18 +339,53 @@ fn nearest_schema_wins_over_a_newer_one_elsewhere() {
         .replace("port: Port", "port: u8");
     std::fs::write(dir.join("fixtures/broken/new.novs"), broken).unwrap();
 
-    let (server, client) = Connection::memory();
-    let h = std::thread::spawn(move || novafile_lsp::run(server).unwrap());
+    let (client, h) = serve(&dir);
     let mut c = Client { conn: client, next: 0 };
-    let root = format!("file://{}", dir.display());
+    let root = base(&dir);
     c.request(
         "initialize",
         json!({"capabilities": {}, "rootUri": root, "workspaceFolders": [{"uri": root, "name": "t"}]}),
     );
     c.notify("initialized", json!({}));
 
-    open(&c, &format!("file://{}/examples/infra.nova", dir.display()), DOC);
+    open(&c, &format!("{}/examples/infra.nova", base(&dir)), DOC);
     assert_eq!(c.diagnostics(), json!([]));
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    h.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// URIs that name no local file (`untitled:`, or `vscode-vfs:` outside any mounted
+/// folder) are served from memory without touching the file system.
+#[test]
+fn non_file_uris() {
+    let dir = std::env::temp_dir().join(format!("novafile-lsp-vfs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (client, h) = serve(&dir);
+    let mut c = Client { conn: client, next: 0 };
+    let vfs = "vscode-vfs://github/o/r";
+    c.request(
+        "initialize",
+        json!({"capabilities": {}, "rootUri": vfs, "workspaceFolders": [{"uri": vfs, "name": "r"}]}),
+    );
+    c.notify("initialized", json!({}));
+
+    let schema = format!("{vfs}/infrastructure.novs");
+    open(&c, &schema, SCHEMA);
+    c.notify("textDocument/didSave", json!({"textDocument": {"uri": schema}}));
+    let doc = format!("{vfs}/infra.nova");
+    open(&c, &doc, DOC);
+    // A schema open under a non-file URI has no path to match against, so is not used.
+    let d = c.diagnostics_for(&doc);
+    assert!(d[0]["message"].as_str().unwrap().starts_with("no schema in the workspace"), "{d}");
+    open(&c, "untitled:Untitled-1", "a: b: c\n");
+    assert_eq!(c.diagnostics_for("untitled:Untitled-1")[0]["code"], "nova::syntax");
+    c.request(
+        "textDocument/hover",
+        json!({"textDocument": {"uri": doc}, "position": {"line": 0, "character": 0}}),
+    );
 
     c.request("shutdown", Value::Null);
     c.notify("exit", Value::Null);
