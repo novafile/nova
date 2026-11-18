@@ -874,7 +874,7 @@ fn run(cli: Cli) -> R<ExitCode> {
                 return Ok(ExitCode::SUCCESS);
             }
 
-            let input = read_bytes(&file)?;
+            let mut input = read_bytes(&file)?;
             let detected = detect(&file, &input, InputFormat::Auto);
             if !matches!(detected, InputFormat::Auto | InputFormat::Nova) {
                 let name = detected.to_possible_value().map(|v| v.get_name().to_owned()).unwrap_or_default();
@@ -885,6 +885,11 @@ fn run(cli: Cli) -> R<ExitCode> {
                     file.with_extension("nova").display()
                 )
                 .into());
+            }
+
+            if let Some((fixed, n)) = std::str::from_utf8(&input).ok().and_then(novafile_text::fix_syntax) {
+                eprintln!("note: {}: fixed {n} table row count{}", file.display(), if n == 1 { "" } else { "s" });
+                input = fixed.into_bytes();
             }
 
             let text = std::str::from_utf8(&input)
@@ -1229,6 +1234,15 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
         let _lock = (fix && file.as_os_str() != "-").then(|| lock(file)).transpose()?;
         let mut src = read_text(file)?;
         let is_schema = file.extension().is_some_and(|e| e == "novs");
+        if fix
+            && !is_schema
+            && let Some((fixed, n)) = novafile_text::fix_syntax(&src)
+        {
+            write_atomic(file, fixed.as_bytes())?;
+            eprintln!("{}: fixed {n} table row count{}", file.display(), if n == 1 { "" } else { "s" });
+            src = fixed;
+        }
+
         let run = |src: &str| -> R<Vec<novafile_lint::Finding>> {
             if is_schema {
                 Ok(novafile_lint::lint_schema(src, &config).map_err(|e| format!("{}: {e}", file.display()))?)

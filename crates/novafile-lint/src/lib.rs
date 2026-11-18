@@ -131,6 +131,7 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
             col: 1,
             offset: 0,
             message: m,
+            fix: None,
         })?;
     }
 
@@ -139,6 +140,7 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
         col: 1,
         offset: 0,
         message: m,
+        fix: None,
     })?;
 
     let has_schema = doc.directive("schema").is_some();
@@ -162,6 +164,7 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
                     col: 1,
                     offset: 0,
                     message: format!("unknown @compat format {other:?} (json, yaml, toml)"),
+                    fix: None,
                 });
             }
         };

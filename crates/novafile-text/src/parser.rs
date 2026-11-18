@@ -7,6 +7,11 @@ use base64::Engine;
 use novafile_value::{Decimal, Duration, Rational, Timestamp, Value};
 use std::fmt;
 
+/// `1 row`, `3 rows`.
+fn n_rows(n: usize) -> String {
+    if n == 1 { "1 row".into() } else { format!("{n} rows") }
+}
+
 /// Maximum nesting depth of values; deeper input is rejected to bound recursion.
 pub const MAX_DEPTH: usize = 128;
 
@@ -21,6 +26,17 @@ pub struct ParseError {
     pub offset: usize,
     /// Human-readable description; advice, if any, follows a `; `.
     pub message: String,
+    /// A replacement that fixes this error: the byte range of the source and its new text.
+    pub fix: Option<(std::ops::Range<usize>, String)>,
+}
+
+impl ParseError {
+    /// Attach a fix: replace `range` of the source with `text`.
+    #[must_use]
+    pub fn with_fix(mut self, range: std::ops::Range<usize>, text: impl Into<String>) -> Self {
+        self.fix = Some((range, text.into()));
+        self
+    }
 }
 
 impl fmt::Display for ParseError {
@@ -293,6 +309,7 @@ impl<'a> Parser<'a> {
             col,
             offset: pos,
             message: msg.into(),
+            fix: None,
         }
     }
 
@@ -1001,7 +1018,7 @@ impl<'a> Parser<'a> {
             _ => return false,
         }
 
-        if b.get(p) == Some(&b'[') && b.get(p + 1).is_some_and(u8::is_ascii_digit) {
+        if b.get(p) == Some(&b'[') && (b.get(p + 1).is_some_and(u8::is_ascii_digit) || b.get(p + 1..p + 3) == Some(b"]{")) {
             while !matches!(b.get(p), None | Some(b'\n' | b'}')) {
                 if b[p] == b'"' {
                     let Some(q) = skip_quoted(p) else { return false };
@@ -1148,10 +1165,7 @@ impl<'a> Parser<'a> {
             let kend = self.pos;
             let value = self.spanned(SpanKind::BlockEntry, seg_of(&key), kpos, Some((kpos, kend)), |p| {
                 if p.peek() == Some(b'[') {
-                    let (n, fields) = p.table_header()?;
-                    p.expect(b':', "`:` after table header")?;
-                    p.end_line()?;
-                    p.table_rows(indent + 2, n, &fields)
+                    p.table(indent + 2)
                 } else {
                     p.expect(b':', "`:` after key")?;
                     p.block_value(indent)
@@ -1422,15 +1436,52 @@ impl<'a> Parser<'a> {
     // Tables
     // ------------------------------------------------------------------
 
-    /// Parse a table header `[N]{col, ...}` (without the trailing `:`) into the row count and column names.
-    fn table_header(&mut self) -> R<(usize, Vec<String>)> {
+    /// Parse a table `[N]{col, ...}:` and its rows, indented `indent`. A missing or wrong
+    /// row count is an error that names the rows found and carries the fix.
+    fn table(&mut self, indent: usize) -> R<Node> {
+        let (n, count_at, fields) = self.table_header()?;
+        self.expect(b':', "`:` after table header")?;
+        self.end_line()?;
+        let Some(n) = n else {
+            let found = self.count_rows(indent);
+            return Err(self
+                .error_at(
+                    count_at.start,
+                    format!("table header needs a row count, found {}; write [{found}]", n_rows(found)),
+                )
+                .with_fix(count_at, found.to_string()));
+        };
+
+        self.table_rows(indent, n, &fields, count_at)
+    }
+
+    /// Rows at exactly `indent` from the cursor on, up to the first non-blank, non-comment
+    /// line indented less.
+    fn count_rows(&self, indent: usize) -> usize {
+        self.src[self.pos..]
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+            .map(|l| l.len() - l.trim_start_matches(' ').len())
+            .take_while(|&i| i >= indent)
+            .filter(|&i| i == indent)
+            .count()
+    }
+
+    /// Parse a table header `[N]{col, ...}` (without the trailing `:`) into the row count
+    /// (`None` for `[]`), the byte range of the count, and the column names.
+    fn table_header(&mut self) -> R<(Option<usize>, std::ops::Range<usize>, Vec<String>)> {
         self.expect(b'[', "`[`")?;
         let s = self.pos;
         while self.peek().is_some_and(|c| c.is_ascii_digit()) {
             self.pos += 1;
         }
 
-        let n: usize = self.src[s..self.pos].parse().map_err(|_| self.error_at(s, "expected a row count"))?;
+        let count_at = s..self.pos;
+        let n = if count_at.is_empty() {
+            None
+        } else {
+            Some(self.src[count_at.clone()].parse().map_err(|_| self.error_at(s, "row count is out of range"))?)
+        };
         self.expect(b']', "`]` after row count")?;
         self.expect(b'{', "`{` to start the column list")?;
         let mut fields: Vec<String> = Vec::new();
@@ -1459,7 +1510,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok((n, fields))
+        Ok((n, count_at, fields))
     }
 
     /// Parse a column spec `{c1, …}` (spec §4.13): names, nested columns `name{…}` and the
@@ -1554,13 +1605,26 @@ impl<'a> Parser<'a> {
 
     /// Parse exactly `n` table rows at `indent` into a list of records; an empty cell leaves its field
     /// absent.
-    fn table_rows(&mut self, indent: usize, n: usize, fields: &[String]) -> R<Node> {
+    fn table_rows(&mut self, indent: usize, n: usize, fields: &[String], count_at: std::ops::Range<usize>) -> R<Node> {
         // `n` is untrusted; each row takes at least one source byte, so cap the hint.
         let mut rows = Vec::with_capacity(n.min(self.src.len()));
+        let found = self.count_rows(indent);
+        let wrong_count = |p: &Self| {
+            p.error_at(
+                count_at.start,
+                format!(
+                    "table header declares {}, but {found} {}; write [{found}]",
+                    n_rows(n),
+                    if found == 1 { "follows" } else { "follow" }
+                ),
+            )
+            .with_fix(count_at.clone(), found.to_string())
+        };
         for r in 0..n {
             self.skip_blank_lines();
             match self.line_indent()? {
                 Some(i) if i == indent => self.pos += i,
+                _ if found < n => return Err(wrong_count(self)),
                 _ => return self.err(format!("table declares {n} rows but only {r} were found (rows are indented {indent} spaces)")),
             }
 
@@ -1600,6 +1664,10 @@ impl<'a> Parser<'a> {
         let save = self.pos;
         self.skip_blank_lines();
         if matches!(self.line_indent()?, Some(i) if i >= indent) {
+            if found > n {
+                return Err(wrong_count(self));
+            }
+
             return self.err(format!("table declares {n} rows but more follow"));
         }
 
@@ -1973,11 +2041,8 @@ impl<'a> Parser<'a> {
             None => Node::Record(Vec::new()),
             Some(i) if i > 0 => return Err(self.error_at(self.pos + i, "the document body must start at column 1")),
             Some(_) => {
-                if self.peek() == Some(b'[') && self.peek_at(1).is_some_and(|c| c.is_ascii_digit()) {
-                    let (n, fields) = self.table_header()?;
-                    self.expect(b':', "`:` after table header")?;
-                    self.end_line()?;
-                    self.table_rows(2, n, &fields)?
+                if self.peek() == Some(b'[') && (self.peek_at(1).is_some_and(|c| c.is_ascii_digit()) || self.starts_with("[]{")) {
+                    self.table(2)?
                 } else if self.is_list_marker() || self.looks_like_key() || self.control_keyword().is_some() || self.starts_with("...") {
                     match self.peek_block_kind() {
                         BlockKind::List => Node::List(self.block_list(0)?),

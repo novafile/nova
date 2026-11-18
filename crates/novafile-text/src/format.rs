@@ -163,6 +163,7 @@ pub fn format_preserving(src: &str, profile: Profile) -> Result<String, ParseErr
             col: 1,
             offset: 0,
             message: "formatting @template documents is not supported yet".into(),
+            fix: None,
         });
     }
 
@@ -171,6 +172,7 @@ pub fn format_preserving(src: &str, profile: Profile) -> Result<String, ParseErr
         col: 1,
         offset: 0,
         message: m,
+        fix: None,
     })?;
     Ok(render_parsed(src, &doc, &spans, &value, &value, profile))
 }

@@ -12,13 +12,13 @@
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument, Notification as _, PublishDiagnostics};
-use lsp_types::request::{Completion, DocumentSymbolRequest, Formatting, HoverRequest, Request as _};
+use lsp_types::request::{CodeActionRequest, Completion, DocumentSymbolRequest, Formatting, HoverRequest, Request as _};
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams,
-    DocumentSymbolResponse, Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams, MarkupContent, MarkupKind, NumberOrString, OneOf,
-    Position, PublishDiagnosticsParams, Range, ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, TextEdit, Uri,
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability, CompletionItem, CompletionItemKind, CompletionOptions,
+    CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, MarkupContent, MarkupKind, NumberOrString, OneOf, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
+    SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Uri, WorkspaceEdit,
 };
 
 use novafile_schema::{Def, Schema, SchemaRef, TypeKind};
@@ -74,6 +74,7 @@ fn serve(mut inbox: impl Iterator<Item = Result<Message, Error>>, mut send: impl
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
+        code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![":".into(), " ".into()]),
             ..Default::default()
@@ -253,6 +254,7 @@ fn parse_data(text: &str) -> Result<Option<Parsed>, novafile_text::ParseError> {
         col: 1,
         offset: 0,
         message: m,
+        fix: None,
     })?;
     let schema_ref = doc.directives.iter().find(|d| d.name == "schema").map(|d| (d.arg.clone(), d.line));
     Ok(Some(Parsed { value, spans, schema_ref }))
@@ -585,6 +587,10 @@ impl Server<'_> {
                 let p: DocumentFormattingParams = serde_json::from_value(req.params).map_err(bad)?;
                 json(self.format(&p.text_document.uri))
             }
+            CodeActionRequest::METHOD => {
+                let p: CodeActionParams = serde_json::from_value(req.params).map_err(bad)?;
+                json(self.code_actions(&p.text_document.uri, p.range))
+            }
             _ => Err((lsp_server::ErrorCode::MethodNotFound as i32, format!("unsupported request {}", req.method))),
         }
     }
@@ -661,6 +667,43 @@ impl Server<'_> {
     fn symbols(&self, uri: &Uri) -> Option<Vec<DocumentSymbol>> {
         let (text, p) = self.parsed(uri)?;
         Some(children_of(text, &p, &Path::root()))
+    }
+
+    /// Quick fixes for the syntax error on the requested lines, such as a table's row count.
+    fn code_actions(&self, uri: &Uri, at: Range) -> Vec<CodeActionOrCommand> {
+        let Some(text) = self.docs.get(uri).filter(|t| kind_of(uri, t) == Kind::Document) else {
+            return vec![];
+        };
+
+        let Err(novafile_text::ParseError {
+            fix: Some((fix, new)),
+            message,
+            ..
+        }) = parse_data(text)
+        else {
+            return vec![];
+        };
+
+        let edit_range = range(text, fix.start, fix.end);
+        if edit_range.start.line < at.start.line || edit_range.start.line > at.end.line {
+            return vec![];
+        }
+
+        let title = message.rsplit("; ").next().map_or_else(|| "Fix".to_owned(), |advice| format!("Fix: {advice}"));
+        let edit = TextEdit {
+            range: edit_range,
+            new_text: new,
+        };
+        vec![CodeActionOrCommand::CodeAction(CodeAction {
+            title,
+            kind: Some(CodeActionKind::QUICKFIX),
+            is_preferred: Some(true),
+            edit: Some(WorkspaceEdit {
+                changes: Some(std::iter::once((uri.clone(), vec![edit])).collect()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })]
     }
 
     /// Document-preserving formatting (human profile) as one whole-document edit.

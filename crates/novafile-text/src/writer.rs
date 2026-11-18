@@ -360,9 +360,9 @@ impl<'t> W<'t> {
         }
     }
 
-    /// Column names if `l` should be written as a table: it was a table in the source or, in the
-    /// Compact profile, has at least two rows; every element is a non-empty record of scalars; and at
-    /// least half the cells are filled. Columns are in first-seen order.
+    /// Column names if `l` should be written as a table: it was a table in the source, or, in the
+    /// Compact profile, it has at least two rows, its cells are scalars and at least half of them are
+    /// filled. Every element must be a non-empty record. Columns are in first-seen order.
     fn table_fields(&self, l: &[Value]) -> Option<Vec<String>> {
         let was_table = self.trivia.is_some_and(|t| t.tables.contains(&self.here()));
         if !(was_table || (self.compact && l.len() >= 2)) || l.is_empty() {
@@ -379,7 +379,8 @@ impl<'t> W<'t> {
             }
 
             for (k, v) in r.iter() {
-                if v.is_container() {
+                // A table kept from the source may hold any flow value; the Compact profile's own tables hold scalars.
+                if v.is_container() && !was_table {
                     return None;
                 }
 
@@ -397,7 +398,7 @@ impl<'t> W<'t> {
         }
 
         // Require a mostly-dense table; sparse data reads better as records.
-        (present * 2 >= fields.len() * l.len()).then_some(fields)
+        (was_table || present * 2 >= fields.len() * l.len()).then_some(fields)
     }
 
     /// The text the writer would put after `key: ` / `- ` if `v` stays on one line.
@@ -524,7 +525,7 @@ impl<'t> W<'t> {
                     None => String::new(),
                 })
                 .collect();
-            self.out.push_str(&cells.join(self.sep()));
+            self.out.push_str(cells.join(self.sep()).trim_end());
             self.out.push('\n');
             self.emit_trailing(mark);
             self.path.pop();

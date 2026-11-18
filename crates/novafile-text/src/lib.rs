@@ -58,6 +58,7 @@ pub fn parse(src: &str) -> Result<Value, ParseError> {
             col: 1,
             offset: 0,
             message: "this is a @template document; render it first".into(),
+            fix: None,
         });
     }
 
@@ -66,6 +67,7 @@ pub fn parse(src: &str) -> Result<Value, ParseError> {
         col: 1,
         offset: 0,
         message: m,
+        fix: None,
     })
 }
 
@@ -136,6 +138,27 @@ pub fn parse_row(src: &str) -> Result<Vec<Option<Value>>, ParseError> {
         .into_iter()
         .map(|c| c.map(|n| n.to_value().map_err(|m| p.error_at(0, m))).transpose())
         .collect()
+}
+
+/// Apply the fixes that syntax errors carry (such as a table's row count) until `src` parses
+/// or an error has none. Returns the fixed source and the number of fixes applied, or `None`
+/// when `src` already parses or nothing could be fixed.
+#[must_use]
+pub fn fix_syntax(src: &str) -> Option<(String, usize)> {
+    let mut text = src.to_owned();
+    let mut n = 0;
+    // Each fix repairs one table; the bound only guards against a fix that does not converge.
+    while n < 1000 {
+        match parse_document(&text) {
+            Err(ParseError { fix: Some((range, new)), .. }) => {
+                text.replace_range(range, &new);
+                n += 1;
+            }
+            _ => break,
+        }
+    }
+
+    (n > 0).then_some((text, n))
 }
 
 /// Split a text stream into documents separated by `---` lines (spec §4.11).

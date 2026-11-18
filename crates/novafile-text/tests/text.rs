@@ -178,8 +178,8 @@ fn errors() {
         ("a: (1)\n", "1-tuple"),
         ("a: $x\n", "template"),
         ("@unknown x\na: 1\n", "unknown directive"),
-        ("t[2]{a,b}:\n  1,2\n", "only 1"),
-        ("t[18446744073709551615]{a}:\n  1\n", "only 1"),
+        ("t[2]{a,b}:\n  1,2\n", "but 1 follows"),
+        ("t[18446744073709551615]{a}:\n  1\n", "but 1 follows"),
         ("t[1]{a,b}:\n  1,2,3\n", "3 cells"),
         ("a: [1, 2\n", "expected"),
         ("a: \"unterminated\n", "control character"),
@@ -469,4 +469,25 @@ fn column_specs() {
     for bad in ["{a, a}", "{.., a}", "{a, .., ..}", "{a{}}", "{a, b{c, c}}", "{a} x", "{a"] {
         assert!(parse_columns(bad).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn table_row_count_errors_carry_a_fix() {
+    let open = "rules[]{a, b}:\n  1, 2\n  3, 4\n  5, 6\nnext: 1\n";
+    let e = parse(open).unwrap_err();
+    assert_eq!(e.message, "table header needs a row count, found 3 rows; write [3]");
+    assert_eq!(e.fix, Some((6..6, "3".into())));
+
+    let few = "rules[5]{a}:\n  1\n  # a comment\n\n  2\n";
+    let e = parse(few).unwrap_err();
+    assert_eq!(e.message, "table header declares 5 rows, but 2 follow; write [2]");
+    let many = "[1]{a}:\n  1\n  2\n";
+    assert!(parse(many).unwrap_err().message.contains("but 2 follow"));
+
+    let (fixed, n) = novafile_text::fix_syntax(&format!("{open}more[9]{{x}}:\n  1\n")).unwrap();
+    assert_eq!(n, 2);
+    assert!(fixed.starts_with("rules[3]{a, b}:") && fixed.contains("more[1]{x}:"), "{fixed}");
+    assert!(parse(&fixed).is_ok());
+    assert_eq!(novafile_text::fix_syntax("a: 1\n"), None);
+    assert_eq!(novafile_text::fix_syntax("a: [\n"), None);
 }
