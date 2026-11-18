@@ -22,8 +22,5 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let (conn, io) = lsp_server::Connection::stdio();
-    novafile_lsp::run(conn)?;
-    io.join()?;
-    Ok(())
+    novafile_lsp::run_stdio()
 }

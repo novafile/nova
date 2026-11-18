@@ -45,7 +45,7 @@ impl Client {
 /// in-process by default, or over stdio to the command in `NVF_LSP_CMD` (split on
 /// whitespace). A `{dir}` in the command is replaced by `dir`, which the server then
 /// sees as `/workspace/0` (see [`base`]), as under the VS Code WASI host:
-/// `NVF_LSP_CMD="wasmtime run -S threads=y -W threads=y --dir {dir}::/workspace/0 nvf-lsp.wasm"`.
+/// `NVF_LSP_CMD="wasmtime run --dir {dir}::/workspace/0 nvf-lsp.wasm"`.
 /// The handle finishes once the server has exited.
 fn serve(dir: &std::path::Path) -> (Connection, std::thread::JoinHandle<()>) {
     let (server, client) = Connection::memory();

@@ -10,7 +10,7 @@
 //! - document-preserving formatting (human profile): comments, blank lines
 //!   and spellings are kept (spec §3).
 
-use lsp_server::{Connection, Message, Notification, Request, Response};
+use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument, Notification as _, PublishDiagnostics};
 use lsp_types::request::{Completion, DocumentSymbolRequest, Formatting, HoverRequest, Request as _};
 use lsp_types::{
@@ -44,6 +44,26 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
     reason = "public API takes ownership of the connection for the server's lifetime"
 )]
 pub fn run(conn: Connection) -> Result<(), Error> {
+    serve(conn.receiver.iter().map(Ok), |m| Ok(conn.sender.send(m)?))
+}
+
+/// Run the server on stdin/stdout until shutdown, on the calling thread.
+///
+/// Spawns no threads, so it also runs on `wasm32-wasip1`, where
+/// [`Connection::stdio`] cannot start its reader and writer threads.
+///
+/// # Errors
+///
+/// As [`run`], plus failures to read or write stdio.
+pub fn run_stdio() -> Result<(), Error> {
+    let mut stdin = std::io::stdin().lock();
+    let mut stdout = std::io::stdout().lock();
+    let inbox = std::iter::from_fn(|| Message::read(&mut stdin).map_err(Error::from).transpose());
+    serve(inbox, |m| Ok(m.write(&mut stdout)?))
+}
+
+/// Serve messages from `inbox`, sending replies and notifications through `send`.
+fn serve(mut inbox: impl Iterator<Item = Result<Message, Error>>, mut send: impl FnMut(Message) -> Result<(), Error>) -> Result<(), Error> {
     let caps = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
             open_close: Some(true),
@@ -61,7 +81,17 @@ pub fn run(conn: Connection) -> Result<(), Error> {
         ..Default::default()
     };
 
-    let init = conn.initialize(serde_json::to_value(caps)?)?;
+    // Answer `initialize`; until then, reject requests and ignore notifications.
+    let (id, init) = loop {
+        match inbox.next().transpose()? {
+            Some(Message::Request(r)) if r.method == "initialize" => break (r.id, r.params),
+            Some(Message::Request(r)) => send(Response::new_err(r.id, ErrorCode::ServerNotInitialized as i32, "server not initialized".into()).into())?,
+            Some(Message::Notification(n)) if n.method == "exit" => return Ok(()),
+            Some(_) => {}
+            None => return Err("connection closed before initialize".into()),
+        }
+    };
+    send(Response::new_ok(id, serde_json::json!({ "capabilities": caps })).into())?;
     let params: InitializeParams = serde_json::from_value(init)?;
     #[allow(deprecated)]
     let root = params
@@ -74,14 +104,14 @@ pub fn run(conn: Connection) -> Result<(), Error> {
         docs: HashMap::new(),
         disk_schemas: Vec::new(),
         scanned: Vec::new(),
-        conn: &conn,
+        send: &mut send,
     };
 
     if let Some(root) = root {
         server.scan_schemas(&root, 8);
     }
 
-    server.main_loop()
+    server.main_loop(&mut inbox)
 }
 
 /// Server state: open documents and the workspace's schemas.
@@ -92,8 +122,8 @@ struct Server<'c> {
     disk_schemas: Vec<(PathBuf, Schema)>,
     /// Directories already searched for schemas; nothing below them is scanned again.
     scanned: Vec<PathBuf>,
-    /// The client connection.
-    conn: &'c Connection,
+    /// Sends a message to the client.
+    send: &'c mut dyn FnMut(Message) -> Result<(), Error>,
 }
 
 /// Directory steps from `a` up to the deepest directory it shares with `b`, then down to `b`.
@@ -412,7 +442,7 @@ impl Server<'_> {
     }
 
     /// Send the diagnostics and lint findings of an open document to the client.
-    fn publish(&self, uri: &Uri) -> Result<(), Error> {
+    fn publish(&mut self, uri: &Uri) -> Result<(), Error> {
         let Some(text) = self.docs.get(uri) else { return Ok(()) };
         let mut diagnostics = self.diagnostics(uri, text);
         diagnostics.extend(Self::lints(uri, text));
@@ -422,14 +452,12 @@ impl Server<'_> {
             version: None,
         };
 
-        self.conn
-            .sender
-            .send(Message::Notification(Notification::new(PublishDiagnostics::METHOD.into(), params)))?;
+        (self.send)(Message::Notification(Notification::new(PublishDiagnostics::METHOD.into(), params)))?;
         Ok(())
     }
 
     /// Republish every open document, e.g. after a schema changed.
-    fn publish_all(&self) -> Result<(), Error> {
+    fn publish_all(&mut self) -> Result<(), Error> {
         let uris: Vec<Uri> = self.docs.keys().cloned().collect();
         for u in uris {
             self.publish(&u)?;
@@ -439,21 +467,25 @@ impl Server<'_> {
     }
 
     /// Handle messages until the client requests shutdown.
-    fn main_loop(&mut self) -> Result<(), Error> {
-        for msg in &self.conn.receiver {
+    fn main_loop(&mut self, inbox: &mut dyn Iterator<Item = Result<Message, Error>>) -> Result<(), Error> {
+        while let Some(msg) = inbox.next().transpose()? {
             match msg {
+                Message::Request(req) if req.method == "shutdown" => {
+                    (self.send)(Response::new_ok(req.id, ()).into())?;
+                    return match inbox.next().transpose()? {
+                        Some(Message::Notification(n)) if n.method == "exit" => Ok(()),
+                        None => Ok(()),
+                        Some(m) => Err(format!("unexpected message during shutdown: {m:?}").into()),
+                    };
+                }
                 Message::Request(req) => {
-                    if self.conn.handle_shutdown(&req)? {
-                        return Ok(());
-                    }
-
                     let id = req.id.clone();
                     let resp = match self.request(req) {
                         Ok(v) => Response::new_ok(id, v),
                         Err((code, m)) => Response::new_err(id, code, m),
                     };
 
-                    self.conn.sender.send(Message::Response(resp))?;
+                    (self.send)(Message::Response(resp))?;
                 }
                 Message::Notification(n) => self.notification(n)?,
                 Message::Response(_) => {}
@@ -517,9 +549,7 @@ impl Server<'_> {
                     version: None,
                 };
 
-                self.conn
-                    .sender
-                    .send(Message::Notification(Notification::new(PublishDiagnostics::METHOD.into(), params)))?;
+                (self.send)(Message::Notification(Notification::new(PublishDiagnostics::METHOD.into(), params)))?;
             }
             _ => {}
         }
