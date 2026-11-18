@@ -109,7 +109,7 @@ impl IntoValue for u128 {
 
 impl IntoValue for f32 {
     fn into_value(self) -> Result<Value, Error> {
-        Ok(Value::Float(self.into()))
+        Ok(Value::Float(novafile_value::f32_to_f64(self)))
     }
 }
 

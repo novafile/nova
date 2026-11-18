@@ -149,7 +149,7 @@ fn scalar(p: Peek<'_, '_>, st: ScalarType) -> R {
         ScalarType::Bool => Value::Bool(*p.get::<bool>()?),
         ScalarType::Char => Value::String(p.get::<char>()?.to_string()),
         ScalarType::Str | ScalarType::String | ScalarType::CowStr => Value::String(p.as_str().ok_or_else(|| Error::new("string value expected"))?.to_owned()),
-        ScalarType::F32 => Value::Float((*p.get::<f32>()?).into()),
+        ScalarType::F32 => Value::Float(novafile_value::f32_to_f64(*p.get::<f32>()?)),
         ScalarType::F64 => Value::Float(*p.get::<f64>()?),
         ScalarType::U8 => int!(u8),
         ScalarType::U16 => int!(u16),

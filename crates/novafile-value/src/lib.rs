@@ -22,7 +22,7 @@ mod value_ref;
 
 pub use codec::{DecodeError, EncodeOptions, Limits, Revision, canonical_bytes, decode, decode_prefix, decode_ref, decode_ref_prefix, encode, revision};
 pub use decimal::Decimal;
-pub use numeric::numeric_cmp;
+pub use numeric::{f32_to_f64, numeric_cmp};
 pub use rational::Rational;
 pub use record::{DuplicateKey, Record};
 pub use time::{Duration, Timestamp};

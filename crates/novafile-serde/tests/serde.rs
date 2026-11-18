@@ -215,3 +215,10 @@ fn internally_tagged_and_untagged_enums() {
     assert_eq!(from_str::<Vec<Shape>>(&t).unwrap(), shapes);
     assert_eq!(from_str::<Vec<Num>>("- 1\n- x\n").unwrap(), vec![Num::I(1), Num::S("x".into())]);
 }
+
+#[test]
+fn f32_is_written_in_its_shortest_form() {
+    assert_eq!(novafile_serde::to_string(&4.55f32).unwrap().trim(), "4.55");
+    let v: f32 = novafile_serde::from_str(&novafile_serde::to_string(&0.1f32).unwrap()).unwrap();
+    assert_eq!(v, 0.1f32);
+}

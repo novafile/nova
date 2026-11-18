@@ -78,7 +78,7 @@ impl ser::Serializer for ValueSerializer {
     }
 
     fn serialize_f32(self, v: f32) -> R {
-        Ok(Value::Float(v.into()))
+        Ok(Value::Float(novafile_value::f32_to_f64(v)))
     }
 
     fn serialize_f64(self, v: f64) -> R {

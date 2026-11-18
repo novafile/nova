@@ -133,12 +133,15 @@ pub(crate) fn classify(tok: &str) -> Result<Value, String> {
     }
 
     match number_kind(tok) {
-        Some(NumKind::Int) => tok.parse::<i128>().map(Value::Int).map_err(|_| format!("integer {tok} is out of range")),
+        Some(NumKind::Int) => tok
+            .parse::<i128>()
+            .map(Value::Int)
+            .map_err(|_| format!("integer {tok} is out of range; quote it if it is a string")),
         Some(NumKind::Rational) => Rational::parse(tok).map(Value::Rational),
         Some(NumKind::Float) => {
             let f: f64 = tok.parse().map_err(|_| format!("invalid float {tok}"))?;
             if f.is_infinite() {
-                return Err(format!("float {tok} is out of range; use @float(\"inf\")"));
+                return Err(format!("float {tok} is out of range; quote it if it is a string, or write @float(\"inf\")"));
             }
 
             Ok(Value::Float(f))

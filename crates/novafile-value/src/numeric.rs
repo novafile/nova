@@ -226,3 +226,41 @@ mod tests {
         assert_eq!(numeric_cmp(&Value::String("1".into()), &Value::Int(1)), None);
     }
 }
+
+/// The binary64 value an `f32` stands for when written: the one its shortest decimal spelling
+/// denotes, so `4.55f32` becomes `4.55` rather than `4.550000190734863`.
+///
+/// Falls back to exact widening when that value would not round back to the same `f32`.
+#[must_use]
+pub fn f32_to_f64(v: f32) -> f64 {
+    if !v.is_finite() {
+        return f64::from(v);
+    }
+
+    match v.to_string().parse::<f64>() {
+        #[expect(clippy::cast_possible_truncation, reason = "the round trip is the check")]
+        Ok(d) if (d as f32).to_bits() == v.to_bits() => d,
+        _ => f64::from(v),
+    }
+}
+
+#[cfg(test)]
+mod f32_tests {
+    use super::f32_to_f64;
+
+    #[test]
+    fn f32_round_trips_and_is_shortest() {
+        assert_eq!(f32_to_f64(4.55), 4.55);
+        assert_eq!(f32_to_f64(0.1), 0.1);
+        assert!(f32_to_f64(f32::NAN).is_nan());
+        assert_eq!(f32_to_f64(f32::INFINITY), f64::INFINITY);
+        assert_eq!(f32_to_f64(-0.0).to_bits(), (-0.0f64).to_bits());
+        let edge = [f32::MIN, f32::MAX, f32::MIN_POSITIVE, f32::EPSILON, 1e-45, 16_777_217.0];
+        // Every 4099th bit pattern plus edge cases: the value must read back as the same f32.
+        for v in (0..=u32::MAX).step_by(4099).map(f32::from_bits).chain(edge) {
+            #[expect(clippy::cast_possible_truncation, reason = "checking the round trip")]
+            let back = f32_to_f64(v) as f32;
+            assert!(v.is_nan() || back.to_bits() == v.to_bits(), "{v:e}");
+        }
+    }
+}
