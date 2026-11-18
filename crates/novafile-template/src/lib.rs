@@ -12,6 +12,7 @@ use novafile_schema::{Schema, parse_type};
 use novafile_text::ast::{Cond, Entry, ForHead, Item, Key, Node, Part};
 use novafile_text::{Path, Segment, parse_document};
 use novafile_value::{Record, Value};
+use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Write as _;
 use std::path::{Component, PathBuf};
@@ -94,7 +95,8 @@ impl Loader for FsLoader {
 /// Resource limits that keep every render bounded.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// Maximum number of value nodes produced (guards against exponential `@let` reuse).
+    /// Maximum number of value nodes produced, each string byte counting as one (guards against
+    /// exponential `@let` reuse).
     pub max_nodes: usize,
     /// Maximum nesting depth of `@import` chains.
     pub max_import_depth: usize,
@@ -230,9 +232,12 @@ struct Eval<'b> {
     max: usize,
 }
 
-/// Number of value nodes in `v`, counting containers and their contents.
+/// Number of value nodes in `v`, counting containers and their contents. Every byte of a string
+/// or byte string counts as a node too, or repeated interpolation could grow strings unbounded.
 fn size(v: &Value) -> usize {
     1 + match v {
+        Value::String(s) => s.len(),
+        Value::Bytes(b) => b.len(),
         Value::List(l) | Value::Tuple(l) | Value::Set(l) => l.iter().map(size).sum(),
         Value::Record(r) => r.iter().map(|(_, v)| size(v)).sum(),
         Value::Map(m) => m.iter().map(|(k, v)| size(k) + size(v)).sum(),
@@ -385,7 +390,7 @@ impl Eval<'_> {
     }
 
     /// Later entries win, except that two explicit fields may not share a key.
-    fn entries(&mut self, entries: &[Entry], out: &mut Record, explicit: &mut Vec<String>) -> Result<(), TemplateError> {
+    fn entries(&mut self, entries: &[Entry], out: &mut Record, explicit: &mut HashSet<String>) -> Result<(), TemplateError> {
         for e in entries {
             match e {
                 Entry::Field(k, n) => {
@@ -400,12 +405,12 @@ impl Eval<'_> {
 
                     let v = self.node(n)?;
                     out.set(key.clone(), v);
-                    explicit.push(key);
+                    explicit.insert(key);
                 }
                 Entry::Spread(n) => match self.node(n)? {
                     Value::Record(r) => {
                         for (k, v) in r.into_entries() {
-                            explicit.retain(|x| *x != k);
+                            explicit.remove(&k);
                             out.set(k, v);
                         }
                     }
@@ -419,19 +424,18 @@ impl Eval<'_> {
                     // Each iteration contributes entries to the same record.
                     let parts = self.each(h, |ev| {
                         let mut r = Record::new();
-                        let mut ex = Vec::new();
+                        let mut ex = HashSet::new();
                         ev.entries(body, &mut r, &mut ex)?;
                         Ok(r)
                     })?;
 
                     for r in parts {
                         for (k, v) in r.into_entries() {
-                            if explicit.contains(&k) {
+                            if !explicit.insert(k.clone()) {
                                 return err(format!("duplicate key {k:?} produced by @for"));
                             }
 
-                            out.set(k.clone(), v);
-                            explicit.push(k);
+                            out.set(k, v);
                         }
                     }
                 }
@@ -465,7 +469,7 @@ impl Eval<'_> {
             .map_err(TemplateError)?,
             Node::Record(entries) => {
                 let mut r = Record::new();
-                self.entries(entries, &mut r, &mut Vec::new())?;
+                self.entries(entries, &mut r, &mut HashSet::new())?;
                 Value::Record(r)
             }
             Node::Variant(t, p) => Value::Variant(t.clone(), p.as_ref().map(|p| self.node(p).map(Box::new)).transpose()?),
