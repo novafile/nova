@@ -179,3 +179,14 @@ fn recursive_types() {
     let text = Tree::novafile_schema().to_canonical_text();
     assert!(text.contains("record Tree:\n  label: string\n  children: list<Tree>\n"), "{text}");
 }
+
+#[derive(NovaSchema)]
+#[allow(dead_code)]
+struct Chain(Option<Box<Chain>>);
+
+#[test]
+fn recursive_aliases_fail_instead_of_hanging() {
+    // `type Chain = Chain?` never reaches a type; resolving reports it.
+    let issues = Chain::novafile_schema().resolve(&novafile_value::Value::Int(1)).unwrap_err();
+    assert!(issues[0].message.contains("cycle"), "{issues:?}");
+}

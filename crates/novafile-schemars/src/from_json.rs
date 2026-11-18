@@ -143,6 +143,7 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
     schema.defs = std::mem::take(&mut c.defs);
     // Canonical order (spec §6.6), so the result does not depend on traversal order.
     schema.defs.sort_by(|a, b| a.0.cmp(&b.0));
+    break_alias_cycles(&mut schema, &mut c.warnings);
     resolve_defaults(&mut schema, &mut c.warnings);
     Ok(Conversion { schema, warnings: c.warnings })
 }
@@ -1352,6 +1353,36 @@ fn normalize_ref(r: &str) -> String {
 /// Escape a key for use in a JSON pointer (RFC 6901).
 fn escape_pointer(s: &str) -> String {
     s.replace('~', "~0").replace('/', "~1")
+}
+
+/// Replace one alias in each alias cycle (`$ref` chains that never reach a
+/// type, which JSON Schema allows) with `any`, so the result is valid schema
+/// language.
+fn break_alias_cycles(schema: &mut Schema, warnings: &mut Vec<String>) {
+    for i in 0..schema.defs.len() {
+        let name = &schema.defs[i].0;
+        let mut seen = HashSet::new();
+        let mut cur = &schema.defs[i].1;
+        let cyclic = loop {
+            let Def::Alias(TypeRef { kind: TypeKind::Named(n), .. }) = cur else {
+                break false;
+            };
+            // A cycle not through `name` is broken when one of its members comes up.
+            if n == name || !seen.insert(n) {
+                break n == name;
+            }
+
+            match schema.def(n) {
+                Some(d) => cur = d,
+                None => break false,
+            }
+        };
+
+        if cyclic {
+            warnings.push(format!("{name}: $ref cycle that never reaches a type; using any"));
+            schema.defs[i].1 = Def::Alias(TypeRef::new(TypeKind::Any));
+        }
+    }
 }
 
 /// Resolve each field default against its type (so `"active"` becomes the

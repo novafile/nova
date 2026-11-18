@@ -353,3 +353,18 @@ record Root:
         ]
     );
 }
+
+#[test]
+fn ref_cycles_become_any() {
+    let defs = json!({"A": {"$ref": "#/$defs/B"}, "B": {"$ref": "#/$defs/A"}});
+    let c = convert(&json!({"$ref": "#/$defs/A", "$defs": defs}));
+    assert_eq!(body(&c), "@root A\n\ntype A = any\n\ntype B = A\n");
+    assert_eq!(c.warnings, ["A: $ref cycle that never reaches a type; using any"]);
+    // A default on a field of the cyclic type resolves instead of hanging.
+    let c = convert(&json!({
+        "type": "object",
+        "properties": {"x": {"$ref": "#/$defs/A", "default": 1}},
+        "$defs": defs
+    }));
+    assert!(body(&c).contains("x: A = 1"), "{}", body(&c));
+}
