@@ -99,7 +99,7 @@ pub fn parse_flow(src: &str) -> Result<Value, ParseError> {
     Ok(v)
 }
 
-/// Parse a column spec `{c1, …}` (spec §4.13) occupying all of `src`.
+/// Parse a column spec `{c1, …}` (spec §4.13) occupying all of `src`; a trailing comment is allowed.
 ///
 /// # Errors
 ///
@@ -109,7 +109,7 @@ pub fn parse_columns(src: &str) -> Result<Vec<Column>, ParseError> {
     let mut p = Parser::new(src, false);
     p.skip_inline_ws();
     let cols = p.column_specs()?;
-    p.skip_inline_ws();
+    p.end_line()?;
     if !p.at_eof() {
         return Err(p.error_at(p.pos, "unexpected content after the column spec"));
     }

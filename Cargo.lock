@@ -1240,6 +1240,7 @@ dependencies = [
 name = "novafile-conformance"
 version = "0.2.0"
 dependencies = [
+ "novafile-binary",
  "novafile-patch",
  "novafile-schema",
  "novafile-template",

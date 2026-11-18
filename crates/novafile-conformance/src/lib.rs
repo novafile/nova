@@ -6,6 +6,7 @@
 //! -conformance` binary writes them (`generate`); the test checks that the
 //! files on disk still match (`cargo test -p novafile-conformance`).
 
+use novafile_text::lines::{Positional, Segment, Status};
 use novafile_text::{Profile, to_text};
 use novafile_value::{Record, Value, canonical_bytes, revision};
 use serde_json::{Value as J, json};
@@ -27,6 +28,29 @@ fn value_expect(v: &Value) -> J {
         "revision": revision(v).to_string(),
         "binary": hex(&canonical_bytes(v)),
     })
+}
+
+/// Expectation for a record stream: the records as one list, the skipped lines or frames
+/// (`at`: line number or byte offset), and each segment's count and status.
+fn stream_expect(records: Vec<Value>, skipped: Vec<(usize, String)>, segments: &[Segment]) -> J {
+    let mut e = value_expect(&Value::List(records));
+    e["skipped"] = skipped.into_iter().map(|(at, m)| json!({"at": at, "message": m})).collect();
+    e["segments"] = segments
+        .iter()
+        .map(|s| match &s.status {
+            Status::Complete => json!({"count": s.count, "status": "complete"}),
+            Status::Open => json!({"count": s.count, "status": "open"}),
+            Status::Corrupt(m) => json!({"count": s.count, "status": "corrupt", "message": m}),
+        })
+        .collect();
+    e
+}
+
+/// The schema beside a stream input (`case.novl` uses `case.novs`), if there is one.
+fn sibling_schema(input: &Path) -> Option<novafile_schema::Schema> {
+    let p = input.with_extension("novs");
+    p.is_file()
+        .then(|| novafile_schema::parse_schema(&read(&p)).unwrap_or_else(|e| panic!("{}: {e}", p.display())))
 }
 
 /// Entries of `dir` that pass `keep`, sorted; empty if `dir` is missing.
@@ -104,6 +128,21 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
             .err()
             .unwrap_or_else(|| panic!("{} should be rejected", f.display()));
         out.push((expect_path(&f), json!({"error": true, "message": e.to_string()})));
+    }
+
+    // NOVA Lines: read in recovering mode, with `NAME.novs` for positional streams.
+    for f in files(&root.join("lines"), "novl") {
+        let schema = sibling_schema(&f);
+        let r = novafile_text::lines::read_str(&read(&f), schema.as_ref().map(|s| s as &dyn Positional));
+        let skipped = r.errors.into_iter().map(|e| (e.line, e.message)).collect();
+        out.push((expect_path(&f), stream_expect(r.records, skipped, &r.segments)));
+    }
+
+    // binary record streams: frames with META header and end frames, read recovering.
+    for f in files(&root.join("streams"), "bin") {
+        let schema = sibling_schema(&f);
+        let r = novafile_binary::stream::read_stream(&std::fs::read(&f).unwrap(), true, schema.as_ref().map(|s| s as &dyn Positional));
+        out.push((expect_path(&f), stream_expect(r.records, r.errors, &r.segments)));
     }
 
     // schema: resolution of valid documents, issue paths of invalid ones.

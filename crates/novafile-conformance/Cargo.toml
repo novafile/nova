@@ -16,6 +16,7 @@ publish = false
 [dependencies]
 novafile-value.workspace = true
 novafile-text.workspace = true
+novafile-binary.workspace = true
 novafile-schema.workspace = true
 novafile-patch.workspace = true
 novafile-template.workspace = true

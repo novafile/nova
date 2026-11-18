@@ -194,6 +194,8 @@ struct Current {
     keys: HashSet<Vec<u8>>,
     /// Any frame was seen in this segment.
     started: bool,
+    /// The segment's `!header` was invalid: its data frames are skipped.
+    rejected: bool,
 }
 
 impl Current {
@@ -216,17 +218,23 @@ impl Current {
 
         match tag.as_str() {
             "header" => {
-                let (header, batched) = header_of(payload.as_deref())?;
+                let parsed = header_of(payload.as_deref());
                 if self.started {
                     done.push(std::mem::take(self).close());
                 }
 
+                let ((header, batched), rejected) = match &parsed {
+                    Ok(h) => (h.clone(), false),
+                    Err(_) => ((Header::default(), false), true),
+                };
                 *self = Current {
                     header,
                     batched,
                     started: true,
+                    rejected,
                     ..Current::default()
                 };
+                parsed?;
             }
             "end" => {
                 let Some(Value::Record(r)) = payload.as_deref() else {
@@ -255,10 +263,19 @@ impl Current {
         Ok(())
     }
 
-    /// Take the records of a data frame; on error none are taken.
-    fn data(&mut self, v: Value, positional: Option<&dyn Positional>) -> Result<Vec<Value>, String> {
+    /// The records of a data frame, and one message per record that was skipped. Fails,
+    /// taking no records, if the frame itself cannot be read in this segment.
+    fn data(&mut self, v: Value, positional: Option<&dyn Positional>) -> Result<(Vec<Value>, Vec<String>), String> {
         if self.ended.is_some() {
             return Err("data frame after !end; start a new segment with !header".into());
+        }
+
+        if self.rejected {
+            return Err("data frame under an invalid !header".into());
+        }
+
+        if self.header.mode == Mode::Positional && positional.is_none() {
+            return Err("this stream is positional; its schema is needed".into());
         }
 
         self.started = true;
@@ -267,36 +284,43 @@ impl Current {
             _ if self.batched => return Err("a batched stream's data frames hold lists".into()),
             v => vec![v],
         };
-        let items = match (&self.header.mode, positional) {
-            (Mode::Positional, Some(p)) => items.iter().map(|v| p.decode_item(v)).collect::<Result<Vec<_>, _>>()?,
-            (Mode::Positional, None) => return Err("this stream is positional; its schema is needed".into()),
-            _ => items,
-        };
-        if let Some(key) = &self.header.key {
-            let mut fresh = HashSet::new();
-            for v in &items {
-                let k = match v {
-                    Value::Record(r) => r.get(key),
-                    _ => None,
-                }
-                .ok_or_else(|| format!("record has no key field {key:?}"))?;
-                let bytes = canonical_bytes(k);
-                if self.keys.contains(&bytes) || !fresh.insert(bytes) {
-                    return Err(format!("duplicate key {key} value {}", novafile_text::flow_string(k)));
-                }
+        let (mut records, mut skipped) = (Vec::with_capacity(items.len()), Vec::new());
+        for (i, v) in items.into_iter().enumerate() {
+            match self.record(v, positional) {
+                Ok(v) => records.push(v),
+                Err(m) => skipped.push(format!("record {i}: {m}")),
             }
-
-            self.keys.extend(fresh);
         }
 
-        self.count += items.len();
-        Ok(items)
+        self.count += records.len();
+        Ok((records, skipped))
+    }
+
+    /// Decode one record and check its key.
+    fn record(&mut self, v: Value, positional: Option<&dyn Positional>) -> Result<Value, String> {
+        let v = match (&self.header.mode, positional) {
+            (Mode::Positional, Some(p)) => p.decode_item(&v)?,
+            _ => v,
+        };
+        if let Some(key) = &self.header.key {
+            let k = match &v {
+                Value::Record(r) => r.get(key),
+                _ => None,
+            }
+            .ok_or_else(|| format!("record has no key field {key:?}"))?;
+            if !self.keys.insert(canonical_bytes(k)) {
+                return Err(format!("duplicate key {key} value {}", novafile_text::flow_string(k)));
+            }
+        }
+
+        Ok(v)
     }
 }
 
 /// Read a frame stream. With `recover`, corrupt frames and invalid records are reported and
 /// skipped (spec §5.5); otherwise reading stops at the first error. A stream without
-/// `!header` reads its data frames as unbatched records.
+/// `!header` reads its data frames as unbatched records. Data frames under an invalid
+/// `!header` are skipped until the next one.
 #[must_use]
 pub fn read_stream(buf: &[u8], recover: bool, positional: Option<&dyn Positional>) -> StreamRead {
     let mut frames = FrameReader::new(buf);
@@ -315,14 +339,18 @@ pub fn read_stream(buf: &[u8], recover: bool, positional: Option<&dyn Positional
         let Some(frame) = frames.next() else { break };
         let result = match frame {
             Ok(f) if f.meta => cur.meta(f.value, &mut out.segments),
-            Ok(f) => cur.data(f.value, positional).map(|v| out.records.extend(v)),
+            Ok(f) => cur.data(f.value, positional).map(|(records, skipped)| {
+                out.records.extend(records);
+                out.errors.extend(skipped.into_iter().map(|m| (at, m)));
+            }),
             Err((_, e)) => Err(e.to_string()),
         };
         if let Err(m) = result {
             out.errors.push((at, m));
-            if !recover {
-                break;
-            }
+        }
+
+        if !recover && !out.errors.is_empty() {
+            break;
         }
     }
 

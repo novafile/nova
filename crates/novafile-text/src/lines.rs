@@ -153,6 +153,8 @@ pub struct Reader<'s, R> {
     segments: Vec<Segment>,
     /// No more items: end of input, a read failure, or an error in strict mode.
     done: bool,
+    /// A header directive of the current segment was invalid: its records are skipped.
+    rejected: bool,
 }
 
 impl<'s, R: BufRead> Reader<'s, R> {
@@ -170,6 +172,7 @@ impl<'s, R: BufRead> Reader<'s, R> {
             keys: HashSet::new(),
             segments: Vec::new(),
             done: false,
+            rejected: false,
         }
     }
 
@@ -205,6 +208,7 @@ impl<'s, R: BufRead> Reader<'s, R> {
         });
         self.count = 0;
         self.keys.clear();
+        self.rejected = false;
     }
 
     /// Apply a directive line (`name` without `@`, and its argument).
@@ -286,6 +290,10 @@ impl<'s, R: BufRead> Reader<'s, R> {
             return Err(self.error("record after @end; start a new segment with @nova or @schema"));
         }
 
+        if self.rejected {
+            return Err(self.error("record under an invalid header directive; skipped until the next segment"));
+        }
+
         let v = match &self.header.mode {
             Mode::Values => parse_flow(line).map_err(|e| self.error(e.message))?,
             Mode::Table(cols) => {
@@ -323,15 +331,13 @@ fn directive_of(line: &str) -> Option<(&str, &str)> {
     let end = rest.find([' ', '\t']).unwrap_or(rest.len());
     let name = &rest[..end];
     let known = matches!(name, "nova" | "schema" | "key" | "columns" | "mode" | "end") || name.starts_with("x-");
-    known.then(|| (name, strip_comment(rest[end..].trim())))
-}
-
-/// Remove a trailing ` # comment` from a directive argument.
-fn strip_comment(arg: &str) -> &str {
-    match arg.find(" #") {
-        Some(i) if !arg.starts_with('{') || arg[..i].ends_with('}') => arg[..i].trim_end(),
+    let arg = rest[end..].trim();
+    // A column spec may quote names containing ` #`; its parser handles comments itself.
+    let arg = match arg.find(" #") {
+        Some(i) if name != "columns" => arg[..i].trim_end(),
         _ => arg,
-    }
+    };
+    known.then_some((name, arg))
 }
 
 impl<R: BufRead> Iterator for Reader<'_, R> {
@@ -363,7 +369,10 @@ impl<R: BufRead> Iterator for Reader<'_, R> {
             let result = match directive_of(line) {
                 Some((name, arg)) => match self.directive(name, arg) {
                     Ok(()) => continue,
-                    Err(e) => Err(e),
+                    Err(e) => {
+                        self.rejected = true;
+                        Err(e)
+                    }
                 },
                 None => self.record(line),
             };
