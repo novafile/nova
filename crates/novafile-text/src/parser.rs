@@ -609,19 +609,21 @@ impl<'a> Parser<'a> {
         n.to_value().map_err(|m| self.error_at(start, m))
     }
 
+    /// Run `f` one nesting level deeper, failing once [`MAX_DEPTH`] is exceeded.
+    fn nested<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        self.depth += 1;
+        let r = if self.depth > MAX_DEPTH { self.err("nesting depth limit exceeded") } else { f(self) };
+        self.depth -= 1;
+        r
+    }
+
     /// Parse a flow value (possibly containing template constructs) at the cursor.
     ///
     /// # Errors
     ///
     /// Returns a [`ParseError`] if the value is malformed or nested too deeply.
     pub fn parse_flow(&mut self) -> R<Node> {
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
-            return self.err("nesting depth limit exceeded");
-        }
-
-        let r = self.parse_flow_inner();
-        self.depth -= 1;
+        let r = self.nested(Self::parse_flow_inner);
         if r.is_ok() {
             self.last_end = self.pos;
         }
@@ -966,21 +968,23 @@ impl<'a> Parser<'a> {
     /// Does the text at `pos` look like `key:` / `key[N]{..}:` followed by space or EOL?
     fn looks_like_key(&self) -> bool {
         let b = self.b;
+        // Offset just past the quoted string opening at `p`, or `None` if it does not close on this line.
+        let skip_quoted = |mut p: usize| {
+            p += 1;
+            loop {
+                match b.get(p) {
+                    None | Some(b'\n') => return None,
+                    Some(b'\\') => p += 2,
+                    Some(b'"') => return Some(p + 1),
+                    _ => p += 1,
+                }
+            }
+        };
         let mut p = self.pos;
         match b.get(p) {
             Some(b'"') => {
-                p += 1;
-                loop {
-                    match b.get(p) {
-                        None | Some(b'\n') => return false,
-                        Some(b'\\') => p += 2,
-                        Some(b'"') => {
-                            p += 1;
-                            break;
-                        }
-                        _ => p += 1,
-                    }
-                }
+                let Some(q) = skip_quoted(p) else { return false };
+                p = q;
             }
             Some(&c) if is_ident_start(c) => {
                 while b.get(p).is_some_and(|&c| is_ident_char(c)) {
@@ -992,7 +996,12 @@ impl<'a> Parser<'a> {
 
         if b.get(p) == Some(&b'[') && b.get(p + 1).is_some_and(u8::is_ascii_digit) {
             while !matches!(b.get(p), None | Some(b'\n' | b'}')) {
-                p += 1;
+                if b[p] == b'"' {
+                    let Some(q) = skip_quoted(p) else { return false };
+                    p = q;
+                } else {
+                    p += 1;
+                }
             }
 
             if b.get(p) == Some(&b'}') {
@@ -1049,18 +1058,10 @@ impl<'a> Parser<'a> {
             _ => return self.err(format!("expected an indented block for {what}; write `null`, `{{}}` or `[]` explicitly")),
         }
 
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
-            return self.err("nesting depth limit exceeded");
-        }
-
-        let r = match self.peek_block_kind() {
-            BlockKind::List => self.block_list(indent).map(Node::List),
-            BlockKind::Record => self.block_record(indent, false).map(Node::Record),
-        };
-
-        self.depth -= 1;
-        r
+        self.nested(|p| match p.peek_block_kind() {
+            BlockKind::List => p.block_list(indent).map(Node::List),
+            BlockKind::Record => p.block_record(indent, false).map(Node::Record),
+        })
     }
 
     /// Position the cursor at the next line of this block, or return false
@@ -1426,6 +1427,7 @@ impl<'a> Parser<'a> {
         self.expect(b']', "`]` after row count")?;
         self.expect(b'{', "`{` to start the column list")?;
         let mut fields: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         loop {
             self.skip_inline_ws();
             let fpos = self.pos;
@@ -1434,7 +1436,7 @@ impl<'a> Parser<'a> {
                 Key::Interp(_) => return self.err("interpolation is not allowed in table headers"),
             };
 
-            if fields.contains(&f) {
+            if !seen.insert(f.clone()) {
                 return Err(self.error_at(fpos, format!("duplicate column {f:?}")));
             }
 
@@ -1552,9 +1554,11 @@ impl<'a> Parser<'a> {
             return self.err(format!("expected a body indented {indent} spaces"));
         }
 
-        Ok(match kind {
-            BlockKind::Record => Ctl2::Entries(self.block_record(indent, false)?),
-            BlockKind::List => Ctl2::Items(self.block_list(indent)?),
+        self.nested(|p| {
+            Ok(match kind {
+                BlockKind::Record => Ctl2::Entries(p.block_record(indent, false)?),
+                BlockKind::List => Ctl2::Items(p.block_list(indent)?),
+            })
         })
     }
 
@@ -1579,9 +1583,10 @@ impl<'a> Parser<'a> {
             self.pos += indent + 5;
             self.skip_inline_ws();
             if self.starts_with("if ") {
-                // `@else if C:` is `@else:` containing a single `@if C:`.
-                let at = self.pos - 1;
-                let c = self.if_block_at(at, indent, kind)?;
+                // `@else if C:` is `@else:` containing a single `@if C:`; step back so the cursor sits
+                // where `if_block` expects the 4 bytes of `@if `.
+                self.pos -= 1;
+                let c = self.nested(|p| p.if_block(indent, kind))?;
                 els = match c {
                     Ctl::Entry(e) => Ctl2::Entries(vec![e]),
                     Ctl::Item(i) => Ctl2::Items(vec![i]),
@@ -1600,12 +1605,6 @@ impl<'a> Parser<'a> {
             (Ctl2::Items(t), Ctl2::Items(e)) => Ctl::Item(Item::If(Box::new(cond), t, e)),
             _ => unreachable!(),
         })
-    }
-
-    /// `@else if` support: `pos` points 4 bytes before the condition.
-    fn if_block_at(&mut self, at: usize, indent: usize, kind: BlockKind) -> R<Ctl> {
-        self.pos = at;
-        self.if_block(indent, kind)
     }
 
     /// Parse `@for [index,] var in expr:` (cursor at `@for `) with its body.
@@ -1680,14 +1679,14 @@ impl<'a> Parser<'a> {
         self.skip_inline_ws();
         if self.word_ahead("not") {
             self.pos += 3;
-            return Ok(Cond::Not(Box::new(self.cond_unary()?)));
+            return Ok(Cond::Not(Box::new(self.nested(Self::cond_unary)?)));
         }
 
         if self.peek() == Some(b'(') {
             // Grouping, unless it is a tuple literal operand.
             let save = self.pos;
             self.pos += 1;
-            if let Ok(c) = self.cond() {
+            if let Ok(c) = self.nested(Self::cond) {
                 self.skip_inline_ws();
                 if self.peek() == Some(b')') {
                     self.pos += 1;
@@ -1768,6 +1767,8 @@ impl<'a> Parser<'a> {
 
         let mut directives = Vec::new();
         let mut tpl: Option<TemplateHeader> = None;
+        // Line number of `counted`, advanced incrementally so numbering directives stays linear.
+        let (mut counted, mut line) = (0, 1);
 
         loop {
             self.skip_blank_lines();
@@ -1776,7 +1777,8 @@ impl<'a> Parser<'a> {
             }
 
             let dpos = self.pos;
-            let line = self.error_at(dpos, "").line;
+            line += self.src[counted..dpos].matches('\n').count();
+            counted = dpos;
             self.pos += 1;
             let name = self.ident()?;
             self.skip_inline_ws();
