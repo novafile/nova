@@ -17,7 +17,7 @@ pub struct Record {
 }
 
 /// Records with more entries than this keep a hash index.
-const INDEX_THRESHOLD: usize = 16;
+pub(crate) const INDEX_THRESHOLD: usize = 16;
 
 /// Error from inserting a key that is already present; holds that key.
 #[derive(Debug, Clone, PartialEq, Eq)]
