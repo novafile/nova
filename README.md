@@ -191,7 +191,7 @@ cargo install novafile-lsp                 # from crates.io
 cargo install --path crates/novafile-lsp   # from a checkout
 ```
 
-It reports syntax errors in documents, templates, patches and `.novs` schemas. A document that declares `@schema name@version` is validated against the newest `.novs` file in the workspace that can read that version. Hover shows the path, value and declared type. Completion offers missing record fields and enum variants. Formatting is only offered for documents without comments.
+It reports syntax errors in documents, templates, patches and `.novs` schemas. A document that declares `@schema name@version` is validated against a `.novs` file that can read that version: the one closest to the document in the directory tree (its own folder first), and the newest among equally close ones. Files opened without a workspace folder use the schemas in their own folder. Hover shows the path, value and declared type. Completion offers missing record fields and enum variants. Formatting is only offered for documents without comments.
 
 Helix (`languages.toml`):
 

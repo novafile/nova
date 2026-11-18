@@ -96,6 +96,12 @@ struct Server<'c> {
     conn: &'c Connection,
 }
 
+/// Directory steps from `a` up to the deepest directory it shares with `b`, then down to `b`.
+fn dir_distance(a: &std::path::Path, b: &std::path::Path) -> usize {
+    let common = a.components().zip(b.components()).take_while(|(x, y)| x == y).count();
+    a.components().count() + b.components().count() - 2 * common
+}
+
 /// What kind of file a text is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
@@ -276,39 +282,52 @@ impl Server<'_> {
         true
     }
 
-    /// All known schemas; open editors take precedence over disk contents.
-    fn schemas(&self) -> Vec<Schema> {
+    /// All known schemas with their files; open editors take precedence over disk contents.
+    fn schemas(&self) -> Vec<(PathBuf, Schema)> {
         let open: Vec<(PathBuf, Schema)> = self
             .docs
             .iter()
             .filter(|(u, _)| has_ext(u, "novs"))
             .filter_map(|(u, t)| Some((file_path(u)?, novafile_schema::parse_schema(t).ok()?)))
             .collect();
-        let mut all: Vec<Schema> = open.iter().map(|(_, s)| s.clone()).collect();
+        let mut all = open.clone();
         for (p, s) in &self.disk_schemas {
             if !open.iter().any(|(q, _)| q == p) {
-                all.push(s.clone());
+                all.push((p.clone(), s.clone()));
             }
         }
 
         all
     }
 
-    /// The newest schema that can read data written for `reference` (spec §6.7).
-    fn find_schema(&self, reference: &str) -> Result<Option<Schema>, String> {
+    /// The schema for a document at `doc` that declares `reference`: among the schemas
+    /// that can read that version (spec §6.7), the one closest to the document in the
+    /// directory tree, and among equally close ones the newest. Closeness keeps unrelated
+    /// schemas of the same name elsewhere in the workspace, such as test fixtures, from
+    /// taking over.
+    fn find_schema(&self, reference: &str, doc: &Uri) -> Result<Option<Schema>, String> {
         let r = SchemaRef::parse(reference)?;
-        let mut candidates: Vec<Schema> = self
+        let doc_dir = file_path(doc).and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+        let distance = |schema_file: &PathBuf| match (&doc_dir, schema_file.parent()) {
+            (Some(d), Some(s)) => dir_distance(d, s),
+            _ => usize::MAX,
+        };
+        let mut candidates: Vec<(PathBuf, Schema)> = self
             .schemas()
             .into_iter()
-            .filter(|s| s.name.as_deref() == Some(r.name.as_str()) && s.version.as_ref().is_some_and(|v| v.can_read(&r.version)))
+            .filter(|(_, s)| s.name.as_deref() == Some(r.name.as_str()) && s.version.as_ref().is_some_and(|v| v.can_read(&r.version)))
             .collect();
-        candidates.sort_by(|a, b| a.version.as_ref().unwrap().precedence(b.version.as_ref().unwrap()));
-        Ok(candidates.pop())
+        candidates.sort_by(|(pa, a), (pb, b)| {
+            distance(pa)
+                .cmp(&distance(pb))
+                .then_with(|| b.version.as_ref().unwrap().precedence(a.version.as_ref().unwrap()))
+        });
+        Ok(candidates.into_iter().next().map(|(_, s)| s))
     }
 
-    /// The schema matching the document's `@schema` reference, if one is found.
-    fn schema_for(&self, parsed: &Parsed) -> Option<Schema> {
-        parsed.schema_ref.as_ref().and_then(|(r, _)| self.find_schema(r).ok().flatten())
+    /// The schema matching the `@schema` reference of the document at `doc`, if one is found.
+    fn schema_for(&self, parsed: &Parsed, doc: &Uri) -> Option<Schema> {
+        parsed.schema_ref.as_ref().and_then(|(r, _)| self.find_schema(r, doc).ok().flatten())
     }
 
     /// Syntax errors, and schema validation for documents with a resolvable `@schema`.
@@ -335,7 +354,7 @@ impl Server<'_> {
                 Ok(None) => {}
                 Ok(Some(p)) => {
                     if let Some((reference, line)) = &p.schema_ref {
-                        match self.find_schema(reference) {
+                        match self.find_schema(reference, uri) {
                             Err(m) => out.push(diag(line_range(text, *line), DiagnosticSeverity::ERROR, "nova::schema::reference", m)),
                             Ok(None) => out.push(diag(
                                 line_range(text, *line),
@@ -562,7 +581,7 @@ impl Server<'_> {
         }
 
         let mut md = format!("**`{}`** · {}\n\n```nova\n{shown}\n```", span.path, v.kind());
-        if let Some(s) = self.schema_for(&p)
+        if let Some(s) = self.schema_for(&p, uri)
             && let Some((ty, field)) = s.type_at(&span.path)
         {
             let _ = write!(md, "\n\nschema `{}`: `{ty}`", s.reference().map(|r| r.to_string()).unwrap_or_default());
@@ -656,7 +675,7 @@ impl Server<'_> {
         blanked[pos.line as usize] = "";
         let blanked = blanked.join("\n");
         let p = parse_data(&blanked).ok()??;
-        let schema = self.schema_for(&p)?;
+        let schema = self.schema_for(&p, uri)?;
         let indent = before.len() - before.trim_start().len();
         let content = before.trim_start();
         let (content, indent) = match content.strip_prefix("- ") {

@@ -274,3 +274,36 @@ fn schema_reloads_on_save_and_close() {
     server.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// A document validates against the schema next to it, even when a newer schema of
+/// the same name sits elsewhere in the workspace (here: a deliberately broken fixture
+/// that narrows `port` to `u8`, like the spec's conformance suite has).
+#[test]
+fn nearest_schema_wins_over_a_newer_one_elsewhere() {
+    let dir = std::env::temp_dir().join(format!("novafile-lsp-near-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("examples")).unwrap();
+    std::fs::create_dir_all(dir.join("fixtures/broken")).unwrap();
+    std::fs::write(dir.join("examples/infrastructure.novs"), SCHEMA).unwrap();
+    let broken = SCHEMA
+        .replace("@schema infrastructure@1.0.0", "@schema infrastructure@1.1.0")
+        .replace("port: Port", "port: u8");
+    std::fs::write(dir.join("fixtures/broken/new.novs"), broken).unwrap();
+
+    let (server, client) = Connection::memory();
+    let h = std::thread::spawn(move || novafile_lsp::run(server).unwrap());
+    let mut c = Client { conn: client, next: 0 };
+    let root = format!("file://{}", dir.display());
+    c.request(
+        "initialize",
+        json!({"capabilities": {}, "rootUri": root, "workspaceFolders": [{"uri": root, "name": "t"}]}),
+    );
+    c.notify("initialized", json!({}));
+
+    open(&c, &format!("file://{}/examples/infra.nova", dir.display()), DOC);
+    assert_eq!(c.diagnostics(), json!([]));
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    h.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+}
