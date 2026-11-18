@@ -21,18 +21,24 @@ impl std::fmt::Display for SchemaError {
 
 impl std::error::Error for SchemaError {}
 
+/// How deeply type arguments may nest (`list<list<…>>`), so hostile input
+/// cannot overflow the stack.
+const MAX_DEPTH: usize = 64;
+
 /// Cursor over a single type expression.
 pub(crate) struct TyParser<'a> {
     /// The text being parsed.
     s: &'a str,
     /// Byte offset of the cursor in `s`.
     pub(crate) i: usize,
+    /// Current type-argument nesting, capped at [`MAX_DEPTH`].
+    depth: usize,
 }
 
 impl<'a> TyParser<'a> {
     /// A cursor at the start of `s`.
     pub(crate) fn new(s: &'a str) -> Self {
-        TyParser { s, i: 0 }
+        TyParser { s, i: 0, depth: 0 }
     }
 
     /// The input as bytes.
@@ -94,7 +100,14 @@ impl<'a> TyParser<'a> {
     /// A type argument (inside `<…>` or a tuple), which may carry type-level
     /// attributes: `list<string @len(1..64)>`.
     fn inner(&mut self) -> Result<TypeRef, String> {
-        let mut t = self.ty()?;
+        if self.depth == MAX_DEPTH {
+            return Err(format!("type arguments nested deeper than {MAX_DEPTH} levels"));
+        }
+
+        self.depth += 1;
+        let t = self.ty();
+        self.depth -= 1;
+        let mut t = t?;
         let field_attrs = self.attrs(&mut t)?;
         if let Some((a, _)) = field_attrs.first() {
             return Err(format!("@{a} is only valid on record fields"));
