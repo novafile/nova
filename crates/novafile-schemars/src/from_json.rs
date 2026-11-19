@@ -69,6 +69,7 @@ const HANDLED: &[&str] = &[
     "allOf",
     "x-nova-kind",
     "x-nova-len",
+    "x-nova-pattern",
     "x-nova-range",
 ];
 
@@ -590,6 +591,22 @@ impl Conv<'_> {
             return any();
         }
 
+        // Strings that are not all variant names become a union of literals.
+        if let Some(Json::Array(vals)) = o.get("enum")
+            && o.get("type").is_none_or(|t| t == "string")
+            && let Some(mut ms) = vals
+                .iter()
+                .map(|v| Some(TypeRef::new(TypeKind::Literal(v.as_str()?.to_owned()))))
+                .collect::<Option<Vec<_>>>()
+            && !ms.is_empty()
+        {
+            return if ms.len() == 1 {
+                ms.pop().unwrap()
+            } else {
+                TypeRef::new(TypeKind::Union(ms))
+            };
+        }
+
         // Non-variant enums and constants keep their base type.
         if let Some(Json::Array(vals)) = o.get("enum") {
             self.warn(
@@ -672,6 +689,11 @@ impl Conv<'_> {
 
         self.unsupported(o, at, &handled);
         self.constraints(&mut t, o, at);
+        if matches!(t.kind, TypeKind::Literal(_)) && t.constraints != Constraints::default() {
+            t.constraints = Constraints::default();
+            self.warn(at, "constraints next to a string const are dropped; the literal fixes the value");
+        }
+
         t
     }
 
@@ -738,6 +760,30 @@ impl Conv<'_> {
                 len(&mut t, o, "minItems", "maxItems");
                 len(&mut t, o, "minProperties", "maxProperties");
                 return Some(t);
+            }
+            "literal" => {
+                // `const`, or `enum` with an optional `null` (as written by to_json_schema).
+                let vals: Vec<&Json> = match (o.get("const"), o.get("enum")) {
+                    (Some(c), _) => vec![c],
+                    (None, Some(Json::Array(vs))) => vs.iter().collect(),
+                    _ => return None,
+                };
+                let mut ms: Vec<TypeRef> = vals
+                    .iter()
+                    .filter(|v| !v.is_null())
+                    .map(|v| Some(TypeRef::new(TypeKind::Literal(v.as_str()?.to_owned()))))
+                    .collect::<Option<_>>()?;
+                let nullable = ms.len() < vals.len();
+                return match ms.len() {
+                    0 => None,
+                    1 => {
+                        let mut t = ms.pop().unwrap();
+                        t.nullable = nullable;
+                        Some(t)
+                    }
+                    _ if nullable => None,
+                    _ => Some(TypeRef::new(TypeKind::Union(ms))),
+                };
             }
             _ => return None,
         };
@@ -818,7 +864,19 @@ impl Conv<'_> {
             self.warn(at, format!("format {f:?} is not enforced"));
         }
 
-        if o.contains_key("pattern") {
+        if let (TypeKind::String, Some(Json::String(c))) = (&kind, o.get("const")) {
+            return TypeRef::new(TypeKind::Literal(c.clone()));
+        }
+
+        let mut t = TypeRef::new(kind);
+        if t.kind == TypeKind::String
+            && let Some(p) = read_pattern(o)
+        {
+            match novafile_schema::Pattern::new(&p) {
+                Ok(p) => t.constraints.pattern = Some(p),
+                Err(e) => self.warn(at, format!("pattern is not enforced: {e}")),
+            }
+        } else if o.contains_key("pattern") {
             self.warn(at, "pattern is not enforced");
         }
 
@@ -826,7 +884,7 @@ impl Conv<'_> {
             self.warn(at, format!("const {v} is not enforced"));
         }
 
-        TypeRef::new(kind)
+        t
     }
 
     /// A tuple (fixed-length `prefixItems`/array-form `items`), set or list.
@@ -989,6 +1047,7 @@ const STRING_KEYWORDS: &[&str] = &[
     "pattern",
     "const",
     "x-nova-len",
+    "x-nova-pattern",
 ];
 /// Keywords handled for `type: array`.
 const ARRAY_KEYWORDS: &[&str] = &[
@@ -1417,4 +1476,68 @@ fn resolve_defaults(schema: &mut Schema, warnings: &mut Vec<String>) {
             }
         }
     }
+}
+
+/// The I-Regexp for a string schema's `pattern` (spec §11.2):
+/// `x-nova-pattern` if present; else an anchored `^(?:q)$` or `^q$` with
+/// `[^\n\r]` turned back into `.`; else an unanchored search, spelled out
+/// with `(.|\n|\r)*` on each open end. `None` if there is no pattern, or
+/// `q` uses anchors itself (they would turn into literal characters).
+fn read_pattern(o: &Obj) -> Option<String> {
+    const ANY: &str = "(.|\\n|\\r)*";
+    if let Some(p) = o.get("x-nova-pattern").and_then(Json::as_str) {
+        return Some(p.to_owned());
+    }
+
+    let p = o.get("pattern")?.as_str()?;
+    let (start, p) = p.strip_prefix('^').map_or((false, p), |q| (true, q));
+    let (end, p) = match p.strip_suffix('$') {
+        Some(q) if !q.ends_with('\\') => (true, q),
+        _ => (false, p),
+    };
+
+    let wrapped = start && end && p.starts_with("(?:") && p.ends_with(')');
+    let q = if wrapped { &p[3..p.len() - 1] } else { p };
+    // Back to I-Regexp: `[^\n\r]` is `.`, `\$` the literal `$`. Any other `^`
+    // or `$` outside a class is an anchor, which a whole-string match cannot
+    // express, and so is a top-level `|` next to a single pair of anchors.
+    let (mut out, mut class, mut depth, mut alt) = (String::new(), false, 0i32, false);
+    let q = q.replace("[^\\n\\r]", ".");
+    let mut cs = q.chars();
+    while let Some(c) = cs.next() {
+        match c {
+            '\\' => {
+                match cs.next()? {
+                    '$' => out.push('$'),
+                    n => {
+                        out.push('\\');
+                        out.push(n);
+                    }
+                }
+
+                continue;
+            }
+            '[' if !class => class = true,
+            ']' if class => class = false,
+            '^' | '$' if !class => return None,
+            '(' if !class => depth += 1,
+            ')' if !class => depth -= 1,
+            '|' if !class && depth == 0 => alt = true,
+            _ => {}
+        }
+
+        out.push(c);
+    }
+
+    if alt && (start || end) && !wrapped {
+        return None;
+    }
+
+    let q = out;
+    Some(match (start, end) {
+        (true, true) => q,
+        (true, false) => format!("({q}){ANY}"),
+        (false, true) => format!("{ANY}({q})"),
+        (false, false) => format!("{ANY}({q}){ANY}"),
+    })
 }

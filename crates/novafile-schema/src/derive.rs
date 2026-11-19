@@ -59,6 +59,7 @@ impl SchemaGen {
             version: version.map(|v| crate::Version::parse(v).unwrap_or_else(|e| panic!("#[nova(version)]: {e}"))),
             root,
             defs: self.defs,
+            extensions: Vec::new(),
         }
     }
 }

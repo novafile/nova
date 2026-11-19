@@ -177,6 +177,17 @@ impl<'a> TyParser<'a> {
             return Ok(TypeRef::new(TypeKind::Tuple(items)));
         }
 
+        if self.peek() == Some(b'"') {
+            let end = quoted_end(self.rest()).ok_or("unterminated string literal type")?;
+            let text = &self.rest()[..end];
+            let Ok(novafile_value::Value::String(lit)) = novafile_text::parse_flow(text) else {
+                return Err(format!("invalid string literal type {text}"));
+            };
+
+            self.i += end;
+            return Ok(TypeRef::new(TypeKind::Literal(lit)));
+        }
+
         let name = self.ident()?;
         let kind = match name {
             "any" => TypeKind::Any,
@@ -234,7 +245,7 @@ impl<'a> TyParser<'a> {
             self.i += 1;
             let name = self.ident()?.to_owned();
             let arg = if self.peek() == Some(b'(') {
-                let close = self.s[self.i..].find(')').ok_or("unclosed attribute argument")?;
+                let close = close_paren(self.rest()).ok_or("unclosed attribute argument")?;
                 let a = self.s[self.i + 1..self.i + close].to_owned();
                 self.i += close + 1;
                 a
@@ -242,7 +253,27 @@ impl<'a> TyParser<'a> {
                 String::new()
             };
 
+            if matches!(ty.kind, TypeKind::Literal(_)) && matches!(name.as_str(), "range" | "len" | "pattern") {
+                return Err("a literal type takes no attributes".into());
+            }
+
             match name.as_str() {
+                "pattern" => {
+                    if ty.kind != TypeKind::String {
+                        return Err(format!("@pattern applies to string, not {}", TypeRef::new(ty.kind.clone())));
+                    }
+
+                    if ty.constraints.pattern.is_some() {
+                        return Err("duplicate @pattern".into());
+                    }
+
+                    let Ok(novafile_value::Value::String(p)) = novafile_text::parse_flow(arg.trim()) else {
+                        return Err("@pattern expects one quoted string".into());
+                    };
+
+                    let compiled = crate::Pattern::new(&p).map_err(|e| format!("@pattern({}): {e}", novafile_text::quote(&p)))?;
+                    ty.constraints.pattern = Some(compiled);
+                }
                 "range" | "len" => {
                     let (bounds, unit) = match arg.split_once(',') {
                         Some((b, u)) if name == "len" => {
@@ -322,6 +353,33 @@ fn strip_comment(line: &str) -> &str {
     line
 }
 
+/// The byte length of the quoted string at the start of `s`, quotes
+/// included, or `None` if it is unterminated.
+fn quoted_end(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = 1;
+    while i < b.len() && b[i] != b'"' {
+        i += if b[i] == b'\\' { 2 } else { 1 };
+    }
+
+    (i < b.len()).then_some(i + 1)
+}
+
+/// The byte offset of the `)` that closes the `(` at the start of `s`,
+/// skipping quoted strings, so `@pattern("(a)")` keeps its parentheses.
+fn close_paren(s: &str) -> Option<usize> {
+    let mut i = 1;
+    while i < s.len() {
+        match s.as_bytes()[i] {
+            b')' => return Some(i),
+            b'"' => i += quoted_end(&s[i..])?,
+            _ => i += 1,
+        }
+    }
+
+    None
+}
+
 /// Parse NOVA schema text (spec §6).
 ///
 /// # Errors
@@ -362,6 +420,14 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
 
             schema.name = Some(r.name);
             schema.version = Some(r.version);
+            i += 1;
+        } else if let Some(ext) = raw.strip_prefix("@x-") {
+            // Extension directives: kept, never interpreted here (spec §6.1).
+            if !schema.defs.is_empty() {
+                return Err(err(i, "extension directives come before the first definition".into()));
+            }
+
+            schema.extensions.push(format!("x-{ext}"));
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("@root ") {
             schema.root = Some(parse_type(rest.trim()).map_err(|m| err(i, format!("@root: {m}")))?);
@@ -443,6 +509,8 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
             }
 
             push_def(&mut schema, name, Def::Record(RecordDef { fields, open })).map_err(|m| err(start, m))?;
+        } else if let Some(d) = raw.strip_prefix('@') {
+            return Err(err(i, format!("unknown directive @{}", d.split(' ').next().unwrap_or(d))));
         } else {
             return Err(err(i, format!("expected `record`, `enum`, `type`, `@schema` or `@root`, found {raw:?}")));
         }
@@ -527,9 +595,22 @@ fn check_name(n: &str) -> Result<String, String> {
 /// Split `s` at `sep` outside parentheses and angle brackets, so inline enum
 /// variants can carry union payloads: `a | b(string | int)`.
 fn split_top(s: &str, sep: u8) -> Vec<&str> {
-    let (mut out, mut depth, mut start) = (Vec::new(), 0i32, 0);
+    let (mut out, mut depth, mut start, mut in_str) = (Vec::new(), 0i32, 0, false);
+    let mut escaped = false;
     for (i, c) in s.bytes().enumerate() {
+        if in_str {
+            match c {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_str = false,
+                _ => {}
+            }
+
+            continue;
+        }
+
         match c {
+            b'"' => in_str = true,
             b'(' | b'<' => depth += 1,
             b')' | b'>' => depth -= 1,
             c if c == sep && depth == 0 => {
@@ -548,13 +629,7 @@ fn split_top(s: &str, sep: u8) -> Vec<&str> {
 /// an identifier or a quoted string, like a record key (spec §6.1).
 fn field_name(body: &str) -> Result<(String, bool, &str), String> {
     let (name, rest) = if body.starts_with('"') {
-        let b = body.as_bytes();
-        let mut i = 1;
-        while i < b.len() && b[i] != b'"' {
-            i += if b[i] == b'\\' { 2 } else { 1 };
-        }
-
-        let end = (i < b.len()).then_some(i + 1).ok_or("unterminated quoted field name")?;
+        let end = quoted_end(body).ok_or("unterminated quoted field name")?;
         let Ok(novafile_value::Value::String(name)) = novafile_text::parse_flow(&body[..end]) else {
             return Err(format!("invalid field name {}", &body[..end]));
         };

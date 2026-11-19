@@ -498,3 +498,22 @@ fn variant_ids_are_wire_numbers() {
             .contains("int32")
     );
 }
+
+#[test]
+fn literals_and_patterns_are_strings_checked_both_ways() {
+    let s = schema("@root R\nrecord R:\n  op: \"=\" @id(1)\n  name: string @pattern(\"[a-z]+\") @id(2)\n");
+    assert!(proto_file(&s).unwrap().contains("string op = 1;"));
+    let good = value(&s, "op: \"=\"\nname: abc\n");
+    assert_eq!(decode(&encode(&good, &s).unwrap(), &s).unwrap(), good);
+
+    let mut bad = Record::new();
+    bad.set("op", Value::String("<".into()));
+    bad.set("name", Value::String("ABC".into()));
+    let e = encode(&Value::Record(bad), &s).unwrap_err();
+    assert!(e.contains("\"ABC\" does not match"), "{e}");
+
+    // A peer without the constraints writes the same bytes; decoding checks them.
+    let loose = schema("@root R\nrecord R:\n  op: string @id(1)\n  name: string @id(2)\n");
+    let bytes = encode(&value(&loose, "op: \"<\"\nname: abc\n"), &loose).unwrap();
+    assert!(decode(&bytes, &s).is_err());
+}

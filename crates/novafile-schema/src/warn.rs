@@ -80,6 +80,13 @@ impl Schema {
 
     /// Why `a` written before `b` is probably wrong, if it is.
     fn order_problem(&self, a: &TypeRef, b: &TypeRef) -> Option<String> {
+        // A literal is one string, so whether it is reachable is decided exactly.
+        if let TypeKind::Literal(l) = &self.deref(b).0.kind
+            && self.resolve_as(&novafile_value::Value::String(l.clone()), a).is_ok()
+        {
+            return Some(format!("`{b}` is unreachable: the string resolves to the earlier `{a}`"));
+        }
+
         let (an, bn) = (self.native(a), self.native(b));
         if matches!(self.deref(a).0.kind, TypeKind::Any) || a == b || (an.is_some() && an == bn && widens(b, a)) {
             return Some(format!("`{b}` is unreachable: every value it takes resolves to the earlier `{a}`"));
@@ -162,7 +169,7 @@ fn walk_unions(t: &TypeRef, f: &mut impl FnMut(&[TypeRef])) {
     }
 }
 
-/// Whether `t` narrows its kind with `@range` or `@len`.
+/// Whether `t` narrows its kind with `@range`, `@len` or `@pattern`.
 fn has_constraints(t: &TypeRef) -> bool {
-    t.constraints.range.is_some() || t.constraints.len.is_some()
+    t.constraints.range.is_some() || t.constraints.len.is_some() || t.constraints.pattern.is_some()
 }

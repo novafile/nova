@@ -763,36 +763,7 @@ impl Server<'_> {
             let mut path = record.clone();
             path.0.push(Segment::Field(key.trim().to_owned()));
             let (ty, _) = schema.type_at(&path)?;
-            let (under, def) = schema.deref(&ty);
-            let mut items = Vec::new();
-            match (def, &under.kind) {
-                (Some(Def::Enum(vs)), _) => {
-                    for v in vs {
-                        let (label, insert) = match &v.payload {
-                            None => (v.name.clone(), v.name.clone()),
-                            Some(t) => (format!("!{}({t})", v.name), format!("!{}()", v.name)),
-                        };
-
-                        items.push(CompletionItem {
-                            label,
-                            insert_text: Some(insert),
-                            kind: Some(CompletionItemKind::ENUM_MEMBER),
-                            ..Default::default()
-                        });
-                    }
-                }
-                (_, TypeKind::Bool) => {
-                    for b in ["true", "false"] {
-                        items.push(CompletionItem {
-                            label: b.into(),
-                            kind: Some(CompletionItemKind::VALUE),
-                            ..Default::default()
-                        });
-                    }
-                }
-                _ => return None,
-            }
-
+            let items = value_items(&schema, &ty)?;
             return Some(
                 items
                     .into_iter()
@@ -932,6 +903,60 @@ fn children_of(text: &str, p: &Parsed, parent: &Path) -> Vec<DocumentSymbol> {
             })
         })
         .collect()
+}
+
+/// Completions for a value of type `ty`: enum variants, `true`/`false`, or the
+/// strings of literal types. `None` if the type suggests no values.
+fn value_items(schema: &Schema, ty: &novafile_schema::TypeRef) -> Option<Vec<CompletionItem>> {
+    let (under, def) = schema.deref(ty);
+    let mut items = Vec::new();
+    match (def, &under.kind) {
+        (Some(Def::Enum(vs)), _) => {
+            for v in vs {
+                let (label, insert) = match &v.payload {
+                    None => (v.name.clone(), v.name.clone()),
+                    Some(t) => (format!("!{}({t})", v.name), format!("!{}()", v.name)),
+                };
+
+                items.push(CompletionItem {
+                    label,
+                    insert_text: Some(insert),
+                    kind: Some(CompletionItemKind::ENUM_MEMBER),
+                    ..Default::default()
+                });
+            }
+        }
+        // A literal type, or a union with literal members: offer each string.
+        (_, TypeKind::Literal(_) | TypeKind::Union(_)) => {
+            let members = match &under.kind {
+                TypeKind::Union(ms) => ms.iter().collect(),
+                _ => vec![under],
+            };
+
+            for m in members {
+                if let TypeKind::Literal(l) = &schema.deref(m).0.kind {
+                    items.push(CompletionItem {
+                        label: l.clone(),
+                        insert_text: Some(novafile_text::flow_string(&Value::String(l.clone()))),
+                        kind: Some(CompletionItemKind::CONSTANT),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        (_, TypeKind::Bool) => {
+            for b in ["true", "false"] {
+                items.push(CompletionItem {
+                    label: b.into(),
+                    kind: Some(CompletionItemKind::VALUE),
+                    ..Default::default()
+                });
+            }
+        }
+        _ => return None,
+    }
+
+    Some(items)
 }
 
 #[cfg(all(test, unix))]

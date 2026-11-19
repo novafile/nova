@@ -205,6 +205,9 @@ fn warnings_for_approximated_constructs() {
         "properties": {
             "c": {"const": "fixed"},
             "pat": {"type": "string", "pattern": "^[a-z]+$", "format": "email"},
+            "digits": {"type": "string", "pattern": "\\d+"},
+            "search": {"type": "string", "pattern": "a.c"},
+            "lits": {"enum": ["#t", "a b"]},
             "mult": {"type": "integer", "multipleOf": 5},
             "nums": {"enum": [1, 2, 3]},
             "untagged": {"anyOf": [{"type": "integer"}, {"type": "string"}]},
@@ -229,16 +232,19 @@ fn warnings_for_approximated_constructs() {
 record Root @open:
   all?: any
   bad_default?: int
-  c?: string
+  c?: \"fixed\"
   cond?: string
+  digits?: string
   ext?: any
+  lits?: \"#t\" | \"a b\"
   loose?: list<any>
   mult?: int
   multi?: any
   never?: any
   not?: any
   nums?: int
-  pat?: string
+  pat?: string @pattern(\"[a-z]+\")
+  search?: string @pattern(\"(.|\\\\n|\\\\r)*(a.c)(.|\\\\n|\\\\r)*\")
   short?: (string, string)
   untagged?: any
 "
@@ -249,9 +255,9 @@ record Root @open:
             "#: additionalProperties schema is not enforced on extra fields; the record is @open",
             "#/properties/$weird: \"$weird\" is not a valid NOVA field name; the field is dropped and the record is @open",
             "#/properties/all: allOf with several schemas (or with sibling keywords) is not supported; using any",
-            "#/properties/c: const \"fixed\" is not enforced",
             "#/properties/cond: if is not supported and was dropped",
             "#/properties/cond: then is not supported and was dropped",
+            "#/properties/digits: pattern is not enforced: not a valid I-Regexp: \\d is not supported",
             "#/properties/ext: $ref \"https://example.com/other.json\" cannot be resolved (only local references are supported); using any",
             "#/properties/loose: prefixItems without a fixed length mapped to list<any>",
             "#/properties/mult: multipleOf is not enforced",
@@ -260,7 +266,6 @@ record Root @open:
             "#/properties/not: not is not supported and was dropped",
             "#/properties/nums: enum whose values are not all valid variant names was mapped to its base type; the enum constraint is dropped",
             "#/properties/pat: format \"email\" is not enforced",
-            "#/properties/pat: pattern is not enforced",
             "#/properties/short: prefixItems allows arrays shorter than 2; the NOVA tuple requires all 2 elements",
             "#/properties/untagged: anyOf that is not a serde externally tagged enum (e.g. an untagged enum) mapped to any",
             "Root.bad_default: default \"seven\" dropped: .: expected int, found string",
@@ -367,4 +372,24 @@ fn ref_cycles_become_any() {
         "$defs": defs
     }));
     assert!(body(&c).contains("x: A = 1"), "{}", body(&c));
+}
+
+#[test]
+fn foreign_patterns_and_consts() {
+    let c = convert(&json!({
+        "type": "object",
+        "properties": {
+            "alt": {"type": "string", "pattern": "^a|b$"},
+            "grouped": {"type": "string", "pattern": "^(?:a|b)$"},
+            "neg": {"type": "string", "pattern": "^[^a]\\$$"},
+            "anchor": {"type": "string", "pattern": "a^b"},
+            "fixed": {"type": "string", "const": "x", "minLength": 1}
+        }
+    }));
+    let text = body(&c);
+    assert!(text.contains("  grouped?: string @pattern(\"a|b\")\n"), "{text}");
+    assert!(text.contains("  neg?: string @pattern(\"[^a]$\")\n"), "{text}");
+    assert!(text.contains("  alt?: string\n") && text.contains("  anchor?: string\n"), "{text}");
+    assert!(text.contains("  fixed?: \"x\"\n"), "{text}");
+    novafile_schema::parse_schema(&c.schema.to_string()).unwrap();
 }

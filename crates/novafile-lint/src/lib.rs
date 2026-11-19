@@ -12,9 +12,10 @@
 //! | `field-case` | schema field names, except quoted ones | warning | — |
 //! | `variant-case` | schema enum variants | warning | — |
 //! | `union-order` | union members an earlier member makes unreachable or captures values from (spec §6.5) | warning | — |
+//! | `pattern-anchor` | `@pattern`s starting with `^` or ending with `$`, which I-Regexp matches literally | warning | — |
 //! | `partial-ids` | records where only some fields have `@id` (an enum where only some variants have `@id` is a schema error) | warning | — |
 //!
-//! Configuration: [`Config`], or in a document `@x-lint case=camel allow=quoted-key,mixed-list`.
+//! Configuration: [`Config`], or in a document or schema `@x-lint case=camel allow=quoted-key,mixed-list`.
 //!
 //! A document declaring `@compat json` (or `yaml`, `toml`) mirrors a contract
 //! in that format: its key names are dictated externally, so `key-case` does
@@ -343,12 +344,28 @@ fn scalars(src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schem
 }
 
 /// Lint a schema (`.novs`) source. Findings are located at whole lines.
+/// An `@x-lint` directive in the schema adjusts `config` for it.
 ///
 /// # Errors
 ///
-/// Returns a [`SchemaError`](novafile_schema::SchemaError) if `src` is not a valid schema.
+/// Returns a [`SchemaError`](novafile_schema::SchemaError) if `src` is not a
+/// valid schema or its `@x-lint` directive is invalid.
+#[expect(clippy::too_many_lines, reason = "one pass per schema rule, in rule order")]
 pub fn lint_schema(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_schema::SchemaError> {
     let schema = novafile_schema::parse_schema(src)?;
+    let mut config = config.clone();
+    for e in &schema.extensions {
+        if let Some(arg) = e.strip_prefix("x-lint")
+            && (arg.is_empty() || arg.starts_with(' '))
+        {
+            config = config.with_directive(arg).map_err(|message| novafile_schema::SchemaError {
+                line: src.lines().position(|l| l.starts_with("@x-lint")).map_or(0, |i| i + 1),
+                message,
+            })?;
+        }
+    }
+
+    let config = &config;
     let mut out = Vec::new();
     let line_of = |needle: &str, after: usize| -> (usize, usize) {
         let i = src[after..].find(needle).map_or(0, |i| after + i);
@@ -439,8 +456,51 @@ pub fn lint_schema(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_
         }
     }
 
+    if config.on("pattern-anchor") {
+        let mut patterns = Vec::new();
+        let types = schema.root.iter().chain(schema.defs.iter().flat_map(|(_, d)| match d {
+            novafile_schema::Def::Alias(t) => vec![t],
+            novafile_schema::Def::Record(r) => r.fields.iter().map(|f| &f.ty).collect(),
+            novafile_schema::Def::Enum(vs) => vs.iter().filter_map(|v| v.payload.as_ref()).collect(),
+        }));
+        for t in types {
+            collect_patterns(t, &mut patterns);
+        }
+
+        for p in patterns {
+            let p = p.as_str();
+            if p.starts_with('^') || p.ends_with('$') {
+                let q = novafile_text::quote(p);
+                let (a, b) = src.find(&q).map_or((0, 0), |i| (i, i + q.len()));
+                out.push(Finding {
+                    rule: "pattern-anchor",
+                    level: Level::Warning,
+                    message: format!("@pattern({q}): `^` and `$` are literal characters in I-Regexp, and the match is always whole-string; drop them"),
+                    start: a,
+                    end: b,
+                    fix: None,
+                });
+            }
+        }
+    }
+
     out.sort_by_key(|f| (f.start, f.rule));
     Ok(out)
+}
+
+/// Every `@pattern` written in `t`, outermost first.
+fn collect_patterns<'a>(t: &'a novafile_schema::TypeRef, out: &mut Vec<&'a novafile_schema::Pattern>) {
+    use novafile_schema::TypeKind;
+    out.extend(&t.constraints.pattern);
+    match &t.kind {
+        TypeKind::List(e) | TypeKind::Set(e) => collect_patterns(e, out),
+        TypeKind::Map(k, v) => {
+            collect_patterns(k, out);
+            collect_patterns(v, out);
+        }
+        TypeKind::Tuple(ts) | TypeKind::Union(ts) => ts.iter().for_each(|e| collect_patterns(e, out)),
+        _ => {}
+    }
 }
 
 /// Apply all fixes (non-overlapping, back to front).

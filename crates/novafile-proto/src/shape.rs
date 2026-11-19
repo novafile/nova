@@ -198,7 +198,8 @@ pub(crate) fn classify<'s>(schema: &'s Schema, ty: &'s TypeRef, at: &dyn Fn() ->
             TypeKind::Float => scalar(Scalar::Double),
             TypeKind::Decimal => scalar(Scalar::Decimal),
             TypeKind::Rational => scalar(Scalar::Rational),
-            TypeKind::String => scalar(Scalar::String),
+            // A literal is a string on the wire; resolution checks its value.
+            TypeKind::String | TypeKind::Literal(_) => scalar(Scalar::String),
             TypeKind::Bytes => scalar(Scalar::Bytes),
             TypeKind::Timestamp => single(Single::Message(Message::Timestamp)),
             TypeKind::Duration => single(Single::Message(Message::Duration)),

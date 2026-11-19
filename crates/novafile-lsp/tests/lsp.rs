@@ -392,3 +392,45 @@ fn non_file_uris() {
     h.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// Fields typed with string literals complete to those strings, quoted where needed.
+#[test]
+fn literal_types_complete() {
+    let (mut c, server, dir) = start();
+    let schema = format!("{}/ops.novs", base(&dir));
+    open(
+        &c,
+        &schema,
+        "@schema ops@1.0.0\n@root R\nrecord R:\n  op?: \"=\" | \">=\" | int | \"#t\"\n  one?: \"total-time\"\n",
+    );
+    let uri = format!("{}/ops.nova", base(&dir));
+    open(&c, &uri, "@schema ops@1.0.0\nop: \n");
+    c.diagnostics_for(&uri);
+    let complete = |c: &mut Client, line: u32, ch: u32| -> Vec<(String, String)> {
+        let items = c.request(
+            "textDocument/completion",
+            json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": ch}}),
+        );
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| (i["label"].as_str().unwrap().to_owned(), i["insertText"].as_str().unwrap().to_owned()))
+            .collect()
+    };
+    let got = complete(&mut c, 1, 4);
+    let want = [("=", "\"=\""), (">=", "\">=\""), ("#t", "\"#t\"")];
+    assert_eq!(got, want.map(|(a, b)| (a.to_owned(), b.to_owned())));
+
+    c.notify(
+        "textDocument/didChange",
+        json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": [{"text": "@schema ops@1.0.0\none: to\n"}]}),
+    );
+    c.diagnostics_for(&uri);
+    assert_eq!(complete(&mut c, 1, 7), [("total-time".to_owned(), "total-time".to_owned())]);
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    server.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+}

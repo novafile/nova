@@ -60,7 +60,13 @@
 //! | `type: string`, `format: duration` | `duration` (NOVA reads ISO 8601 durations) |
 //! | `type: string`, `contentEncoding: base64` | `bytes` |
 //! | `x-nova-kind` (`timestamp`, `duration`, `decimal`, `rational`, `bytes`, `float`, `map`) | that kind |
-//! | `enum` of strings | `enum` with unit variants |
+//! | `x-nova-kind: literal` with `const` or `enum` | a string literal type, or a union of them |
+//! | `type: string`, `const: "s"` | the literal type `"s"` |
+//! | `enum` of strings that are variant names | `enum` with unit variants |
+//! | `enum` of other strings | a union of literal types |
+//! | `x-nova-pattern: p` | `@pattern(p)` |
+//! | `pattern: ^(?:q)$` or `^q$` (`q` an I-Regexp without anchors) | `@pattern(q)`, `[^\n\r]` read back as `.` |
+//! | `pattern` anchored at one end or none | `@pattern` with `(.\|\n\|\r)*` on each open end |
 //! | `oneOf`/`anyOf` of `{"type":"string","enum":[…]}`, `{"const":"Tag"}` and `{"type":"object","properties":{"Tag":S},"required":["Tag"],"additionalProperties":false}` (serde's externally tagged enums) | `enum` with unit and payload variants |
 //! | `anyOf: [S, {"type":"null"}]`, `type: [T, "null"]`, `null` in `enum` | `S?` (nullable) |
 //! | `oneOf` whose alternatives are objects sharing a required `const` tag property (internally or adjacently tagged enums) | a record: the tag as `string`, the other fields optional; **warning** |
@@ -73,11 +79,11 @@
 //! | `type: null`, `type: boolean`, `type: string` | `null`, `bool`, `string` |
 //! | `description`, `title`, `examples`, `$comment`, `readOnly`, `writeOnly`, `$schema`, `$id` | dropped silently |
 //!
-//! Every other construct is dropped with a warning: `const`, `pattern` (except
-//! on kinds whose pattern is implied), other `format`s, `multipleOf`, `not`,
+//! Every other construct is dropped with a warning: non-string `const`s,
+//! `pattern`s outside I-Regexp (`\d`, lookaround, flags, anchors inside),
+//! other `format`s, `multipleOf`, `not`,
 //! `if`/`then`/`else`, `contains`, dependencies, `minProperties`/`propertyNames`
-//! on records, non-string `enum`s (the base type is kept), `enum` values that
-//! are not NOVA variant names, types like `[integer, string]`, external
+//! on records, non-string `enum`s (the base type is kept), types like `[integer, string]`, external
 //! `$ref`s (become `any`), `false` schemas, field names that are not NOVA
 //! names (the field is dropped and the record becomes `@open`), invalid or
 //! duplicate `x-nova-id`/`x-nova-key`, and defaults that do not resolve
@@ -138,6 +144,9 @@
 //! | `enum` | `oneOf` of `{"type":"string","enum":[unit tags]}` and `{"type":"object","properties":{"Tag":P},"required":["Tag"],"additionalProperties":false}` (only the former if all variants are units) |
 //! | `@range` on `int`/`float` | `minimum`/`maximum` |
 //! | `@len` on strings (`scalars`), lists, sets, maps, records | `minLength`/`maxLength`, `minItems`/`maxItems`, `minProperties`/`maxProperties` (maps: both of the last two) |
+//! | `@pattern(p)` | `pattern` translated per RFC 9485 §5.3 (`^(?:…)$`, `.` as `[^\n\r]`, literal `^`/`$` escaped) and `x-nova-pattern: p` |
+//! | `"s"` | `type: string`, `const: "s"`, `x-nova-kind: literal` (`enum: ["s", null]` when nullable) |
+//! | union of literals only | `type: string`, `enum`, `x-nova-kind: literal` |
 //! | `@len` in another unit, or on `bytes`; `@range` on `decimal`/`rational` | `x-nova-len` / `x-nova-range` only (not enforced by JSON Schema validators) |
 //! | field default, `@deprecated` | `default` (as JSON), `deprecated: true` |
 //! | `@id(n)`, `@key` | `x-nova-id: n`; `x-nova-key: true` and a note in `description` |
