@@ -517,3 +517,11 @@ fn literals_and_patterns_are_strings_checked_both_ways() {
     let bytes = encode(&value(&loose, "op: \"<\"\nname: abc\n"), &loose).unwrap();
     assert!(decode(&bytes, &s).is_err());
 }
+
+#[test]
+fn quoted_field_names_are_not_protobuf_names() {
+    let s = schema("@root R\nrecord R:\n  \"a = 1; } message Evil { string b\": string @id(1)\n");
+    let e = proto_file(&s).unwrap_err();
+    assert!(e.contains("not a valid Protobuf field name"), "{e}");
+    assert!(proto_file(&schema("@root R\nrecord R:\n  scale-up: int @id(1)\n")).is_ok());
+}

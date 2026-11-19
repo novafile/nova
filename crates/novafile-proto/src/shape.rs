@@ -293,6 +293,11 @@ pub(crate) fn ident(name: &str) -> String {
     name.replace('-', "_")
 }
 
+/// Whether `s` is a Protobuf identifier: `[A-Za-z_][A-Za-z0-9_]*`.
+fn is_proto_ident(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// `HttpMethod` / `not-found` / `notFound` → `HTTP_METHOD` / `NOT_FOUND` / `NOT_FOUND`.
 pub(crate) fn screaming_snake(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);
@@ -368,6 +373,12 @@ impl<'s> Plan<'s> {
                         let n = field_number(name, f)?;
                         if let Some(other) = numbers.insert(n, &f.name) {
                             return Err(format!("{name}.{}: @id({n}) is also used by field {other}", f.name));
+                        }
+
+                        // Quoted field names (`"at start"`) are not Protobuf identifiers and
+                        // would be pasted into the generated `.proto` as they are.
+                        if !is_proto_ident(&ident(&f.name)) {
+                            return Err(format!("{name}.{}: not a valid Protobuf field name", f.name));
                         }
 
                         if let Some(other) = names.insert(ident(&f.name), &f.name) {
