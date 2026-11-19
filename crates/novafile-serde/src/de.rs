@@ -257,7 +257,25 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer {
     key_number!(deserialize_u32, u32);
     key_number!(deserialize_u64, u64);
     key_number!(deserialize_u128, u128);
-    key_number!(deserialize_f32, f32);
+    fn deserialize_f32<V: Visitor<'de>>(self, v: V) -> Result<V::Value, Error> {
+        // serde's f32 visitor casts with `as`, which makes a finite value beyond the f32 range infinite.
+        #[expect(clippy::cast_possible_truncation, reason = "only to test whether the value overflows f32")]
+        if let Value::Float(f) = &self.value
+            && f.is_finite()
+            && (*f as f32).is_infinite()
+        {
+            return Err(Error::new(format!("{f:e} is out of range for f32")));
+        }
+
+        if self.key
+            && let Value::String(s) = &self.value
+        {
+            let n: f32 = s.parse().map_err(|_| de::Error::invalid_value(de::Unexpected::Str(s), &v))?;
+            return ValueDeserializer::new(n.into_value()?).deserialize_any(v);
+        }
+
+        self.deserialize_any(v)
+    }
     key_number!(deserialize_f64, f64);
     key_number!(deserialize_bool, bool);
 

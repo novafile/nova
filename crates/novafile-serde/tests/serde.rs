@@ -222,3 +222,11 @@ fn f32_is_written_in_its_shortest_form() {
     let v: f32 = novafile_serde::from_str(&novafile_serde::to_string(&0.1f32).unwrap()).unwrap();
     assert_eq!(v, 0.1f32);
 }
+
+/// A finite float beyond the f32 range is an error, not infinity.
+#[test]
+fn f32_overflow_is_an_error() {
+    assert!(from_value::<f32>(Value::Float(1e300)).is_err());
+    assert_eq!(from_value::<f32>(Value::Float(1.5)).unwrap(), 1.5);
+    assert!(from_value::<f32>(Value::Float(f64::INFINITY)).unwrap().is_infinite());
+}
