@@ -343,11 +343,13 @@ impl<'s> Ctx<'s> {
     }
 
     /// Resolve a map key against `kt`. Its issues are reported at the map,
-    /// since a path cannot point at a key itself, and say that a key failed.
+    /// since a path cannot point at a key or into one (`m[1]` would name the
+    /// entry whose key is 1), and say that a key failed.
     fn key(&mut self, k: Value, kt: &'s TypeRef) -> Value {
         let mark = self.issues.len();
         let k = self.check(k, kt);
         for is in &mut self.issues[mark..] {
+            is.path.0.truncate(self.path.len());
             is.message.insert_str(0, "key ");
         }
 

@@ -115,7 +115,8 @@ pub fn schema_for<T: NovaSchema>() -> Schema {
 #[doc(hidden)]
 #[must_use]
 pub fn __with_attrs(mut ty: TypeRef, attrs: &str, field: &str) -> TypeRef {
-    let mut p = crate::parse::TyParser::new(attrs);
+    let budget = std::cell::Cell::new(crate::pattern::SCHEMA_BUDGET);
+    let mut p = crate::parse::TyParser::new(attrs, &budget);
     let rest = p.attrs(&mut ty).unwrap_or_else(|e| panic!("#[nova] on {field}: {e}"));
     if let Some((a, _)) = rest.first() {
         panic!("#[nova] on {field}: @{a} is not a type attribute");

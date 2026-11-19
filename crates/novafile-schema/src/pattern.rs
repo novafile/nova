@@ -1,9 +1,11 @@
 //! `@pattern` (spec §6.1): I-Regexp (RFC 9485) validation and matching.
 //!
 //! A pattern is checked against the RFC 9485 grammar, then translated to the
-//! `regex` crate's syntax (RFC 9485 §5.4) and compiled there. That crate
-//! matches in time linear in the input, as spec §12 requires.
+//! syntax of `regex-automata` (RFC 9485 §5.4) and compiled there. Its
+//! `PikeVM` matches in time linear in the input, as spec §12 requires.
 
+use regex_automata::meta::{Config, Regex};
+use std::cell::Cell;
 use std::fmt::{self, Write as _};
 
 /// Longest pattern text accepted, in characters.
@@ -12,8 +14,16 @@ const MAX_LEN: usize = 4096;
 /// How deeply groups may nest, so hostile schemas cannot overflow the stack.
 const MAX_DEPTH: usize = 64;
 
-/// Upper bound on the compiled program, in bytes.
-const MAX_COMPILED: usize = 1 << 20;
+/// Upper bound on one compiled pattern's memory, in bytes. Large enough for
+/// `\p{L}{1,63}` (~1 MB); a short pattern can still reach it, hence [`SCHEMA_BUDGET`].
+const MAX_COMPILED: usize = 4 << 20;
+
+/// Upper bound on the compiled patterns of one schema together, in bytes, so
+/// many short patterns (`a{30000}` compiles to ~0.7 MB) cannot exhaust memory.
+pub const SCHEMA_BUDGET: usize = 32 << 20;
+
+/// Why a pattern over [`MAX_COMPILED`] is rejected, and what to do instead.
+const TOO_COMPLEX: &str = "pattern too complex to compile; bound the length with @len rather than a {n,m} repetition";
 
 /// The general categories I-Regexp allows in `\p{…}` (RFC 9485 §3).
 const CATEGORIES: &[&str] = &[
@@ -29,7 +39,7 @@ pub struct Pattern {
     /// The I-Regexp as written, after NOVA string escapes are decoded.
     text: String,
     /// The translated, anchored matcher.
-    re: regex::Regex,
+    re: Regex,
 }
 
 impl Pattern {
@@ -40,6 +50,17 @@ impl Pattern {
     /// Fails with a reason if `text` is not an I-Regexp, or is too long or
     /// too complex to compile within the bounds.
     pub fn new(text: &str) -> Result<Pattern, String> {
+        Pattern::new_within(text, &Cell::new(SCHEMA_BUDGET))
+    }
+
+    /// Like [`Pattern::new`], but the compiled size also counts against
+    /// `budget`, which is shared by every pattern of one schema and starts
+    /// at [`SCHEMA_BUDGET`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Pattern::new`], and if `budget` does not cover the compiled pattern.
+    pub fn new_within(text: &str, budget: &Cell<usize>) -> Result<Pattern, String> {
         let fail = |m: String| format!("not a valid I-Regexp: {m}");
         if text.chars().count() > MAX_LEN {
             return Err(format!("pattern longer than {MAX_LEN} characters"));
@@ -57,14 +78,28 @@ impl Pattern {
             return Err(fail("unmatched `)`".into()));
         }
 
-        let re = regex::RegexBuilder::new(&format!(r"\A(?:{})\z", p.out))
-            .size_limit(MAX_COMPILED)
-            .build()
-            .map_err(|e| match e {
-                regex::Error::CompiledTooBig(_) => "pattern too complex to compile".to_owned(),
-                e => fail(e.to_string()),
+        let limit = MAX_COMPILED.min(budget.get());
+        let re = Regex::builder()
+            .configure(Config::new().nfa_size_limit(Some(limit)))
+            .build(&format!(r"\A(?:{})\z", p.out))
+            .map_err(|e| match e.size_limit() {
+                Some(_) if limit < MAX_COMPILED => format!("the patterns of this schema need more than {} MiB compiled", SCHEMA_BUDGET >> 20),
+                Some(_) => TOO_COMPLEX.to_owned(),
+                None => fail(e.to_string()),
             })?;
 
+        // The NFA limit leaves out engines that other crates in the build may
+        // enable through Cargo feature unification; count what was really built.
+        let used = re.memory_usage();
+        if used > MAX_COMPILED {
+            return Err(TOO_COMPLEX.to_owned());
+        }
+
+        if used > budget.get() {
+            return Err(format!("the patterns of this schema need more than {} MiB compiled", SCHEMA_BUDGET >> 20));
+        }
+
+        budget.set(budget.get() - used);
         Ok(Pattern { text: text.to_owned(), re })
     }
 
@@ -134,7 +169,7 @@ impl fmt::Debug for Pattern {
 }
 
 /// Recursive-descent parser over the RFC 9485 grammar that writes the
-/// equivalent `regex` syntax as it goes.
+/// equivalent `regex-automata` syntax as it goes.
 struct Translator {
     /// The pattern's characters.
     c: Vec<char>,
@@ -165,7 +200,14 @@ impl Translator {
             '\n' => self.out.push_str(r"\n"),
             '\r' => self.out.push_str(r"\r"),
             '\t' => self.out.push_str(r"\t"),
-            c => self.out.push_str(&regex::escape(c.encode_utf8(&mut [0; 4]))),
+            c => {
+                // The meta characters of regex-syntax, set operators included.
+                if r"\.+*?()|[]{}^$#&-~".contains(c) {
+                    self.out.push('\\');
+                }
+
+                self.out.push(c);
+            }
         }
     }
 
@@ -459,7 +501,13 @@ mod tests {
     #[test]
     fn bounds_work() {
         assert!(Pattern::new(&"(".repeat(100)).unwrap_err().contains("nested"));
-        assert!(Pattern::new("(((a{1000}){1000}){1000})").unwrap_err().contains("too complex"));
+        assert!(Pattern::new("(((a{1000}){1000}){1000})").unwrap_err().contains("@len"));
+        // Unicode identifiers with a length cap fit one pattern's bound.
+        ok(r"\p{L}{1,63}");
+        // Many short but large patterns exhaust the shared budget.
+        let budget = Cell::new(SCHEMA_BUDGET);
+        let e = (0..100).find_map(|_| Pattern::new_within("a{30000}", &budget).err()).expect("budget runs out");
+        assert!(e.contains("MiB"), "{e}");
         assert!(Pattern::new(&"a".repeat(MAX_LEN + 1)).unwrap_err().contains("longer"));
     }
 }
