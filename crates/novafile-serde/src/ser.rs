@@ -20,6 +20,17 @@ fn text_of(v: Value, what: &str) -> Result<String, Error> {
     }
 }
 
+/// `variant` as a tag, or an error if it is not an identifier (§2.11): such a
+/// tag cannot be written as text, and decoders reject it, e.g. a
+/// `#[serde(rename = "at start")]` variant.
+fn tag(variant: &str) -> Result<String, Error> {
+    if novafile_value::is_variant_tag(variant) {
+        Ok(variant.to_owned())
+    } else {
+        Err(Error::new(format!("variant tag {variant:?} is not an identifier")))
+    }
+}
+
 impl ser::Serializer for ValueSerializer {
     type Ok = Value;
     type Error = Error;
@@ -114,7 +125,7 @@ impl ser::Serializer for ValueSerializer {
     }
 
     fn serialize_unit_variant(self, _: &'static str, _: u32, variant: &'static str) -> R {
-        Ok(Value::Variant(variant.to_owned(), None))
+        Ok(Value::Variant(tag(variant)?, None))
     }
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(self, name: &'static str, v: &T) -> R {
@@ -143,7 +154,7 @@ impl ser::Serializer for ValueSerializer {
 
     fn serialize_newtype_variant<T: ?Sized + Serialize>(self, _: &'static str, _: u32, variant: &'static str, v: &T) -> R {
         Ok(Value::Variant(
-            variant.to_owned(),
+            tag(variant)?,
             Some(Box::new(v.serialize(self).map_err(|e| e.at(variant.to_owned()))?)),
         ))
     }
@@ -167,6 +178,7 @@ impl ser::Serializer for ValueSerializer {
     }
 
     fn serialize_tuple_variant(self, _: &'static str, _: u32, variant: &'static str, len: usize) -> Result<VariantSeqSer, Error> {
+        tag(variant)?;
         Ok(VariantSeqSer {
             tag: variant,
             items: Vec::with_capacity(len),
@@ -185,6 +197,7 @@ impl ser::Serializer for ValueSerializer {
     }
 
     fn serialize_struct_variant(self, _: &'static str, _: u32, variant: &'static str, _: usize) -> Result<VariantStructSer, Error> {
+        tag(variant)?;
         Ok(VariantStructSer {
             tag: variant,
             record: Record::new(),

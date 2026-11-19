@@ -504,6 +504,16 @@ impl<'a> Decoder<'a> {
         Ok(n as usize)
     }
 
+    /// A variant tag: a string that is an identifier (§2.11, §5.1).
+    fn tag_name(&mut self) -> Result<&'a str, DecodeError> {
+        let t = self.string()?;
+        if crate::is_variant_tag(t) {
+            Ok(t)
+        } else {
+            self.err(format!("variant tag {t:?} is not an identifier"))
+        }
+    }
+
     /// Read a string header and resolve it: a literal is validated as UTF-8 and
     /// appended to the string table, a back-reference is looked up in it.
     fn string(&mut self) -> Result<&'a str, DecodeError> {
@@ -767,11 +777,11 @@ impl<'a> Decoder<'a> {
                 (T::seq(tag::LIST, rows), want.then_some(Node::Seq(tag::LIST, row_ids)))
             }
             tag::UNIT_VARIANT => {
-                let name = self.string()?;
+                let name = self.tag_name()?;
                 (T::variant(name, None), want.then_some(Node::Variant(name, None)))
             }
             tag::VARIANT => {
-                let name = self.string()?;
+                let name = self.tag_name()?;
                 self.depth += 1;
                 let (p, id) = self.value::<T>(want)?;
                 self.depth -= 1;
@@ -1053,6 +1063,19 @@ mod tests {
     use super::*;
 
     /// Zero-field rows cost no input bytes, so their count is not bounded by it.
+    #[test]
+    fn variant_tags_must_be_identifiers() {
+        // Unit variant "", then a unit variant "at start".
+        let mut at_start = vec![tag::UNIT_VARIANT, 16];
+        at_start.extend_from_slice(b"at start");
+        for bytes in [vec![tag::UNIT_VARIANT, 0], at_start] {
+            let e = decode(&bytes).unwrap_err();
+            assert!(e.message.contains("not an identifier"), "{e:?}");
+        }
+
+        assert!(crate::is_variant_tag("at_start-2") && !crate::is_variant_tag("2a"));
+    }
+
     #[test]
     fn record_list_without_fields_is_rejected() {
         // A list holding a record list of 3 rows, 0 fields, dense, then filler bytes.

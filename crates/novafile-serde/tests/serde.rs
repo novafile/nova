@@ -230,3 +230,18 @@ fn f32_overflow_is_an_error() {
     assert_eq!(from_value::<f32>(Value::Float(1.5)).unwrap(), 1.5);
     assert!(from_value::<f32>(Value::Float(f64::INFINITY)).unwrap().is_infinite());
 }
+
+/// Variant tags must be identifiers (§2.11); a rename to anything else is an error.
+#[test]
+fn non_identifier_variant_tags_are_errors() {
+    #[derive(Serialize)]
+    enum Op {
+        #[serde(rename = "at start")]
+        AtStart,
+        #[serde(rename = "at-end")]
+        AtEnd(u8),
+    }
+
+    assert!(to_value(&Op::AtStart).unwrap_err().to_string().contains("not an identifier"));
+    assert_eq!(to_value(&Op::AtEnd(1)).unwrap(), Value::Variant("at-end".into(), Some(Box::new(Value::Int(1)))));
+}
