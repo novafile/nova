@@ -77,6 +77,20 @@ fn schema_rules() {
 }
 
 #[test]
+fn union_order() {
+    let src = "@root R\ntype T = string | timestamp\nrecord R:\n  \"at\": timestamp | string\n  ok: int | string\n";
+    let f = lint_schema(src, &Config::default()).unwrap();
+    let got: Vec<(&str, &str)> = f.iter().map(|f| (f.rule, &src[f.start..f.end])).collect();
+    assert_eq!(got, [("union-order", "type T"), ("union-order", "  \"at\"")], "{f:#?}");
+    assert!(f[1].message.starts_with("R.at: `timestamp` captures"), "{}", f[1].message);
+    let quiet = Config {
+        allow: vec!["union-order".into()],
+        ..Config::default()
+    };
+    assert_eq!(lint_schema(src, &quiet).unwrap(), [] as [novafile_lint::Finding; 0]);
+}
+
+#[test]
 fn compat_mode() {
     let src = "@compat json\nuserId: 1\nprice: @decimal(\"1.50\")\ntags: @set[a, b]\nok: [1, 2]\n";
     let f = lint_document(src, &Config::default()).unwrap();

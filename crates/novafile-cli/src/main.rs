@@ -263,7 +263,7 @@ enum Cmd {
     ///
     /// Rules: key-case (`snake_case` keys; fixable), key-collision, quoted-key, untyped-timestamp
     /// (fixable), mixed-list, compat-loss (with `@compat json|yaml|toml`), field-case,
-    /// variant-case, partial-ids. Configure in a file with `@x-lint case=camel allow=rule,…`.
+    /// variant-case, partial-ids, union-order. Configure in a file with `@x-lint case=camel allow=rule,…`.
     Lint {
         /// Documents (.nova) and schemas (.novs) to check.
         #[arg(required = true)]
@@ -1193,9 +1193,15 @@ fn run(cli: Cli) -> R<ExitCode> {
                 print!("{}", c.schema.to_canonical_text());
             }
             SchemaCmd::Check { old, new } => {
-                let r = check_versions(&load_schema(&old)?, &load_schema(&new)?)?;
+                let new = load_schema(&new)?;
+                let r = check_versions(&load_schema(&old)?, &new)?;
                 for c in &r.changes {
                     println!("{c}");
+                }
+
+                // Member order is informative (spec §6.5); it does not fail the check.
+                for w in new.union_warnings() {
+                    eprintln!("warning: {w}");
                 }
 
                 let kind = match r.kind {

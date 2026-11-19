@@ -640,3 +640,23 @@ fn overlapping_unions_stay_bounded() {
     assert!(s.resolve(&novafile_text::parse("v: [5]\n").unwrap()).is_err());
     assert!(s.type_at(&novafile_text::Path::parse("v[0].nope").unwrap()).is_none());
 }
+
+#[test]
+fn union_order_warnings() {
+    let s = parse_schema(
+        "@root R\nenum Phase = pending | done\nrecord K:\n  k: int\nrecord R:\n  a: string | timestamp\n  b: list<u16 | u8>\n  c: Phase | string\n  d: any | int\n  e: map<string, int> | K\n  f: u8 @range(1..) | string @len(1..) | timestamp\n  g: int | string | K | list<int>\n",
+    )
+    .unwrap();
+    let got: Vec<String> = s.union_warnings().iter().map(std::string::ToString::to_string).collect();
+    let starts = [
+        "R.a: `timestamp` is reached only by typed literals",
+        "R.b: `u8` is unreachable",
+        "R.c: `Phase` captures some string values",
+        "R.d: `int` is unreachable",
+        "R.e: `map<string, int>` captures some record values",
+    ];
+    assert_eq!(got.len(), starts.len(), "{got:#?}");
+    for (g, want) in got.iter().zip(starts) {
+        assert!(g.starts_with(want), "{g} does not start with {want}");
+    }
+}

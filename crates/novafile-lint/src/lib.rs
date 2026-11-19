@@ -11,6 +11,7 @@
 //! | `compat-loss` | values the `@compat` format cannot represent | warning | — |
 //! | `field-case` | schema field names, except quoted ones | warning | — |
 //! | `variant-case` | schema enum variants | warning | — |
+//! | `union-order` | union members an earlier member makes unreachable or captures values from (spec §6.5) | warning | — |
 //! | `partial-ids` | records where only some fields have `@id` (an enum where only some variants have `@id` is a schema error) | warning | — |
 //!
 //! Configuration: [`Config`], or in a document `@x-lint case=camel allow=quoted-key,mixed-list`.
@@ -407,6 +408,34 @@ pub fn lint_schema(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_
                 }
             }
             _ => {}
+        }
+    }
+
+    if config.on("union-order") {
+        for w in schema.union_warnings() {
+            let find = |needle: &str, after: usize| src[after..].find(needle).map(|i| (after + i, after + i + needle.len()));
+            let at = match &w.def {
+                Some(d) => ["record ", "type ", "enum "]
+                    .iter()
+                    .flat_map(|k| [":", " "].map(|end| format!("{k}{d}{end}")))
+                    .find_map(|n| find(&n, 0).map(|(a, b)| (a, b - 1)))
+                    .and_then(|def| match &w.member {
+                        // The name may be written bare or quoted.
+                        Some(m) => find(&format!("  {}", novafile_text::key_text(m)), def.0).or_else(|| find(&format!("  {}", novafile_text::quote(m)), def.0)),
+                        None => Some(def),
+                    }),
+                None => find("@root", 0),
+            };
+            let (a, b) = at.unwrap_or((0, 0));
+
+            out.push(Finding {
+                rule: "union-order",
+                level: Level::Warning,
+                message: w.to_string(),
+                start: a,
+                end: b,
+                fix: None,
+            });
         }
     }
 

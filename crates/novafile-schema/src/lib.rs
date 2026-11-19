@@ -10,6 +10,7 @@ mod parse;
 mod positional;
 mod resolve;
 mod version;
+mod warn;
 
 pub use compat::{Change, check_compatibility, widens};
 pub use derive::{NovaSchema, SchemaGen, schema_for};
@@ -20,6 +21,7 @@ pub use novafile_derive::NovaSchema;
 pub use parse::{SchemaError, parse_schema, parse_type};
 pub use resolve::Issue;
 pub use version::{ChangeKind, PreId, SchemaRef, Version, valid_schema_name};
+pub use warn::UnionWarning;
 
 impl Schema {
     /// Canonical rendering used for fingerprints.
