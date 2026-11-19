@@ -275,7 +275,10 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
                     let existed = a.fields.iter().any(|f| f.name == g.name || (g.id.is_some() && f.id == g.id));
                     if !existed {
                         let at = format!("{name}.{}", g.name);
-                        if g.optional || g.default.is_some() {
+                        if g.key {
+                            // Old elements all get the same default key value (§6.5: add @key is breaking).
+                            push(true, &at, "@key field added; existing list elements may now collide".into());
+                        } else if g.optional || g.default.is_some() {
                             push(false, &at, "field added".into());
                         } else {
                             push(true, &at, "required field added without a default".into());

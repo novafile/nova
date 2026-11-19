@@ -731,7 +731,11 @@ fn review_fixes_for_patterns() {
 /// overflowing the stack; this runs on a test thread's 2 MiB stack.
 #[test]
 fn self_referential_defaults_stop_at_a_depth_limit() {
-    let s = parse_schema("@root list<R>\nrecord R:\n  a: R = {}\n").unwrap();
+    // The parser rejects such a default; schemas built in code (derive, imports) skip it.
+    let mut s = parse_schema("@root list<R>\nrecord R:\n  a?: R\n").unwrap();
+    let novafile_schema::Def::Record(r) = &mut s.defs[0].1 else { unreachable!() };
+    r.fields[0].optional = false;
+    r.fields[0].default = Some(novafile_value::Value::Record(novafile_value::Record::new()));
     let doc = novafile_text::parse(&"- {}\n".repeat(1000)).unwrap();
     let e = s.resolve(&doc).unwrap_err();
     assert!(e.iter().any(|i| i.message.contains("deeper")), "{:?}", &e[..e.len().min(3)]);
@@ -744,4 +748,15 @@ fn map_keys_equal_after_conversion_are_duplicates() {
     let e = s.resolve(&novafile_text::parse("\"1/2\": 1\n\"2/4\": 2\n").unwrap()).unwrap_err();
     assert!(e[0].message.contains("duplicate"), "{e:?}");
     assert!(s.resolve(&novafile_text::parse("\"1/2\": 1\n\"1/3\": 2\n").unwrap()).is_ok());
+}
+
+#[test]
+fn defaults_must_match_and_new_keys_break() {
+    let e = parse_schema("record R:\n  b: u8 = 300\n").unwrap_err();
+    assert!(e.message.contains("default does not match"), "{e}");
+    assert!(parse_schema("@root R\nrecord R:\n  a: R = {}\n").is_err(), "a default that contains itself never ends");
+
+    let old = parse_schema("@schema s@1.0.0\n@root list<S>\nrecord S:\n  n: int\n").unwrap();
+    let new = parse_schema("@schema s@1.1.0\n@root list<S>\nrecord S:\n  n: int\n  k: string @key = \"x\"\n").unwrap();
+    assert!(check_compatibility(&old, &new).iter().any(|c| c.breaking && c.at == "S.k"));
 }
