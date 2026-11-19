@@ -132,6 +132,7 @@ pub enum Item {
 ///
 /// Iterating yields records and errors. Once it returns `None`, [`Reader::segments`] holds
 /// one [`Segment`] per segment of the input.
+#[expect(clippy::struct_excessive_bools, reason = "independent per-segment and per-stream flags, not a state machine")]
 pub struct Reader<'s, R> {
     /// The input.
     input: R,
@@ -155,6 +156,9 @@ pub struct Reader<'s, R> {
     done: bool,
     /// A header directive of the current segment was invalid: its records are skipped.
     rejected: bool,
+    /// A record line of the current segment was seen, read or skipped. Skipped
+    /// ones leave `count` at 0, and `@nova`/`@schema` must still start a new segment.
+    started: bool,
 }
 
 impl<'s, R: BufRead> Reader<'s, R> {
@@ -173,6 +177,7 @@ impl<'s, R: BufRead> Reader<'s, R> {
             segments: Vec::new(),
             done: false,
             rejected: false,
+            started: false,
         }
     }
 
@@ -209,11 +214,12 @@ impl<'s, R: BufRead> Reader<'s, R> {
         self.count = 0;
         self.keys.clear();
         self.rejected = false;
+        self.started = false;
     }
 
     /// Apply a directive line (`name` without `@`, and its argument).
     fn directive(&mut self, name: &str, arg: &str) -> Result<(), LineError> {
-        if matches!(name, "nova" | "schema") && (self.count > 0 || self.ended.is_some()) {
+        if matches!(name, "nova" | "schema") && (self.started || self.ended.is_some()) {
             self.close_segment();
         } else if self.ended.is_some() {
             return Err(self.error(format!("@{name} after @end; only @nova or @schema may start a new segment")));
@@ -286,6 +292,7 @@ impl<'s, R: BufRead> Reader<'s, R> {
 
     /// Decode a record line under the current header.
     fn record(&mut self, line: &str) -> Result<Value, LineError> {
+        self.started = true;
         if self.ended.is_some() {
             return Err(self.error("record after @end; start a new segment with @nova or @schema"));
         }

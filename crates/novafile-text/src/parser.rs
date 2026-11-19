@@ -712,10 +712,12 @@ impl<'a> Parser<'a> {
         let r = f(self);
         self.bracket_depth -= 1;
         let node = r?;
-        if outer {
+        // Only a value spanning lines needs its line's indentation; finding the
+        // line start for every one-line cell of a long table row is quadratic.
+        let mut off = self.src[start..self.pos].find('\n').map(|i| start + i + 1);
+        if outer && off.is_some() {
             let ls = self.src[..start].rfind('\n').map_or(0, |i| i + 1);
             let base = self.src[ls..].bytes().take_while(|&c| c == b' ').count();
-            let mut off = self.src[start..self.pos].find('\n').map(|i| start + i + 1);
             while let Some(line) = off.filter(|&o| o < self.pos) {
                 let end = self.src[line..].find('\n').map_or(self.src.len(), |i| line + i);
                 let text = &self.src[line..end];
@@ -1005,6 +1007,12 @@ impl<'a> Parser<'a> {
             return Err(self.error_at(start, format!("unexpected `{}`; quote the string", tok.chars().next().unwrap())));
         }
 
+        // As for plain values (§4.4); a flow word or table cell accepted one, and
+        // re-rendered as a block value it no longer parsed.
+        if let Some(i) = tok.find(char::is_control) {
+            return Err(self.error_at(start + i, "control character in plain value"));
+        }
+
         classify(tok).map(Node::Lit).map_err(|m| self.error_at(start, m))
     }
 
@@ -1284,6 +1292,8 @@ impl<'a> Parser<'a> {
             Some(b'|') => self.block_string(parent),
             Some(b'!') => {
                 let n = self.variant_flow()?;
+                // parse_flow would set this; spans and `fmt` rely on it ending after `)`.
+                self.last_end = self.pos;
                 if let Node::Variant(tag, None) = &n {
                     self.skip_inline_ws();
                     if self.at_eol_or_comment() {

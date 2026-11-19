@@ -874,6 +874,10 @@ fn run(cli: Cli) -> R<ExitCode> {
                 return Ok(ExitCode::SUCCESS);
             }
 
+            if write && file.as_os_str() == "-" {
+                return Err("-w needs a file to rewrite, not stdin".into());
+            }
+
             let mut input = read_bytes(&file)?;
             let detected = detect(&file, &input, InputFormat::Auto);
             if !matches!(detected, InputFormat::Auto | InputFormat::Nova) {
@@ -899,6 +903,15 @@ fn run(cli: Cli) -> R<ExitCode> {
                 (Some(p), Some(t)) => novafile_text::format_preserving(t, p)
                     .map_err(|e| e.to_diagnostic(&name_of(&file), t))?
                     .into_bytes(),
+                // Another format in place would replace the NOVA text, comments and types included.
+                _ if write => {
+                    return Err(format!(
+                        "{}: -w rewrites NOVA text only; write other formats with `nvf convert {} --to … -o FILE`",
+                        file.display(),
+                        file.display()
+                    )
+                    .into());
+                }
                 _ => render_as(&decode(&file, input.clone(), InputFormat::Auto, None, false)?, to, false)?,
             };
 
@@ -1242,16 +1255,23 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
     config.allow = allow;
     let mut warnings = 0;
     for file in files {
-        let _lock = (fix && file.as_os_str() != "-").then(|| lock(file)).transpose()?;
+        if fix && file.as_os_str() == "-" {
+            return Err("--fix needs a file to rewrite, not stdin".into());
+        }
+
+        let _lock = fix.then(|| lock(file)).transpose()?;
         let mut src = read_text(file)?;
         let is_schema = file.extension().is_some_and(|e| e == "novs");
+        // Both kinds of fix are applied in memory and written once, so a lint
+        // error after the syntax fix leaves the file untouched.
+        let mut changed = false;
         if fix
             && !is_schema
             && let Some((fixed, n)) = novafile_text::fix_syntax(&src)
         {
-            write_atomic(file, fixed.as_bytes())?;
             eprintln!("{}: fixed {n} table row count{}", file.display(), if n == 1 { "" } else { "s" });
             src = fixed;
+            changed = true;
         }
 
         let run = |src: &str| -> R<Vec<novafile_lint::Finding>> {
@@ -1266,10 +1286,14 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
         if fix && findings.iter().any(|f| f.fix.is_some()) {
             let fixed = novafile_lint::apply_fixes(&src, &findings);
             let n = findings.iter().filter(|f| f.fix.is_some()).count();
-            write_atomic(file, fixed.as_bytes())?;
             eprintln!("{}: applied {n} fix{}", file.display(), if n == 1 { "" } else { "es" });
             src = fixed;
             findings = run(&src)?;
+            changed = true;
+        }
+
+        if changed {
+            write_atomic(file, src.as_bytes())?;
         }
 
         warnings += findings.iter().filter(|f| f.level == novafile_lint::Level::Warning).count();

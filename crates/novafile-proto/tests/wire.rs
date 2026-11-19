@@ -1,5 +1,7 @@
 //! Hand-computed wire bytes, decoder robustness and error reporting.
 
+use std::fmt::Write as _;
+
 use novafile_proto::{decode, encode, proto_file};
 use novafile_schema::{Schema, parse_schema};
 use novafile_value::{Record, Value};
@@ -516,4 +518,30 @@ fn literals_and_patterns_are_strings_checked_both_ways() {
     let loose = schema("@root R\nrecord R:\n  op: string @id(1)\n  name: string @id(2)\n");
     let bytes = encode(&value(&loose, "op: \"<\"\nname: abc\n"), &loose).unwrap();
     assert!(decode(&bytes, &s).is_err());
+}
+
+#[test]
+fn quoted_field_names_are_not_protobuf_names() {
+    let s = schema("@root R\nrecord R:\n  \"a = 1; } message Evil { string b\": string @id(1)\n");
+    let e = proto_file(&s).unwrap_err();
+    assert!(e.contains("not a valid Protobuf field name"), "{e}");
+    assert!(proto_file(&schema("@root R\nrecord R:\n  scale-up: int @id(1)\n")).is_ok());
+}
+
+#[test]
+fn collection_defaults_are_refused_and_zero_fill_is_bounded() {
+    let e = proto_file(&schema("@root R\nrecord R:\n  tags: list<string> @id(1) = [a]\n")).unwrap_err();
+    assert!(e.contains("with a default"), "{e}");
+
+    // Two message fields per level: absent ones fill in, doubling per level.
+    let mut src = String::from("@root R0\n");
+    for i in 0..24 {
+        let _ = write!(src, "record R{i}:\n  a: R{} @id(1)\n  b: R{} @id(2)\n", i + 1, i + 1);
+    }
+
+    src.push_str("record R24:\n  x: int @id(1)\n");
+    let started = std::time::Instant::now();
+    let e = decode(&[], &schema(&src)).unwrap_err();
+    assert!(e.contains("messages"), "{e}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
 }

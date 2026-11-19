@@ -160,6 +160,25 @@ fn alias_bomb_is_rejected_quickly() {
     assert!(from_str("a: &a [1, 2, 3]\nb: [*a, *a, *a]\n").is_ok());
 }
 
+/// Nested anchors copy their subtree once per level even without an alias,
+/// so the copies count against the same budget.
+#[test]
+fn nested_anchors_are_charged() {
+    let mut doc = String::new();
+    for i in 0..120 {
+        write!(doc, "&a{i} [").unwrap();
+    }
+
+    doc.push_str(&"1,".repeat(100_000));
+    doc.push('1');
+    doc.push_str(&"]".repeat(120));
+    doc.push('\n');
+    let start = std::time::Instant::now();
+    let e = from_str(&doc).unwrap_err();
+    assert!(e.contains("budget"), "{e}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+}
+
 #[test]
 fn recursive_and_unknown_aliases_fail() {
     assert!(from_str("a: &a [*a]\n").is_err());

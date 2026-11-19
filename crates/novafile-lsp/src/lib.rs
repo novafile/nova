@@ -22,7 +22,7 @@ use lsp_types::{
 };
 
 use novafile_schema::{Def, Schema, SchemaRef, TypeKind};
-use novafile_text::spans::{SpanMap, line_col_utf16, offset_of_utf16};
+use novafile_text::spans::{SpanMap, offset_of_utf16};
 use novafile_text::{Path, Segment};
 use novafile_value::Value;
 use std::collections::HashMap;
@@ -189,23 +189,60 @@ fn kind_of(uri: &Uri, text: &str) -> Kind {
     }
 }
 
+/// A document text with its line starts, built once per request, so each
+/// byte offset converts to an LSP position without rescanning the text before
+/// it (which made diagnostics and outlines quadratic in document size).
+struct Src<'a> {
+    /// The document text.
+    text: &'a str,
+    /// Byte offset at which each line starts; the first is 0.
+    starts: Vec<usize>,
+}
+
+impl<'a> Src<'a> {
+    /// Index the line starts of `text`.
+    fn new(text: &'a str) -> Self {
+        let starts = std::iter::once(0).chain(text.match_indices('\n').map(|(i, _)| i + 1)).collect();
+        Src { text, starts }
+    }
+
+    /// Zero-based (line, UTF-16 column) of a byte offset, like [`novafile_text::spans::line_col_utf16`].
+    fn line_col(&self, offset: usize) -> (u32, u32) {
+        let offset = offset.min(self.text.len());
+        let line = self.starts.partition_point(|&s| s <= offset) - 1;
+        let col = self.text[self.starts[line]..offset].encode_utf16().count();
+        (u32::try_from(line).unwrap_or(u32::MAX), u32::try_from(col).unwrap_or(u32::MAX))
+    }
+}
+
+impl std::ops::Deref for Src<'_> {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.text
+    }
+}
+
 /// LSP range between two byte offsets (an end before `start` is clamped to it).
-fn range(src: &str, start: usize, end: usize) -> Range {
-    let (l1, c1) = line_col_utf16(src, start);
-    let (l2, c2) = line_col_utf16(src, end.max(start));
+fn range(src: &Src<'_>, start: usize, end: usize) -> Range {
+    let (l1, c1) = src.line_col(start);
+    let (l2, c2) = src.line_col(end.max(start));
     Range::new(Position::new(l1, c1), Position::new(l2, c2))
 }
 
 /// Range of a 1-based line (whole line).
 #[expect(clippy::cast_possible_truncation, reason = "LSP positions are u32 by protocol")]
-fn line_range(src: &str, line: usize) -> Range {
-    let l = line.saturating_sub(1) as u32;
-    let len = src.lines().nth(l as usize).map_or(0, |t| t.encode_utf16().count()) as u32;
-    Range::new(Position::new(l, 0), Position::new(l, len))
+fn line_range(src: &Src<'_>, line: usize) -> Range {
+    let l = line.saturating_sub(1);
+    let len = src.starts.get(l).map_or(0, |&a| {
+        let b = src.starts.get(l + 1).map_or(src.len(), |&b| b - 1);
+        src[a..b].trim_end_matches('\r').encode_utf16().count()
+    }) as u32;
+    Range::new(Position::new(l as u32, 0), Position::new(l as u32, len))
 }
 
 /// A token-sized range at a byte offset.
-fn point_range(src: &str, offset: usize) -> Range {
+fn point_range(src: &Src<'_>, offset: usize) -> Range {
     let mut offset = offset.min(src.len());
     while !src.is_char_boundary(offset) {
         offset -= 1;
@@ -280,9 +317,12 @@ impl Server<'_> {
                     continue;
                 }
 
-                if p.is_dir() {
+                // `file_type` does not follow symlinks: a link to `.` multiplies the
+                // scan, and a link to `/` or another tree reads schemas from outside.
+                let Ok(ft) = e.file_type() else { continue };
+                if ft.is_dir() {
                     walk(&p, depth + 1, max_depth, out);
-                } else if name.ends_with(".novs") {
+                } else if ft.is_file() && name.ends_with(".novs") {
                     out.push(p);
                 }
             }
@@ -364,6 +404,7 @@ impl Server<'_> {
 
     /// Syntax errors, and schema validation for documents with a resolvable `@schema`.
     fn diagnostics(&self, uri: &Uri, text: &str) -> Vec<Diagnostic> {
+        let text = &Src::new(text);
         let mut out = Vec::new();
         match kind_of(uri, text) {
             Kind::Schema => {
@@ -374,8 +415,9 @@ impl Server<'_> {
             }
             Kind::Patch => match novafile_patch::parse_patch(text) {
                 Err(novafile_patch::PatchError::Syntax { line, col, message }) => {
-                    #[expect(clippy::cast_possible_truncation, reason = "LSP positions are u32 by protocol")]
-                    let off = offset_of_utf16(text, line.saturating_sub(1) as u32, col.saturating_sub(1) as u32);
+                    // `col` counts characters, not UTF-16 units: walk the line's characters.
+                    let start = text.starts.get(line.saturating_sub(1)).copied().unwrap_or(text.len());
+                    let off = text[start..].char_indices().nth(col.saturating_sub(1)).map_or(text.len(), |(i, _)| start + i);
                     out.push(diag(point_range(text, off), DiagnosticSeverity::ERROR, "nova::patch::syntax", message));
                 }
                 Err(e) => out.push(diag(line_range(text, 1), DiagnosticSeverity::ERROR, "nova::patch", e.to_string())),
@@ -422,6 +464,7 @@ impl Server<'_> {
 
     /// Convention findings from `novafile-lint` (spec Appendix E).
     fn lints(uri: &Uri, text: &str) -> Vec<Diagnostic> {
+        let text = &Src::new(text);
         let config = novafile_lint::Config::default();
         let findings = match kind_of(uri, text) {
             Kind::Schema => novafile_lint::lint_schema(text, &config).unwrap_or_default(),
@@ -608,6 +651,7 @@ impl Server<'_> {
     /// Hover: the path, kind and value under the cursor, with its schema type and field notes.
     fn hover(&self, uri: &Uri, pos: Position) -> Option<Hover> {
         let (text, p) = self.parsed(uri)?;
+        let text = &Src::new(text);
         let off = offset_of_utf16(text, pos.line, pos.character);
         let span = p.spans.at(off)?;
         let v = span.path.get(&p.value).ok()?;
@@ -666,7 +710,7 @@ impl Server<'_> {
     /// Document outline of an open data document.
     fn symbols(&self, uri: &Uri) -> Option<Vec<DocumentSymbol>> {
         let (text, p) = self.parsed(uri)?;
-        Some(children_of(text, &p, &Path::root()))
+        Some(children_of(&Src::new(text), &p, &children(&p), &Path::root()))
     }
 
     /// Quick fixes for the syntax error on the requested lines, such as a table's row count.
@@ -674,6 +718,7 @@ impl Server<'_> {
         let Some(text) = self.docs.get(uri).filter(|t| kind_of(uri, t) == Kind::Document) else {
             return vec![];
         };
+        let text = &Src::new(text);
 
         let Err(novafile_text::ParseError {
             fix: Some((fix, new)),
@@ -720,7 +765,7 @@ impl Server<'_> {
         }
 
         Some(vec![TextEdit {
-            range: range(text, 0, text.len()),
+            range: range(&Src::new(text), 0, text.len()),
             new_text: formatted,
         }])
     }
@@ -860,13 +905,29 @@ fn symbol_kind(v: &Value) -> SymbolKind {
     }
 }
 
+/// The spans of a document grouped by their parent's path (as `{:?}` of its
+/// segments), so the outline finds each node's children without a full scan.
+type Children<'p> = std::collections::HashMap<String, Vec<&'p novafile_text::spans::Span>>;
+
+/// Group the spans of `p` by parent, for [`children_of`].
+fn children(p: &Parsed) -> Children<'_> {
+    let mut kids = Children::new();
+    for s in p.spans.iter() {
+        if let Some((_, parent)) = s.path.0.split_last() {
+            kids.entry(format!("{parent:?}")).or_default().push(s);
+        }
+    }
+
+    kids
+}
+
 /// Outline symbols for the children of `parent`, recursively; list items holding a
 /// record are named after its `id`, `name` or `key` field.
 #[allow(deprecated)]
-fn children_of(text: &str, p: &Parsed, parent: &Path) -> Vec<DocumentSymbol> {
-    p.spans
-        .iter()
-        .filter(|s| s.path.0.len() == parent.0.len() + 1 && s.path.0.starts_with(&parent.0))
+fn children_of(text: &Src<'_>, p: &Parsed, kids: &Children<'_>, parent: &Path) -> Vec<DocumentSymbol> {
+    kids.get(&format!("{:?}", parent.0))
+        .into_iter()
+        .flatten()
         .filter_map(|s| {
             let v = s.path.get(&p.value).ok()?;
             let mut name = match s.path.0.last()? {
@@ -890,7 +951,7 @@ fn children_of(text: &str, p: &Parsed, parent: &Path) -> Vec<DocumentSymbol> {
                 Some(novafile_text::flow_string(v).chars().take(40).collect())
             };
 
-            let children = children_of(text, p, &s.path);
+            let children = children_of(text, p, kids, &s.path);
             Some(DocumentSymbol {
                 name,
                 detail,

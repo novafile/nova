@@ -251,6 +251,10 @@ fn scalar(wip: P, st: Option<ScalarType>, v: Value, key: bool) -> R {
         (Some(S::String), Value::String(s)) => wip.set(s)?,
         (Some(S::CowStr), Value::String(s)) => wip.set(Cow::<'static, str>::Owned(s))?,
         (Some(S::Str), _) => return Err(Error::new("cannot deserialize a borrowed &str from an owned value; use String")),
+        #[expect(clippy::cast_possible_truncation, reason = "only to test whether the value overflows f32")]
+        (Some(S::F32), Value::Float(f)) if f.is_finite() && (f as f32).is_infinite() => {
+            return Err(Error::new(format!("{f:e} is out of range for f32")));
+        }
         #[expect(clippy::cast_possible_truncation, reason = "an f32 target rounds the value by design")]
         (Some(S::F32), Value::Float(f)) => wip.set(f as f32)?,
         #[expect(clippy::cast_precision_loss, reason = "an integer read into a float rounds by design")]

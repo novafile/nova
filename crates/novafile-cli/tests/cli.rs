@@ -193,3 +193,30 @@ fn record_streams_round_trip() {
     ok(&["convert", "bad.novl", "--to", "json"]);
     assert_eq!(nvf(&d, &["convert", "bad.novl", "--strict", "--to", "json"], "").status.code(), Some(2));
 }
+
+#[test]
+fn rewrites_never_change_the_format_or_target_stdin() {
+    let d = scratch("rewrite");
+    let src = "# keep me\nat: @timestamp(\"2024-01-01T00:00:00Z\")\npayload: !failed(\"disk full\")\n";
+    std::fs::write(d.join("d.nova"), src).unwrap();
+
+    // Human formatting keeps a variant payload's closing parenthesis.
+    let o = nvf(&d, &["fmt", "d.nova"], "");
+    assert!(o.status.success(), "{o:?}");
+    assert!(stdout(&o).contains("payload: !failed(\"disk full\")\n"), "{}", stdout(&o));
+
+    let o = nvf(&d, &["fmt", "d.nova", "--to", "json", "-w"], "");
+    assert!(!o.status.success(), "{o:?}");
+    assert_eq!(std::fs::read_to_string(d.join("d.nova")).unwrap(), src);
+
+    for args in [&["fmt", "-", "-w"][..], &["lint", "--fix", "-"][..]] {
+        let o = nvf(&d, args, "fooBar: 1\n");
+        assert!(!o.status.success(), "{args:?}: {o:?}");
+        assert!(!d.join("-").exists(), "{args:?}");
+    }
+
+    // --fix still rewrites a real file.
+    std::fs::write(d.join("k.nova"), "fooBar: 1\n").unwrap();
+    let o = nvf(&d, &["lint", "--fix", "k.nova"], "");
+    assert_eq!(std::fs::read_to_string(d.join("k.nova")).unwrap(), "foo_bar: 1\n", "{o:?}");
+}

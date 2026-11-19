@@ -293,6 +293,11 @@ pub(crate) fn ident(name: &str) -> String {
     name.replace('-', "_")
 }
 
+/// Whether `s` is a Protobuf identifier: `[A-Za-z_][A-Za-z0-9_]*`.
+fn is_proto_ident(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// `HttpMethod` / `not-found` / `notFound` → `HTTP_METHOD` / `NOT_FOUND` / `NOT_FOUND`.
 pub(crate) fn screaming_snake(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);
@@ -370,11 +375,25 @@ impl<'s> Plan<'s> {
                             return Err(format!("{name}.{}: @id({n}) is also used by field {other}", f.name));
                         }
 
+                        // Quoted field names (`"at start"`) are not Protobuf identifiers and
+                        // would be pasted into the generated `.proto` as they are.
+                        if !is_proto_ident(&ident(&f.name)) {
+                            return Err(format!("{name}.{}: not a valid Protobuf field name", f.name));
+                        }
+
                         if let Some(other) = names.insert(ident(&f.name), &f.name) {
                             return Err(format!("{name}.{}: Protobuf field name collides with field {other}", f.name));
                         }
 
                         let c = classify_field(schema, name, f)?;
+                        // An empty list is written as nothing, which decodes as the default.
+                        if f.default.is_some() && !matches!(c.shape, Shape::Single(_)) {
+                            return Err(format!(
+                                "{name}.{}: a list, set or map with a default has no Protobuf mapping: an empty one would decode as the default",
+                                f.name
+                            ));
+                        }
+
                         if c.nullable && !matches!(c.shape, Shape::Single(_)) {
                             return Err(format!("{name}.{}: a nullable list, set or map has no Protobuf mapping", f.name));
                         }

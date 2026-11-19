@@ -779,5 +779,20 @@ fn check_refs(s: &Schema) -> Result<(), String> {
         walk(s, r).map_err(|m| format!("@root: {m}"))?;
     }
 
+    // Defaults must resolve against their field, or old data silently fails the
+    // new schema once the default is filled in (spec §6.4 rule 2).
+    for (name, d) in &s.defs {
+        if let Def::Record(r) = d {
+            for f in &r.fields {
+                if let Some(v) = &f.default
+                    && let Err(issues) = s.resolve_as(v, &f.ty)
+                {
+                    let why: Vec<String> = issues.iter().map(ToString::to_string).collect();
+                    return Err(format!("{name}.{}: default does not match {}: {}", f.name, f.ty, why.join("; ")));
+                }
+            }
+        }
+    }
+
     Ok(())
 }

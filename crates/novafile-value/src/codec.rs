@@ -85,6 +85,12 @@ fn table_shape(items: &[Value]) -> Option<Vec<&str>> {
             let idx = if let Some(i) = fields.iter().position(|f| f == k) {
                 i
             } else {
+                // Checked here, not only at the end: the linear lookup above makes
+                // many distinct keys quadratic.
+                if fields.len() == 256 {
+                    return None;
+                }
+
                 fields.push(k);
                 fields.len() - 1
             };
@@ -622,7 +628,7 @@ impl<'a> Decoder<'a> {
                 let n = self.count()?;
                 self.depth += 1;
                 let check = kind == tag::SET && n > 1;
-                let mut items = Vec::with_capacity(n);
+                let mut items = Vec::with_capacity(n.min(PREALLOC));
                 let mut ids = Vec::new();
                 let mut seen = HashSet::new();
                 for _ in 0..n {
@@ -648,7 +654,7 @@ impl<'a> Decoder<'a> {
             tag::RECORD => {
                 let n = self.count()?;
                 self.depth += 1;
-                let mut r = T::record(n);
+                let mut r = T::record(n.min(PREALLOC));
                 let mut fields = Vec::new();
                 for _ in 0..n {
                     let k = self.string()?;
@@ -670,7 +676,7 @@ impl<'a> Decoder<'a> {
             tag::MAP => {
                 let n = self.count()?;
                 self.depth += 1;
-                let mut entries = Vec::with_capacity(n);
+                let mut entries = Vec::with_capacity(n.min(PREALLOC));
                 let mut ids = Vec::new();
                 let mut seen = HashSet::new();
                 for _ in 0..n {
@@ -694,8 +700,17 @@ impl<'a> Decoder<'a> {
             tag::RECORD_LIST => {
                 let n = self.count()?;
                 let k = self.count()?;
-                let mut fields: Vec<&'a str> = Vec::with_capacity(k);
-                let mut seen = HashSet::with_capacity(k);
+                // Rows of zero fields take no bytes, so `n` would not be bounded by
+                // the input; the encoder never writes such a list.
+                if k == 0 {
+                    return Err(DecodeError {
+                        offset: start,
+                        message: "record list without fields".into(),
+                    });
+                }
+
+                let mut fields: Vec<&'a str> = Vec::with_capacity(k.min(PREALLOC));
+                let mut seen = HashSet::with_capacity(k.min(PREALLOC));
                 for _ in 0..k {
                     let f = self.string()?;
                     if !seen.insert(f) {
@@ -715,7 +730,7 @@ impl<'a> Decoder<'a> {
                 };
 
                 self.depth += 2;
-                let mut rows = Vec::with_capacity(n.min(4096));
+                let mut rows = Vec::with_capacity(n.min(PREALLOC));
                 let mut row_ids = Vec::new();
                 for _ in 0..n {
                     let present: Vec<bool> = if dense {
@@ -773,6 +788,11 @@ impl<'a> Decoder<'a> {
         Ok((v, node.map(|n| self.intern(n))))
     }
 }
+
+/// The most elements the decoder reserves room for up front. Counts are only
+/// bounded by the bytes left, and each element takes far more memory than a
+/// byte, so larger collections grow as they are read instead.
+const PREALLOC: usize = 4096;
 
 /// The value kinds without heap data, as the decoder hands them to [`Build::scalar`].
 #[derive(Clone, Copy)]
@@ -1031,6 +1051,14 @@ fn decode_whole<'a, T: Build<'a>>(buf: &'a [u8]) -> Result<T, DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Zero-field rows cost no input bytes, so their count is not bounded by it.
+    #[test]
+    fn record_list_without_fields_is_rejected() {
+        // A list holding a record list of 3 rows, 0 fields, dense, then filler bytes.
+        let e = decode(&[tag::LIST, 1, tag::RECORD_LIST, 3, 0, 0, 0, 0, 0]).unwrap_err();
+        assert!(e.message.contains("without fields"), "{e:?}");
+    }
 
     fn rec(entries: Vec<(&str, Value)>) -> Value {
         Value::Record(Record::from_entries(entries.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()).unwrap())

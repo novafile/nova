@@ -36,6 +36,8 @@ struct Ctx<'s> {
     /// Whether absent fields get their default (resolution) or stay absent
     /// (validation).
     apply_defaults: bool,
+    /// Nesting of [`Self::check`] calls, capped at [`MAX_CHECK_DEPTH`].
+    depth: usize,
     /// Calls to [`Self::check`] left. Overlapping union members can retry the
     /// same value exponentially often, so the work is bounded by input size.
     fuel: usize,
@@ -54,6 +56,21 @@ impl<'s> Ctx<'s> {
     /// return the possibly converted value. The constraints of both the use site
     /// and the alias target apply.
     fn check(&mut self, v: Value, t: &'s TypeRef) -> Value {
+        // Fuel bounds the total work, not the depth: a field whose default is
+        // its own record (`a: R = {}`) would otherwise recurse until the stack overflows.
+        if self.depth == MAX_CHECK_DEPTH {
+            self.issue(format!("resolution nests deeper than {MAX_CHECK_DEPTH} levels"));
+            return v;
+        }
+
+        self.depth += 1;
+        let v = self.check_at(v, t);
+        self.depth -= 1;
+        v
+    }
+
+    /// [`Self::check`] below the depth guard.
+    fn check_at(&mut self, v: Value, t: &'s TypeRef) -> Value {
         if self.fuel == 0 {
             return v;
         }
@@ -317,7 +334,7 @@ impl<'s> Ctx<'s> {
                         (k2, v2)
                     })
                     .collect();
-                Value::Map(out)
+                self.unique_keys(out)
             }
             (TypeKind::Map(kt, vt), Value::Record(r)) => {
                 let out = r
@@ -332,12 +349,24 @@ impl<'s> Ctx<'s> {
                         (k2, v2)
                     })
                     .collect();
-                Value::Map(out)
+                self.unique_keys(out)
             }
             (kind, v) => {
                 let t = TypeRef::new(kind.clone());
                 self.mismatch(&t.to_string(), &v);
                 v
+            }
+        }
+    }
+
+    /// A map of `entries`, reporting keys that conversion made equal
+    /// (`"1/2"` and `"2/4"` as `rational`), as the set arm does for elements.
+    fn unique_keys(&mut self, entries: Vec<(Value, Value)>) -> Value {
+        match Value::map(entries.clone()) {
+            Ok(m) => m,
+            Err(e) => {
+                self.issue(e);
+                Value::Map(entries)
             }
         }
     }
@@ -556,6 +585,10 @@ impl<'s> Ctx<'s> {
     }
 }
 
+/// How deeply [`Ctx::check`] may nest: well above the 128 levels documents
+/// may nest (with a union at each), well below what overflows a 2 MiB stack.
+const MAX_CHECK_DEPTH: usize = 384;
+
 /// The number of values in `v`, counting every nested element, entry and payload.
 fn nodes(v: &Value) -> usize {
     1 + match v {
@@ -607,6 +640,7 @@ impl Schema {
             path: Vec::new(),
             issues: Vec::new(),
             keyed: Vec::new(),
+            depth: 0,
             apply_defaults,
             fuel: nodes(v).saturating_mul(256).saturating_add(4096),
         };

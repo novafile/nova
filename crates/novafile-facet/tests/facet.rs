@@ -580,3 +580,11 @@ fn known_gaps() {
     assert_eq!(to_value(&[1, 2]).unwrap(), flow("[1, 2]"));
     assert_eq!(novafile_serde::to_value(&[1, 2]).unwrap(), flow("(1, 2)"));
 }
+
+/// A finite float beyond the f32 range is an error, not infinity.
+#[test]
+fn f32_overflow_is_an_error() {
+    assert!(from_value::<f32>(Value::Float(1e300)).is_err());
+    assert_eq!(from_value::<f32>(Value::Float(1.5)).unwrap(), 1.5);
+    assert!(from_value::<f32>(Value::Float(f64::INFINITY)).unwrap().is_infinite());
+}

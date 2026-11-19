@@ -1,6 +1,8 @@
 //! The language server driven over an in-memory connection: diagnostics, hover,
 //! completion, symbols and formatting.
 
+use std::fmt::Write as _;
+
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -235,6 +237,12 @@ fn end_to_end() {
     let d = c.diagnostics();
     assert_eq!(d[0]["code"], "nova::patch::syntax");
 
+    // Columns after emoji count UTF-16 units: the `]` sits at unit 14.
+    let emoji = format!("{}/y.patch", base(&dir));
+    open(&c, &emoji, "@patch\n+ k: \"éé😀😀\" ]\n");
+    let d = c.diagnostics_for(&emoji);
+    assert_eq!(d[0]["range"]["start"], json!({"line": 1, "character": 14}), "{d}");
+
     c.request("shutdown", Value::Null);
     c.notify("exit", Value::Null);
     server.join().unwrap();
@@ -428,6 +436,73 @@ fn literal_types_complete() {
     );
     c.diagnostics_for(&uri);
     assert_eq!(complete(&mut c, 1, 7), [("total-time".to_owned(), "total-time".to_owned())]);
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    server.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// The schema scan does not follow symlinks: links to `.` would multiply the
+/// work, and a link out of the workspace would load schemas from elsewhere.
+#[cfg(unix)]
+#[test]
+fn schema_scan_ignores_symlinks() {
+    let dir = std::env::temp_dir().join(format!("novafile-lsp-links-{}", std::process::id()));
+    let outside = std::env::temp_dir().join(format!("novafile-lsp-outside-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("sec.novs"), "@schema sec@1.0.0\n@root R\nrecord R:\n  a: int\n").unwrap();
+    for i in 0..5 {
+        std::os::unix::fs::symlink(".", dir.join(format!("l{i}"))).unwrap();
+    }
+
+    std::os::unix::fs::symlink(&outside, dir.join("linked")).unwrap();
+    std::os::unix::fs::symlink(outside.join("sec.novs"), dir.join("sec.novs")).unwrap();
+
+    let started = std::time::Instant::now();
+    let (client, h) = serve(&dir);
+    let mut c = Client { conn: client, next: 0 };
+    let root = base(&dir);
+    c.request(
+        "initialize",
+        json!({"capabilities": {}, "rootUri": root, "workspaceFolders": [{"uri": root, "name": "t"}]}),
+    );
+    c.notify("initialized", json!({}));
+    open(&c, &format!("{root}/doc.nova"), "@schema sec@1.0.0\na: oops\n");
+    let d = c.diagnostics();
+    assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+    assert_ne!(d[0]["code"], "nova::invalid", "validated against a schema outside the workspace: {d}");
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    h.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+    std::fs::remove_dir_all(outside).ok();
+}
+
+/// Large documents: diagnostics with many findings and the outline stay linear.
+#[test]
+fn large_documents_stay_fast() {
+    let (mut c, server, dir) = start();
+    let uri = format!("{}/big.nova", base(&dir));
+    let mut text = String::new();
+    for i in 0..20_000 {
+        let _ = writeln!(text, "keyNumber{i}: {i}");
+    }
+
+    text.push_str("items:\n");
+    for i in 0..4_000 {
+        let _ = writeln!(text, "  - id: x{i}\n    n: {i}");
+    }
+
+    let started = std::time::Instant::now();
+    open(&c, &uri, &text);
+    let d = c.diagnostics_for(&uri);
+    assert!(d.as_array().unwrap().len() >= 20_000);
+    let symbols = c.request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri}}));
+    assert_eq!(symbols.as_array().unwrap().len(), 20_001);
+    assert!(started.elapsed() < Duration::from_secs(15), "took {:?}", started.elapsed());
 
     c.request("shutdown", Value::Null);
     c.notify("exit", Value::Null);

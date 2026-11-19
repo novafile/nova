@@ -182,6 +182,10 @@ impl Schema {
             }
             (Value::List(l), _, TypeKind::List(et)) => Value::List(self.each_in(l, et, at)?),
             (Value::Set(l) | Value::List(l), _, TypeKind::Set(et)) => Value::set(self.each_in(l, et, at)?)?,
+            // `zip` would drop extra elements silently; the named form rejects them.
+            (Value::Tuple(l) | Value::List(l), _, TypeKind::Tuple(ts)) if l.len() != ts.len() => {
+                return Err(format!("{at}: expected a {}-tuple, found {} elements", ts.len(), l.len()));
+            }
             (Value::Tuple(l) | Value::List(l), _, TypeKind::Tuple(ts)) => Value::Tuple(
                 l.iter()
                     .zip(ts)

@@ -102,8 +102,14 @@ pub fn schema_for<T: NovaSchema>() -> Schema {
         ty
     } else {
         // Non-named roots (e.g. `Vec<Item>`) get a `Root` alias, which keeps their name stable.
-        generator.defs.push(("Root".into(), Def::Alias(ty)));
-        TypeRef::new(TypeKind::Named("Root".into()))
+        // A user type may already be called `Root` (`Vec<Root>`); then `Root_`, `Root__`, ….
+        let mut name = String::from("Root");
+        while generator.defs.iter().any(|(n, _)| *n == name) {
+            name.push('_');
+        }
+
+        generator.defs.push((name.clone(), Def::Alias(ty)));
+        TypeRef::new(TypeKind::Named(name))
     };
 
     let (name, version) = T::nova_schema_id().map_or((None, None), |(n, v)| (Some(n), Some(v)));

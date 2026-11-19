@@ -247,6 +247,62 @@ fn sandboxed_imports() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("cycle"), "{e}");
+
+    // A symlink beneath the root cannot lead out of it.
+    #[cfg(unix)]
+    {
+        let outside = std::env::temp_dir().join(format!("nova-tpl-out-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(
+            outside.join("secret.nova"),
+            "secret: s3cr3t
+",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("link")).unwrap();
+        let e = render(
+            "@template
+@import \"link/secret.nova\" as s
+leak: $s.secret
+",
+            &Record::new(),
+            &opts,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("escapes"), "{e}");
+        std::fs::remove_dir_all(outside).ok();
+    }
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Repeated imports count their source, so templates importing each other
+/// many times stop at the byte limit instead of growing exponentially.
+#[test]
+fn repeated_imports_are_charged() {
+    let dir = std::env::temp_dir().join(format!("nova-tpl-rep-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("t0.nova"), format!("v: \"{}\"\n", "x".repeat(100_000))).unwrap();
+    for k in 1..=6 {
+        let mut t = String::from("@template\n");
+        for j in 0..10 {
+            let _ = writeln!(t, "@import \"t{}.nova\" as a{j}", k - 1);
+        }
+
+        t.push_str("n: 1\n");
+        std::fs::write(dir.join(format!("t{k}.nova")), t).unwrap();
+    }
+
+    let loader = FsLoader { root: dir.clone() };
+    let opts = Options {
+        loader: &loader,
+        ..Options::default()
+    };
+    let started = std::time::Instant::now();
+    let e = render(&std::fs::read_to_string(dir.join("t6.nova")).unwrap(), &Record::new(), &opts).unwrap_err();
+    assert!(e.to_string().contains("bytes"), "{e}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "took {:?}", started.elapsed());
     std::fs::remove_dir_all(dir).ok();
 }
 
