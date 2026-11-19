@@ -36,6 +36,9 @@ struct Ctx<'s> {
     /// Whether absent fields get their default (resolution) or stay absent
     /// (validation).
     apply_defaults: bool,
+    /// Whether the lossless conversions of spec §6.3 apply; without them a value
+    /// must already have the kind its type names.
+    convert: bool,
     /// Nesting of [`Self::check`] calls, capped at [`MAX_CHECK_DEPTH`].
     depth: usize,
     /// Calls to [`Self::check`] left. Overlapping union members can retry the
@@ -252,6 +255,11 @@ impl<'s> Ctx<'s> {
     #[expect(clippy::cast_precision_loss, reason = "the int-to-float arm only takes integers up to 2^53, exact in f64")]
     #[expect(clippy::too_many_lines, reason = "one arm per kind and conversion")]
     fn structural(&mut self, v: Value, kind: &'s TypeKind) -> Value {
+        if !self.convert && converts(kind, &v) {
+            self.mismatch(&TypeRef::new(kind.clone()).to_string(), &v);
+            return v;
+        }
+
         match (kind, v) {
             (TypeKind::Any, v) => v,
             (TypeKind::Null, v @ Value::Null) => v,
@@ -484,7 +492,7 @@ impl<'s> Ctx<'s> {
     fn variant(&mut self, v: Value, vs: &'s [VariantDef]) -> Value {
         // `{tag: payload}` — how JSON and other formats spell a variant (§6.3).
         let v = match v {
-            Value::Record(r) if r.len() == 1 && vs.iter().any(|d| d.payload.is_some() && r.contains_key(&d.name)) => {
+            Value::Record(r) if self.convert && r.len() == 1 && vs.iter().any(|d| d.payload.is_some() && r.contains_key(&d.name)) => {
                 let (tag, payload) = r.into_entries().pop().unwrap();
                 Value::Variant(tag, Some(Box::new(payload)))
             }
@@ -492,7 +500,7 @@ impl<'s> Ctx<'s> {
         };
 
         match v {
-            Value::String(s) => match vs.iter().find(|d| d.name == s) {
+            Value::String(s) if self.convert => match vs.iter().find(|d| d.name == s) {
                 Some(d) if d.payload.is_none() => Value::Variant(s, None),
                 Some(_) => {
                     self.issue(format!("variant {s} requires a payload"));
@@ -621,6 +629,20 @@ fn names(vs: &[VariantDef]) -> String {
     vs.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(" | ")
 }
 
+/// Whether resolving `v` against `kind` would convert it (spec §6.3) rather
+/// than take it as it is.
+fn converts(kind: &TypeKind, v: &Value) -> bool {
+    matches!(
+        (kind, v),
+        (TypeKind::Float, Value::Int(_))
+            | (TypeKind::Decimal, Value::Int(_) | Value::Float(_) | Value::String(_) | Value::Rational(_))
+            | (TypeKind::Rational, Value::Int(_) | Value::Decimal(_) | Value::String(_))
+            | (TypeKind::Bytes | TypeKind::Timestamp | TypeKind::Duration, Value::String(_))
+            | (TypeKind::Set(_) | TypeKind::Tuple(_), Value::List(_))
+            | (TypeKind::Map(..), Value::Record(_))
+    )
+}
+
 impl Schema {
     /// Resolve `v` against type `t`: apply the permitted lexical conversions
     /// and defaults, and report every violation (spec §6.3).
@@ -629,12 +651,24 @@ impl Schema {
     ///
     /// Returns every issue found if `v` does not conform to `t`.
     pub fn resolve_as(&self, v: &Value, t: &TypeRef) -> Result<Value, Vec<Issue>> {
-        let (out, issues) = self.run(v, t, true);
+        let (out, issues) = self.run(v, t, true, true);
         if issues.is_empty() { Ok(out) } else { Err(issues) }
     }
 
+    /// Check `v` against type `t` as it is: no conversion (spec §6.3) and no
+    /// default applies, so the string `"80"` does not match `u16`. Template
+    /// function arguments are checked this way, since they are values already.
+    ///
+    /// # Errors
+    ///
+    /// Returns every issue found if `v` does not conform to `t`.
+    pub fn check_as(&self, v: &Value, t: &TypeRef) -> Result<(), Vec<Issue>> {
+        let (_, issues) = self.run(v, t, false, false);
+        if issues.is_empty() { Ok(()) } else { Err(issues) }
+    }
+
     /// One resolution or validation pass of `v` against `t`.
-    fn run(&self, v: &Value, t: &TypeRef, apply_defaults: bool) -> (Value, Vec<Issue>) {
+    fn run(&self, v: &Value, t: &TypeRef, apply_defaults: bool, convert: bool) -> (Value, Vec<Issue>) {
         let mut c = Ctx {
             schema: self,
             path: Vec::new(),
@@ -642,6 +676,7 @@ impl Schema {
             keyed: Vec::new(),
             depth: 0,
             apply_defaults,
+            convert,
             fuel: nodes(v).saturating_mul(256).saturating_add(4096),
         };
 
@@ -686,7 +721,7 @@ impl Schema {
             }]
         })?;
 
-        let (_, issues) = self.run(v, &t, false);
+        let (_, issues) = self.run(v, &t, false, true);
         if issues.is_empty() { Ok(()) } else { Err(issues) }
     }
 }
