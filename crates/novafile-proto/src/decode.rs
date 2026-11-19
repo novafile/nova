@@ -21,7 +21,11 @@ const NANOS_PER_SEC: i64 = 1_000_000_000;
 /// message names the path.
 pub(crate) fn decode(bytes: &[u8], schema: &Schema) -> Result<Value, String> {
     let plan = Plan::new(schema)?;
-    let value = Decoder { schema }.message(&[bytes], plan.root, 0).map_err(Fail::render)?;
+    let value = Decoder {
+        schema,
+        messages: std::cell::Cell::new(0),
+    }
+    .message(&[bytes], plan.root, 0).map_err(Fail::render)?;
     schema
         .validate(&value)
         .map_err(|issues| crate::issues("decoded value does not match the schema", &issues))?;
@@ -33,7 +37,14 @@ struct Decoder<'s> {
     /// The schema whose plan is being decoded; used to classify fields and
     /// resolve defaults.
     schema: &'s Schema,
+    /// Messages built so far. Absent message fields decode as empty messages,
+    /// which fill in their own absent fields, so a small schema with two
+    /// message fields per level doubles the output at every level.
+    messages: std::cell::Cell<usize>,
 }
+
+/// The most messages one decode may build, absent ones filled in included.
+const MAX_MESSAGES: usize = 1 << 20;
 
 impl<'s> Decoder<'s> {
     /// Decode a message. Several `parts` are merged, exactly as if their
@@ -42,6 +53,11 @@ impl<'s> Decoder<'s> {
     fn message(&self, parts: &[&[u8]], m: Message<'s>, depth: usize) -> Result<Value, Fail> {
         if depth > MAX_DEPTH {
             return Err(Fail::new(format!("nesting is deeper than {MAX_DEPTH} messages")));
+        }
+
+        self.messages.set(self.messages.get() + 1);
+        if self.messages.get() > MAX_MESSAGES {
+            return Err(Fail::new(format!("decoding builds more than {MAX_MESSAGES} messages")));
         }
 
         let mut wire = Vec::new();

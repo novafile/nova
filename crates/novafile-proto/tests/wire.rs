@@ -525,3 +525,21 @@ fn quoted_field_names_are_not_protobuf_names() {
     assert!(e.contains("not a valid Protobuf field name"), "{e}");
     assert!(proto_file(&schema("@root R\nrecord R:\n  scale-up: int @id(1)\n")).is_ok());
 }
+
+#[test]
+fn collection_defaults_are_refused_and_zero_fill_is_bounded() {
+    let e = proto_file(&schema("@root R\nrecord R:\n  tags: list<string> @id(1) = [a]\n")).unwrap_err();
+    assert!(e.contains("with a default"), "{e}");
+
+    // Two message fields per level: absent ones fill in, doubling per level.
+    let mut src = String::from("@root R0\n");
+    for i in 0..24 {
+        src.push_str(&format!("record R{i}:\n  a: R{} @id(1)\n  b: R{} @id(2)\n", i + 1, i + 1));
+    }
+
+    src.push_str("record R24:\n  x: int @id(1)\n");
+    let started = std::time::Instant::now();
+    let e = decode(&[], &schema(&src)).unwrap_err();
+    assert!(e.contains("messages"), "{e}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
+}

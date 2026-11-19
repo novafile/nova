@@ -386,6 +386,14 @@ impl<'s> Plan<'s> {
                         }
 
                         let c = classify_field(schema, name, f)?;
+                        // An empty list is written as nothing, which decodes as the default.
+                        if f.default.is_some() && !matches!(c.shape, Shape::Single(_)) {
+                            return Err(format!(
+                                "{name}.{}: a list, set or map with a default has no Protobuf mapping: an empty one would decode as the default",
+                                f.name
+                            ));
+                        }
+
                         if c.nullable && !matches!(c.shape, Shape::Single(_)) {
                             return Err(format!("{name}.{}: a nullable list, set or map has no Protobuf mapping", f.name));
                         }
