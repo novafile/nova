@@ -253,7 +253,7 @@ pub struct Fetch {
     /// Whether the result may go into the user cache. False when the location
     /// comes from the project catalog, which arrives with a repository: what it
     /// fetches is used for this run only, so it cannot plant content that other
-    /// projects would later find in the shared cache.
+    /// projects would later find in the shared cache (spec §6.9).
     pub cacheable: bool,
 }
 
