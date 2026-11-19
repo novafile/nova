@@ -253,15 +253,23 @@ fn sandboxed_imports() {
     {
         let outside = std::env::temp_dir().join(format!("nova-tpl-out-{}", std::process::id()));
         std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(outside.join("secret.nova"), "secret: s3cr3t
-").unwrap();
+        std::fs::write(
+            outside.join("secret.nova"),
+            "secret: s3cr3t
+",
+        )
+        .unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("link")).unwrap();
-        let e = render("@template
+        let e = render(
+            "@template
 @import \"link/secret.nova\" as s
 leak: $s.secret
-", &Record::new(), &opts)
-            .unwrap_err()
-            .to_string();
+",
+            &Record::new(),
+            &opts,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(e.contains("escapes"), "{e}");
         std::fs::remove_dir_all(outside).ok();
     }

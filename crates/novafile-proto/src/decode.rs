@@ -25,7 +25,8 @@ pub(crate) fn decode(bytes: &[u8], schema: &Schema) -> Result<Value, String> {
         schema,
         messages: std::cell::Cell::new(0),
     }
-    .message(&[bytes], plan.root, 0).map_err(Fail::render)?;
+    .message(&[bytes], plan.root, 0)
+    .map_err(Fail::render)?;
     schema
         .validate(&value)
         .map_err(|issues| crate::issues("decoded value does not match the schema", &issues))?;

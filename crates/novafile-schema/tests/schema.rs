@@ -754,7 +754,10 @@ fn map_keys_equal_after_conversion_are_duplicates() {
 fn defaults_must_match_and_new_keys_break() {
     let e = parse_schema("record R:\n  b: u8 = 300\n").unwrap_err();
     assert!(e.message.contains("default does not match"), "{e}");
-    assert!(parse_schema("@root R\nrecord R:\n  a: R = {}\n").is_err(), "a default that contains itself never ends");
+    assert!(
+        parse_schema("@root R\nrecord R:\n  a: R = {}\n").is_err(),
+        "a default that contains itself never ends"
+    );
 
     let old = parse_schema("@schema s@1.0.0\n@root list<S>\nrecord S:\n  n: int\n").unwrap();
     let new = parse_schema("@schema s@1.1.0\n@root list<S>\nrecord S:\n  n: int\n  k: string @key = \"x\"\n").unwrap();
