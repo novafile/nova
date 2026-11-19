@@ -434,3 +434,41 @@ fn literal_types_complete() {
     server.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// The schema scan does not follow symlinks: links to `.` would multiply the
+/// work, and a link out of the workspace would load schemas from elsewhere.
+#[cfg(unix)]
+#[test]
+fn schema_scan_ignores_symlinks() {
+    let dir = std::env::temp_dir().join(format!("novafile-lsp-links-{}", std::process::id()));
+    let outside = std::env::temp_dir().join(format!("novafile-lsp-outside-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("sec.novs"), "@schema sec@1.0.0\n@root R\nrecord R:\n  a: int\n").unwrap();
+    for i in 0..5 {
+        std::os::unix::fs::symlink(".", dir.join(format!("l{i}"))).unwrap();
+    }
+
+    std::os::unix::fs::symlink(&outside, dir.join("linked")).unwrap();
+    std::os::unix::fs::symlink(outside.join("sec.novs"), dir.join("sec.novs")).unwrap();
+
+    let started = std::time::Instant::now();
+    let (client, h) = serve(&dir);
+    let mut c = Client { conn: client, next: 0 };
+    let root = base(&dir);
+    c.request(
+        "initialize",
+        json!({"capabilities": {}, "rootUri": root, "workspaceFolders": [{"uri": root, "name": "t"}]}),
+    );
+    c.notify("initialized", json!({}));
+    open(&c, &format!("{root}/doc.nova"), "@schema sec@1.0.0\na: oops\n");
+    let d = c.diagnostics();
+    assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+    assert_ne!(d[0]["code"], "nova::invalid", "validated against a schema outside the workspace: {d}");
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    h.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+    std::fs::remove_dir_all(outside).ok();
+}

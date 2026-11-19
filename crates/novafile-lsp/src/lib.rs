@@ -280,9 +280,12 @@ impl Server<'_> {
                     continue;
                 }
 
-                if p.is_dir() {
+                // `file_type` does not follow symlinks: a link to `.` multiplies the
+                // scan, and a link to `/` or another tree reads schemas from outside.
+                let Ok(ft) = e.file_type() else { continue };
+                if ft.is_dir() {
                     walk(&p, depth + 1, max_depth, out);
-                } else if name.ends_with(".novs") {
+                } else if ft.is_file() && name.ends_with(".novs") {
                     out.push(p);
                 }
             }
