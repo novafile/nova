@@ -536,3 +536,15 @@ fn reading_large_values_costs_steps() {
     let e = render(src, &a, &Options::default()).unwrap_err().to_string();
     assert!(e.contains("steps"), "{e}");
 }
+
+#[test]
+fn readme_example_renders() {
+    let readme = include_str!("../../../README.md");
+    let start = readme.find("@template 0.2\n").unwrap();
+    let tpl = &readme[start..start + readme[start..].find("```").unwrap()];
+    ok(
+        tpl,
+        "env: prod\nservices: [Auth]\nreplicas: 3\nmetrics: true\n",
+        "services:\n  - {enabled: true, replicas: 3, id: auth, image: \"ghcr.io/example/auth:v2\"}\n  - id: metrics\n    ports: [{port: 9090, name: m-9090}, {port: 9091, name: m-9091}]\n",
+    );
+}
