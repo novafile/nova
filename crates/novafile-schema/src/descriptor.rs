@@ -2,7 +2,7 @@
 //!
 //! [`Schema::to_value`] produces the *descriptor* of a schema: an ordinary
 //! NOVA value described by the meta-schema [`meta_schema`]
-//! (`nova-schema@0.3.0`). [`Schema::from_value`] turns a descriptor back
+//! (`nova-schema@0.3.1`). [`Schema::from_value`] turns a descriptor back
 //! into a schema by rendering its canonical text and parsing that, so
 //! descriptors are validated exactly like hand-written schemas.
 
@@ -63,6 +63,7 @@ fn type_value(t: &TypeRef) -> Value {
         TypeKind::Map(..) => "map",
         TypeKind::Tuple(_) => "tuple",
         TypeKind::Named(_) => "named",
+        TypeKind::Union(_) => "union",
     };
 
     e.push(("kind", tag(kind)));
@@ -73,7 +74,7 @@ fn type_value(t: &TypeRef) -> Value {
             e.push(("key", type_value(k)));
             e.push(("value", type_value(v)));
         }
-        TypeKind::Tuple(ts) => e.push(("items", Value::List(ts.iter().map(type_value).collect()))),
+        TypeKind::Tuple(ts) | TypeKind::Union(ts) => e.push(("items", Value::List(ts.iter().map(type_value).collect()))),
         _ => {}
     }
 
@@ -321,14 +322,33 @@ fn value_type(v: &Value) -> Result<TypeRef, String> {
         "list" => TypeKind::List(sub("item")?),
         "set" => TypeKind::Set(sub("item")?),
         "map" => TypeKind::Map(sub("key")?, sub("value")?),
-        "tuple" => TypeKind::Tuple(
-            r.get("items")
+        "tuple" | "union" => {
+            let items: Vec<TypeRef> = r
+                .get("items")
                 .and_then(Value::as_list)
-                .ok_or("tuple type needs `items`")?
+                .ok_or_else(|| format!("{kind} type needs `items`"))?
                 .iter()
                 .map(value_type)
-                .collect::<Result<_, _>>()?,
-        ),
+                .collect::<Result<_, _>>()?;
+            if kind == "tuple" {
+                TypeKind::Tuple(items)
+            } else {
+                // Schema text cannot express these, so the canonical text would change meaning.
+                if items.len() < 2 {
+                    return Err("a union needs at least two `items`".into());
+                }
+
+                if matches!(r.get("nullable"), Some(Value::Bool(true))) || r.contains_key("range") || r.contains_key("len") {
+                    return Err("a union carries no `nullable`, `range` or `len`; its members do".into());
+                }
+
+                if items.iter().any(|m| matches!(m.kind, TypeKind::Union(_))) {
+                    return Err("a union member cannot be a union; list its members in place".into());
+                }
+
+                TypeKind::Union(items)
+            }
+        }
         "named" => TypeKind::Named(r.get("ref").and_then(Value::as_str).ok_or("named type needs `ref`")?.to_owned()),
         other => TypeKind::Int(IntKind::from_name(other).ok_or_else(|| format!("unknown kind {other:?}"))?),
     };

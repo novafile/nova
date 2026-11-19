@@ -97,23 +97,45 @@ impl<'a> TyParser<'a> {
         }
     }
 
-    /// A type argument (inside `<…>` or a tuple), which may carry type-level
-    /// attributes: `list<string @len(1..64)>`.
+    /// A type argument (inside `<…>` or a tuple), which may be a union and
+    /// may carry type-level attributes: `list<string @len(1..64) | int>`.
     fn inner(&mut self) -> Result<TypeRef, String> {
         if self.depth == MAX_DEPTH {
             return Err(format!("type arguments nested deeper than {MAX_DEPTH} levels"));
         }
 
         self.depth += 1;
-        let t = self.ty();
+        let t = self.union();
         self.depth -= 1;
-        let mut t = t?;
-        let field_attrs = self.attrs(&mut t)?;
+        let (t, field_attrs) = t?;
         if let Some((a, _)) = field_attrs.first() {
             return Err(format!("@{a} is only valid on record fields"));
         }
 
         Ok(t)
+    }
+
+    /// `union := member ('|' member)*`, where a member is a type followed by
+    /// its type-level attributes (spec §6.1: `|` binds loosest). Field-level
+    /// attributes are returned for the caller to place or reject.
+    pub(crate) fn union(&mut self) -> Result<(TypeRef, Vec<(String, String)>), String> {
+        let mut members = Vec::new();
+        let mut field_attrs = Vec::new();
+        loop {
+            let mut t = self.ty()?;
+            field_attrs.extend(self.attrs(&mut t)?);
+            members.push(t);
+            if !self.eat(b'|') {
+                break;
+            }
+        }
+
+        let t = if members.len() == 1 {
+            members.pop().unwrap()
+        } else {
+            TypeRef::new(TypeKind::Union(members))
+        };
+        Ok((t, field_attrs))
     }
 
     /// `type := atom ('[]' | '?')*` followed by type-level attributes.
@@ -268,8 +290,7 @@ impl<'a> TyParser<'a> {
 /// attribute, or has trailing input.
 pub fn parse_type(s: &str) -> Result<TypeRef, String> {
     let mut p = TyParser::new(s);
-    let mut t = p.ty()?;
-    let fa = p.attrs(&mut t)?;
+    let (t, fa) = p.union()?;
     if let Some((n, _)) = fa.first() {
         return Err(format!("@{n} is only valid on record fields"));
     }
@@ -353,7 +374,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
         } else if let Some(rest) = raw.strip_prefix("enum ") {
             if let Some((name, alts)) = rest.split_once('=') {
                 let mut vs = Vec::new();
-                for alt in alts.split('|') {
+                for alt in split_top(alts, b'|') {
                     push_variant(&mut vs, parse_variant(alt.trim()).map_err(|m| err(i, m))?).map_err(|m| err(i, m))?;
                 }
 
@@ -503,19 +524,62 @@ fn check_name(n: &str) -> Result<String, String> {
     if ok { Ok(n.to_owned()) } else { Err(format!("invalid name {n:?}")) }
 }
 
+/// Split `s` at `sep` outside parentheses and angle brackets, so inline enum
+/// variants can carry union payloads: `a | b(string | int)`.
+fn split_top(s: &str, sep: u8) -> Vec<&str> {
+    let (mut out, mut depth, mut start) = (Vec::new(), 0i32, 0);
+    for (i, c) in s.bytes().enumerate() {
+        match c {
+            b'(' | b'<' => depth += 1,
+            b')' | b'>' => depth -= 1,
+            c if c == sep && depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+
+    out.push(&s[start..]);
+    out
+}
+
+/// Split a field line into its name and the text after the `:`. The name is
+/// an identifier or a quoted string, like a record key (spec §6.1).
+fn field_name(body: &str) -> Result<(String, bool, &str), String> {
+    let (name, rest) = if body.starts_with('"') {
+        let b = body.as_bytes();
+        let mut i = 1;
+        while i < b.len() && b[i] != b'"' {
+            i += if b[i] == b'\\' { 2 } else { 1 };
+        }
+
+        let end = (i < b.len()).then_some(i + 1).ok_or("unterminated quoted field name")?;
+        let Ok(novafile_value::Value::String(name)) = novafile_text::parse_flow(&body[..end]) else {
+            return Err(format!("invalid field name {}", &body[..end]));
+        };
+
+        (name, &body[end..])
+    } else {
+        let i = body.find(['?', ':']).ok_or("expected `name: type`")?;
+        (check_name(body[..i].trim())?, &body[i..])
+    };
+
+    let (optional, rest) = match rest.strip_prefix('?') {
+        Some(r) => (true, r),
+        None => (false, rest),
+    };
+
+    let rhs = rest.strip_prefix(':').ok_or("expected `name: type`")?;
+    Ok((name, optional, rhs))
+}
+
 /// Parse a record field line without its indentation:
 /// `name[?]: type [attributes] [= default]`.
 fn parse_field(body: &str) -> Result<FieldDef, String> {
-    let (lhs, rhs) = body.split_once(':').ok_or("expected `name: type`")?;
-    let (name, optional) = match lhs.strip_suffix('?') {
-        Some(n) => (n, true),
-        None => (lhs, false),
-    };
-
-    let name = check_name(name.trim())?;
+    let (name, optional, rhs) = field_name(body)?;
     let mut p = TyParser::new(rhs);
-    let mut ty = p.ty()?;
-    let attrs = p.attrs(&mut ty)?;
+    let (ty, attrs) = p.union()?;
     let mut f = FieldDef {
         name,
         ty,
@@ -550,11 +614,48 @@ fn parse_field(body: &str) -> Result<FieldDef, String> {
         return Err("@key fields must be required and non-null".into());
     }
 
+    if f.key && check_name(&f.name).is_err() {
+        return Err(format!(
+            "field {}: @key needs an identifier name, since keyed selectors name it bare",
+            novafile_text::quote(&f.name)
+        ));
+    }
+
     Ok(f)
 }
 
+/// If any record member of the union `t` has `@key`, every record member
+/// must key on fields with the same names (spec §6.2), so a keyed selector
+/// still identifies one element across members.
+fn keyed_members_agree(s: &Schema, t: &TypeRef) -> Result<(), String> {
+    fn keys(r: &crate::RecordDef) -> Vec<&str> {
+        let mut k = r.key_fields();
+        k.sort_unstable();
+        k
+    }
+
+    let members = s.member_records(t);
+
+    let Some((first, r)) = members.iter().find(|(_, r)| !r.key_fields().is_empty()) else {
+        return Ok(());
+    };
+    let want = keys(r);
+    match members.iter().find(|(_, m)| keys(m) != want) {
+        Some((other, m)) => Err(format!(
+            "union {t}: {first} has @key ({}) but {other} has {}; every record member of a keyed union keys on the same fields",
+            want.join(", "),
+            if m.key_fields().is_empty() {
+                "no @key".to_owned()
+            } else {
+                format!("@key ({})", keys(m).join(", "))
+            }
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Check that every named type and the `@root` refer to a definition and
-/// that no alias chain is cyclic.
+/// that no alias reaches itself through only aliases and unions.
 fn check_refs(s: &Schema) -> Result<(), String> {
     /// Checks that every named type reachable from `t` refers to a definition in `s`.
     fn walk(s: &Schema, t: &TypeRef) -> Result<(), String> {
@@ -563,6 +664,10 @@ fn check_refs(s: &Schema) -> Result<(), String> {
             TypeKind::List(t) | TypeKind::Set(t) => walk(s, t),
             TypeKind::Map(k, v) => walk(s, k).and(walk(s, v)),
             TypeKind::Tuple(ts) => ts.iter().try_for_each(|t| walk(s, t)),
+            TypeKind::Union(ms) => {
+                ms.iter().try_for_each(|t| walk(s, t))?;
+                keyed_members_agree(s, t)
+            }
             _ => Ok(()),
         }
     }
@@ -571,19 +676,8 @@ fn check_refs(s: &Schema) -> Result<(), String> {
         match d {
             Def::Alias(t) => {
                 walk(s, t)?;
-                // Reject alias cycles.
-                let mut seen = vec![name.as_str()];
-                let mut cur = t;
-                while let TypeKind::Named(n) = &cur.kind {
-                    if seen.contains(&n.as_str()) {
-                        return Err(format!("type alias cycle through {n}"));
-                    }
-
-                    seen.push(n);
-                    match s.def(n) {
-                        Some(Def::Alias(t2)) => cur = t2,
-                        _ => break,
-                    }
+                if let Some(n) = s.alias_cycle(name, t) {
+                    return Err(format!("type alias cycle through {n}"));
                 }
             }
             Def::Enum(vs) => vs.iter().filter_map(|v| v.payload.as_ref()).try_for_each(|t| walk(s, t))?,
