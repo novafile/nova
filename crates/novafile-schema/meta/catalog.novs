@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Normative source: https://github.com/novafile/spec/blob/main/meta/catalog.novs
 # Copies (e.g. the one embedded in the novafile-schema crate) must stay byte-identical to it.
-# The catalog meta-schema: where tools find schema files (spec §6.9).
+# The catalog meta-schema: the shape of schema catalogs (spec §6.9).
 @schema novafile.dev/meta/catalog@0.1.0
 @root Catalog
 
