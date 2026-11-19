@@ -160,3 +160,11 @@ fn inference_falls_back_to_value_mode() {
     assert_eq!(back.records.len(), 2);
     assert_eq!(back.segments[0].header.mode, Mode::Values);
 }
+
+/// An invalid header skips only its own segment's records.
+#[test]
+fn invalid_header_skips_only_its_segment() {
+    let r = read_str("@nova 0.2\n@columns {a, a}\n1\n@nova 0.2\n@columns {a}\n2\n", None);
+    assert_eq!(r.records, [v("{a: 2}")], "{:?}", r.errors);
+    assert_eq!(r.segments.len(), 2);
+}
