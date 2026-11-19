@@ -93,6 +93,7 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
         warnings: Vec::new(),
         root_name: String::new(),
         depth: 0,
+        patterns: std::cell::Cell::new(novafile_schema::SCHEMA_BUDGET),
     };
 
     let mut schema = Schema::default();
@@ -202,6 +203,8 @@ struct Conv<'a> {
     root_name: String,
     /// Current nesting depth, bounded to stop runaway recursion.
     depth: usize,
+    /// Compiled-pattern bytes left for this schema.
+    patterns: std::cell::Cell<usize>,
 }
 
 /// What a (non-nullable) schema maps to at definition level.
@@ -872,7 +875,7 @@ impl Conv<'_> {
         if t.kind == TypeKind::String
             && let Some(p) = read_pattern(o)
         {
-            match novafile_schema::Pattern::new(&p) {
+            match novafile_schema::Pattern::new_within(&p, &self.patterns) {
                 Ok(p) => t.constraints.pattern = Some(p),
                 Err(e) => self.warn(at, format!("pattern is not enforced: {e}")),
             }

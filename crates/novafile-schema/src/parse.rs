@@ -2,6 +2,7 @@
 
 use crate::model::{Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
 use novafile_text::Parser;
+use std::cell::Cell;
 
 /// A schema that failed to parse.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,12 +34,14 @@ pub(crate) struct TyParser<'a> {
     pub(crate) i: usize,
     /// Current type-argument nesting, capped at [`MAX_DEPTH`].
     depth: usize,
+    /// Compiled-pattern bytes left for the schema being parsed.
+    budget: &'a Cell<usize>,
 }
 
 impl<'a> TyParser<'a> {
-    /// A cursor at the start of `s`.
-    pub(crate) fn new(s: &'a str) -> Self {
-        TyParser { s, i: 0, depth: 0 }
+    /// A cursor at the start of `s`, compiling patterns within `budget`.
+    pub(crate) fn new(s: &'a str, budget: &'a Cell<usize>) -> Self {
+        TyParser { s, i: 0, depth: 0, budget }
     }
 
     /// The input as bytes.
@@ -271,7 +274,7 @@ impl<'a> TyParser<'a> {
                         return Err("@pattern expects one quoted string".into());
                     };
 
-                    let compiled = crate::Pattern::new(&p).map_err(|e| format!("@pattern({}): {e}", novafile_text::quote(&p)))?;
+                    let compiled = crate::Pattern::new_within(&p, self.budget).map_err(|e| format!("@pattern({}): {e}", novafile_text::quote(&p)))?;
                     ty.constraints.pattern = Some(compiled);
                 }
                 "range" | "len" => {
@@ -320,7 +323,12 @@ impl<'a> TyParser<'a> {
 /// Fails if `s` is not a valid type expression, carries a field-only
 /// attribute, or has trailing input.
 pub fn parse_type(s: &str) -> Result<TypeRef, String> {
-    let mut p = TyParser::new(s);
+    parse_type_in(s, &Cell::new(crate::pattern::SCHEMA_BUDGET))
+}
+
+/// [`parse_type`], with patterns compiled within the schema's `budget`.
+fn parse_type_in(s: &str, budget: &Cell<usize>) -> Result<TypeRef, String> {
+    let mut p = TyParser::new(s, budget);
     let (t, fa) = p.union()?;
     if let Some((n, _)) = fa.first() {
         return Err(format!("@{n} is only valid on record fields"));
@@ -390,6 +398,7 @@ fn close_paren(s: &str) -> Option<usize> {
 #[expect(clippy::too_many_lines, reason = "one linear pass over the schema's line-oriented grammar")]
 pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
     let mut schema = Schema::default();
+    let budget = Cell::new(crate::pattern::SCHEMA_BUDGET);
     let lines: Vec<&str> = src.lines().collect();
     let mut i = 0;
     let err = |line: usize, m: String| SchemaError { line: line + 1, message: m };
@@ -406,7 +415,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
         }
 
         if let Some(rest) = raw.strip_prefix("@nova ") {
-            if schema.name.is_some() || schema.root.is_some() || !schema.defs.is_empty() {
+            if schema.name.is_some() || schema.root.is_some() || !schema.defs.is_empty() || !schema.extensions.is_empty() {
                 return Err(err(i, "@nova must be the first directive".into()));
             }
 
@@ -430,18 +439,18 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
             schema.extensions.push(format!("x-{ext}"));
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("@root ") {
-            schema.root = Some(parse_type(rest.trim()).map_err(|m| err(i, format!("@root: {m}")))?);
+            schema.root = Some(parse_type_in(rest.trim(), &budget).map_err(|m| err(i, format!("@root: {m}")))?);
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("type ") {
             let (name, ty) = rest.split_once('=').ok_or_else(|| err(i, "expected `type Name = T`".into()))?;
-            let t = parse_type(ty.trim()).map_err(|m| err(i, m))?;
+            let t = parse_type_in(ty.trim(), &budget).map_err(|m| err(i, m))?;
             push_def(&mut schema, name.trim(), Def::Alias(t)).map_err(|m| err(i, m))?;
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("enum ") {
             if let Some((name, alts)) = rest.split_once('=') {
                 let mut vs = Vec::new();
                 for alt in split_top(alts, b'|') {
-                    push_variant(&mut vs, parse_variant(alt.trim()).map_err(|m| err(i, m))?).map_err(|m| err(i, m))?;
+                    push_variant(&mut vs, parse_variant(alt.trim(), &budget).map_err(|m| err(i, m))?).map_err(|m| err(i, m))?;
                 }
 
                 push_def(&mut schema, name.trim(), Def::Enum(vs)).map_err(|m| err(i, m))?;
@@ -461,7 +470,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
                     }
 
                     let Some(body) = l.strip_prefix("  ") else { break };
-                    push_variant(&mut vs, parse_variant(body.trim()).map_err(|m| err(i, m))?).map_err(|m| err(i, m))?;
+                    push_variant(&mut vs, parse_variant(body.trim(), &budget).map_err(|m| err(i, m))?).map_err(|m| err(i, m))?;
                     i += 1;
                 }
 
@@ -493,7 +502,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
                     return Err(err(i, "fields are indented exactly 2 spaces".into()));
                 }
 
-                let f = parse_field(body).map_err(|m| err(i, m))?;
+                let f = parse_field(body, &budget).map_err(|m| err(i, m))?;
                 if fields.iter().any(|g| g.name == f.name) {
                     return Err(err(i, format!("duplicate field {:?}", f.name)));
                 }
@@ -536,7 +545,7 @@ fn push_def(s: &mut Schema, name: &str, d: Def) -> Result<(), String> {
 }
 
 /// Parse an enum variant: `name` or `name(Type)`, optionally followed by `@id(n)`.
-fn parse_variant(s: &str) -> Result<VariantDef, String> {
+fn parse_variant(s: &str, budget: &Cell<usize>) -> Result<VariantDef, String> {
     let (s, id) = match s.rsplit_once("@id(") {
         Some((head, arg)) if head.ends_with(' ') && arg.ends_with(')') && !arg[..arg.len() - 1].contains(')') => {
             let n = arg[..arg.len() - 1].trim();
@@ -550,7 +559,7 @@ fn parse_variant(s: &str) -> Result<VariantDef, String> {
             let inner = rest.strip_suffix(')').ok_or("expected `)` after variant payload")?;
             Ok(VariantDef {
                 name: check_name(n.trim())?,
-                payload: Some(parse_type(inner)?),
+                payload: Some(parse_type_in(inner, budget)?),
                 id,
             })
         }
@@ -651,9 +660,9 @@ fn field_name(body: &str) -> Result<(String, bool, &str), String> {
 
 /// Parse a record field line without its indentation:
 /// `name[?]: type [attributes] [= default]`.
-fn parse_field(body: &str) -> Result<FieldDef, String> {
+fn parse_field(body: &str, budget: &Cell<usize>) -> Result<FieldDef, String> {
     let (name, optional, rhs) = field_name(body)?;
-    let mut p = TyParser::new(rhs);
+    let mut p = TyParser::new(rhs, budget);
     let (ty, attrs) = p.union()?;
     let mut f = FieldDef {
         name,

@@ -226,6 +226,8 @@ impl Schema {
             )
         })?;
         let r = v.as_record().ok_or("descriptor must be a record")?;
+        let budget = std::cell::Cell::new(crate::pattern::SCHEMA_BUDGET);
+        let value_type = |t: &Value| value_type(t, &budget);
         let text = |k: &str| r.get(k).and_then(Value::as_str).map(str::to_owned);
         let mut schema = Schema {
             name: text("name"),
@@ -307,14 +309,14 @@ impl Schema {
 }
 
 /// Read a type expression back from its descriptor; the inverse of [`type_value`].
-fn value_type(v: &Value) -> Result<TypeRef, String> {
+fn value_type(v: &Value, budget: &std::cell::Cell<usize>) -> Result<TypeRef, String> {
     let r = v.as_record().ok_or("type must be a record")?;
     let kind = match r.get("kind") {
         Some(Value::Variant(k, None) | Value::String(k)) => k.as_str(),
         _ => return Err("type without kind".into()),
     };
 
-    let sub = |k: &str| -> Result<Box<TypeRef>, String> { Ok(Box::new(value_type(r.get(k).ok_or_else(|| format!("{kind} type needs `{k}`"))?)?)) };
+    let sub = |k: &str| -> Result<Box<TypeRef>, String> { Ok(Box::new(value_type(r.get(k).ok_or_else(|| format!("{kind} type needs `{k}`"))?, budget)?)) };
     let tk = match kind {
         "any" => TypeKind::Any,
         "null" => TypeKind::Null,
@@ -335,7 +337,7 @@ fn value_type(v: &Value) -> Result<TypeRef, String> {
                 .and_then(Value::as_list)
                 .ok_or_else(|| format!("{kind} type needs `items`"))?
                 .iter()
-                .map(value_type)
+                .map(|t| value_type(t, budget))
                 .collect::<Result<_, _>>()?;
             if kind == "tuple" {
                 TypeKind::Tuple(items)
@@ -396,7 +398,7 @@ fn value_type(v: &Value) -> Result<TypeRef, String> {
         }
 
         let p = p.as_str().ok_or("pattern must be a string")?;
-        t.constraints.pattern = Some(crate::Pattern::new(p).map_err(|e| format!("pattern {}: {e}", novafile_text::quote(p)))?);
+        t.constraints.pattern = Some(crate::Pattern::new_within(p, budget).map_err(|e| format!("pattern {}: {e}", novafile_text::quote(p)))?);
     }
 
     Ok(t)

@@ -20,7 +20,7 @@ pub use model::*;
 #[cfg(feature = "derive")]
 pub use novafile_derive::NovaSchema;
 pub use parse::{SchemaError, parse_schema, parse_type};
-pub use pattern::Pattern;
+pub use pattern::{Pattern, SCHEMA_BUDGET};
 pub use resolve::Issue;
 pub use version::{ChangeKind, PreId, SchemaRef, Version, valid_schema_name};
 pub use warn::UnionWarning;

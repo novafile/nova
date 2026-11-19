@@ -706,3 +706,23 @@ fn source_text_keeps_extensions() {
     assert_eq!(parse_schema(&s.to_source_text()).unwrap(), s);
     assert!(parse_schema("record R:\n  v: string\n@x-lint case=kebab\n").is_err());
 }
+
+#[test]
+fn review_fixes_for_patterns() {
+    // A composite key's issue stays at the map, not at an index that names another entry.
+    let s = parse_schema("@root R\nrecord R:\n  m: map<(int, u8), string>\n").unwrap();
+    let e = s.resolve(&novafile_text::parse("m: @map{(1, 300) => a, (2, 3) => b}\n").unwrap()).unwrap_err();
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert_eq!(e[0].path.to_string(), "m");
+    assert!(e[0].message.starts_with("key "), "{e:?}");
+
+    // `@nova` stays the first directive, also before `@x-…`.
+    assert!(parse_schema("@x-lint case=kebab\n@nova 0.1\nrecord R:\n  a: int\n").is_err());
+    assert!(parse_schema("@nova 0.1\n@x-lint case=kebab\nrecord R:\n  a: int\n").is_ok());
+
+    // Unicode identifiers with a length cap compile; many large patterns exhaust one schema's budget.
+    parse_schema("record R:\n  a: string @pattern(\"\\\\p{L}{1,63}\")\n").unwrap();
+    let many = (0..100).fold(String::new(), |acc, i| acc + &format!("  f{i}: string @pattern(\"a{{30000}}\")\n"));
+    let e = parse_schema(&format!("record R:\n{many}")).unwrap_err();
+    assert!(e.message.contains("MiB"), "{e}");
+}
