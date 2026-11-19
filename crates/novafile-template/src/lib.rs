@@ -87,7 +87,13 @@ impl Loader for FsLoader {
             }
         }
 
+        // The check above is lexical; a symlink beneath the root may still point out of it.
         let full = self.root.join(&joined);
+        let root = self.root.canonicalize().map_err(|e| format!("template root {}: {e}", self.root.display()))?;
+        if !full.canonicalize().map_err(|e| format!("cannot import {path:?}: {e}"))?.starts_with(&root) {
+            return Err(format!("import {path:?} escapes the template root"));
+        }
+
         let src = std::fs::read_to_string(&full).map_err(|e| format!("cannot import {path:?}: {e}"))?;
         Ok((joined.to_string_lossy().into_owned(), src))
     }
@@ -217,6 +223,9 @@ fn render_inner(
         }
 
         let (iid, isrc) = opts.loader.load(&imp.path, id).map_err(TemplateError)?;
+        // Every import is read and parsed again, so its source counts like output;
+        // otherwise templates importing each other repeatedly grow exponentially.
+        ev.charge(0, isrc.len())?;
         if stack.contains(&iid) || id == Some(iid.as_str()) {
             return err(format!("import cycle through {iid}"));
         }
