@@ -60,6 +60,11 @@ fn widens_in(s: (&Schema, &Schema), old: &TypeRef, new: &TypeRef, depth: usize) 
     }
 
     let widens = |a: &TypeRef, b: &TypeRef| widens_in(s, a, b, depth + 1);
+    // Equal types widen; names in them are compared by name, as below.
+    if old == new {
+        return true;
+    }
+
     if matches!(new.kind, TypeKind::Any) {
         return true;
     }
@@ -74,8 +79,10 @@ fn widens_in(s: (&Schema, &Schema), old: &TypeRef, new: &TypeRef, depth: usize) 
     let is_union = |sc: &Schema, t: &TypeRef| matches!(sc.deref(t).0.kind, TypeKind::Union(_));
     if !same_name && (is_union(s.0, old) || is_union(s.1, new)) {
         let (mut a, mut b) = (Vec::new(), Vec::new());
-        let a_null = positional_members(s.0, old, &mut a, 0);
-        let b_null = positional_members(s.1, new, &mut b, 0);
+        // Unions too large to flatten are treated as breaking.
+        let (Some(a_null), Some(b_null)) = (positional_members(s.0, old, &mut a, 0), positional_members(s.1, new, &mut b, 0)) else {
+            return false;
+        };
         if a_null && !b_null {
             return false;
         }
@@ -127,18 +134,27 @@ fn widens_in(s: (&Schema, &Schema), old: &TypeRef, new: &TypeRef, depth: usize) 
 
 /// Collect into `out` the members of `t` that count for union positions:
 /// unions are flattened, also through aliases, `null` members are dropped and
-/// the rest made non-nullable. Returns whether `t` admits `null`.
-fn positional_members(s: &Schema, t: &TypeRef, out: &mut Vec<TypeRef>, depth: usize) -> bool {
+/// the rest made non-nullable. Returns whether `t` admits `null`, or `None`
+/// if flattening exceeds [`MAX_MEMBERS`] (aliases repeated across members
+/// can multiply the count).
+fn positional_members(s: &Schema, t: &TypeRef, out: &mut Vec<TypeRef>, depth: usize) -> Option<bool> {
+    if out.len() > MAX_MEMBERS || depth > 64 {
+        return None;
+    }
+
     let rt = s.deref(t).0;
-    match &rt.kind {
-        TypeKind::Union(ms) if depth < 64 => ms.iter().fold(t.nullable, |n, m| positional_members(s, m, out, depth + 1) | n),
+    Some(match &rt.kind {
+        TypeKind::Union(ms) => ms.iter().try_fold(t.nullable, |n, m| Some(positional_members(s, m, out, depth + 1)? | n))?,
         TypeKind::Null => true,
         _ => {
             out.push(TypeRef { nullable: false, ..t.clone() });
             t.nullable || rt.nullable
         }
-    }
+    })
 }
+
+/// The most members [`positional_members`] flattens a union into.
+const MAX_MEMBERS: usize = 1024;
 
 /// List every change from `old` to `new` (spec §6.5), each marked breaking or not.
 ///

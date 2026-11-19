@@ -611,3 +611,32 @@ fn key_duplicates_do_not_steer_union_members() {
     assert_eq!(issues.len(), 1, "{issues:?}");
     assert_eq!(issues[0].to_string(), "v[1]: duplicate @key (id)");
 }
+
+#[test]
+fn overlapping_unions_stay_bounded() {
+    // Two identical recursive members: each failing level would double the work.
+    let s = parse_schema("@root T\ntype T = list<T> | list<T> | string\n").unwrap();
+    let deep = format!("{}5{}", "[".repeat(100), "]".repeat(100));
+    let v = novafile_text::parse(&format!("x: {deep}\n"))
+        .unwrap()
+        .as_record()
+        .unwrap()
+        .get("x")
+        .unwrap()
+        .clone();
+    let issues = s.resolve(&v).unwrap_err();
+    assert!(issues.iter().any(|i| i.message.contains("too much work")), "{issues:?}");
+
+    // Aliases repeated across members: 2^60 paths if each were expanded again.
+    let mut src = String::from("@schema b@1.0.0\n@root R\nrecord R:\n  v: list<A0>\n");
+    for i in 0..60 {
+        let n = i + 1;
+        src.push_str(&["type A", &i.to_string(), " = A", &n.to_string(), " | A", &n.to_string(), "\n"].concat());
+    }
+    src += "type A60 = K | string\nrecord K:\n  id: string @key\n";
+    let s = parse_schema(&src).unwrap();
+    let changes = check_compatibility(&s, &s);
+    assert!(changes.is_empty(), "{changes:?}");
+    assert!(s.resolve(&novafile_text::parse("v: [5]\n").unwrap()).is_err());
+    assert!(s.type_at(&novafile_text::Path::parse("v[0].nope").unwrap()).is_none());
+}

@@ -199,23 +199,26 @@ impl Schema {
     /// flattened through aliases to unions (spec §6.2), or `t`'s own record.
     #[must_use]
     pub fn member_records<'a>(&'a self, t: &'a TypeRef) -> Vec<(&'a str, &'a RecordDef)> {
-        fn collect<'a>(s: &'a Schema, t: &'a TypeRef, out: &mut Vec<(&'a str, &'a RecordDef)>, depth: usize) {
-            match s.deref(t) {
-                (rt, _) if depth >= 64 && matches!(rt.kind, TypeKind::Union(_)) => {}
-                (TypeRef { kind: TypeKind::Union(ms), .. }, _) => ms.iter().for_each(|m| collect(s, m, out, depth + 1)),
-                (rt, Some(Def::Record(r))) => {
-                    if let TypeKind::Named(n) = &rt.kind
-                        && !out.iter().any(|(m, _)| m == n)
-                    {
-                        out.push((n, r));
-                    }
+        /// Adds the records below `t`; `seen` names each definition once, so
+        /// aliases shared by several members are not expanded again.
+        fn collect<'a>(s: &'a Schema, t: &'a TypeRef, out: &mut Vec<(&'a str, &'a RecordDef)>, seen: &mut Vec<&'a str>) {
+            if let TypeKind::Named(n) = &t.kind {
+                if seen.contains(&n.as_str()) {
+                    return;
                 }
+
+                seen.push(n);
+            }
+
+            match s.deref(t) {
+                (TypeRef { kind: TypeKind::Union(ms), .. }, _) => ms.iter().for_each(|m| collect(s, m, out, seen)),
+                (TypeRef { kind: TypeKind::Named(n), .. }, Some(Def::Record(r))) if !out.iter().any(|(m, _)| m == n) => out.push((n, r)),
                 _ => {}
             }
         }
 
         let mut out = Vec::new();
-        collect(self, t, &mut out, 0);
+        collect(self, t, &mut out, &mut Vec::new());
         out
     }
 
@@ -256,22 +259,31 @@ impl Schema {
     pub fn type_at(&self, path: &novafile_text::Path) -> Option<(TypeRef, Option<FieldDef>)> {
         let mut cur = (self.root_type()?, None);
         for seg in &path.0 {
-            cur = self.step(&cur.0, seg, 0)?;
+            cur = self.step(&cur.0, seg, &mut Vec::new())?;
         }
 
         Some(cur)
     }
 
-    /// The type one path segment below `t`, for [`Self::type_at`].
-    fn step(&self, t: &TypeRef, seg: &novafile_text::Segment, depth: usize) -> Option<(TypeRef, Option<FieldDef>)> {
+    /// The type one path segment below `t`, for [`Self::type_at`]. `seen`
+    /// holds the names already tried below a union, so each is tried once.
+    fn step(&self, t: &TypeRef, seg: &novafile_text::Segment, seen: &mut Vec<String>) -> Option<(TypeRef, Option<FieldDef>)> {
         use novafile_text::Segment;
+        if let TypeKind::Named(n) = &t.kind {
+            if seen.contains(n) {
+                return None;
+            }
+
+            seen.push(n.clone());
+        }
+
         let (t, def) = self.deref(t);
         Some(match (seg, &t.kind, def) {
             (Segment::Field(name), _, Some(Def::Record(r))) => {
                 let f = r.field(name)?.clone();
                 (f.ty.clone(), Some(f))
             }
-            (_, TypeKind::Union(ms), _) if depth < 64 => return ms.iter().find_map(|m| self.step(m, seg, depth + 1)),
+            (_, TypeKind::Union(ms), _) => return ms.iter().find_map(|m| self.step(m, seg, seen)),
             (Segment::Field(_) | Segment::Key(_), TypeKind::Map(_, v), _) => ((**v).clone(), None),
             (Segment::Index(_) | Segment::Match(..) | Segment::Key(_) | Segment::All | Segment::Filter(..), TypeKind::List(e) | TypeKind::Set(e), _) => {
                 ((**e).clone(), None)
