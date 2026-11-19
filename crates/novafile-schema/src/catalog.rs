@@ -204,6 +204,22 @@ pub fn user_cache() -> Option<PathBuf> {
     cache_dir().map(|d| d.join("nova").join("schemas"))
 }
 
+/// The `name@version` of every schema in the fetch cache `cache`.
+#[must_use]
+pub fn cached_versions(cache: &Path) -> Vec<SchemaRef> {
+    let mut files = Vec::new();
+    walk(cache, 0, &mut 0, &mut files);
+    files
+        .into_iter()
+        .filter_map(|f| {
+            let name = f.parent()?.strip_prefix(cache).ok()?.to_str()?.replace('\\', "/");
+            let version = Version::parse(f.file_stem()?.to_str()?).ok()?;
+            schema_name_kind(&name)?;
+            Some(SchemaRef { name, version, fingerprint: None })
+        })
+        .collect()
+}
+
 /// Where a resolved schema came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Origin {

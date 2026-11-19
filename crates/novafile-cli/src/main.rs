@@ -1081,15 +1081,14 @@ fn run(cli: Cli) -> R<ExitCode> {
             resolve,
         } => {
             let l = load(&file)?;
-            let s = match &schema {
-                Some(p) => load_schema(p)?,
-                None => {
-                    let r = l.directives.iter().find(|(n, _)| n == "schema").map(|(_, r)| r.as_str()).ok_or_else(|| {
-                        format!("{}: no @schema line to look up; pass --schema SCHEMA.novs", file.display())
-                    })?;
-                    let start = file.parent().filter(|_| file.as_os_str() != "-").map(Path::to_path_buf);
-                    lookup(r, &catalog, start, fetch)?.0
-                }
+            let s = if let Some(p) = &schema {
+                load_schema(p)?
+            } else {
+                let r = l.directives.iter().find(|(n, _)| n == "schema").map(|(_, r)| r.as_str()).ok_or_else(|| {
+                    format!("{}: no @schema line to look up; pass --schema SCHEMA.novs", file.display())
+                })?;
+                let start = file.parent().filter(|_| file.as_os_str() != "-").map(Path::to_path_buf);
+                lookup(r, &catalog, start, fetch)?.0
             };
             if let Some((_, r)) = l.directives.iter().find(|(n, _)| n == "schema")
                 && s.reference().is_some()

@@ -13,6 +13,9 @@
 //! | `variant-case` | schema enum variants | warning | — |
 //! | `union-order` | union members an earlier member makes unreachable or captures values from (spec §6.5) | warning | — |
 //! | `pattern-anchor` | `@pattern`s starting with `^` or ending with `$`, which I-Regexp matches literally | warning | — |
+//! | `schema-name-version` | schema names whose last segment looks like a version (`…/v2`); versions go after `@` | warning | — |
+//! | `schema-name-reserved` | schemas named under `novafile.dev/` that the specification does not define | warning | — |
+//! | `unpinned-fetch` | a catalog with `remote` entries whose fetched versions (in the user cache) it does not pin | hint | — |
 //! | `partial-ids` | records where only some fields have `@id` (an enum where only some variants have `@id` is a schema error) | warning | — |
 //!
 //! Configuration: [`Config`], or in a document or schema `@x-lint case=camel allow=quoted-key,mixed-list`.
@@ -146,6 +149,12 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
     })?;
 
     let has_schema = doc.directive("schema").is_some();
+    let is_catalog = doc.directive("schema").is_some_and(|r| r.starts_with(&format!("{}@", novafile_schema::META_CATALOG_NAME)));
+    let mut catalog_hints = if is_catalog && config.on("unpinned-fetch") {
+        unpinned_fetches(src)
+    } else {
+        Vec::new()
+    };
     let compat = doc.directive("compat").map(str::trim).filter(|c| !c.is_empty());
     let mut out = Vec::new();
     if let Some(format) = compat {
@@ -192,6 +201,7 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
 
     keys(&spans, &config, has_schema, &mut out);
     scalars(src, &spans, &value, &config, has_schema, &mut out);
+    out.append(&mut catalog_hints);
     out.sort_by_key(|f| (f.start, f.rule));
     Ok(out)
 }
@@ -343,6 +353,31 @@ fn scalars(src: &str, spans: &SpanMap, value: &Value, config: &Config, has_schem
     }
 }
 
+/// `unpinned-fetch` hints for the catalog source `src`: versions in the user cache
+/// under one of its `remote` prefixes that it does not pin (spec §6.9: trust on
+/// first use, then pinned).
+fn unpinned_fetches(src: &str) -> Vec<Finding> {
+    use novafile_schema::catalog::{CATALOG_FILE, Catalog, cached_versions, user_cache};
+    let (Ok(c), Some(cache)) = (Catalog::parse(src, std::path::Path::new(CATALOG_FILE)), user_cache()) else {
+        return Vec::new();
+    };
+
+    let at = src.find("remote:").map_or((0, 0), |i| (i, i + "remote".len()));
+    cached_versions(&cache)
+        .into_iter()
+        .filter(|v| c.remote.iter().any(|m| if m.prefix.ends_with('/') { v.name.starts_with(&m.prefix) } else { v.name == m.prefix }))
+        .filter(|v| !c.pins.iter().any(|p| p.schema.name == v.name && p.schema.version == v.version))
+        .map(|v| Finding {
+            rule: "unpinned-fetch",
+            level: Level::Hint,
+            message: format!("{v} was fetched but is not pinned here; run `nvf schema fetch {v} --pin`"),
+            start: at.0,
+            end: at.1,
+            fix: None,
+        })
+        .collect()
+}
+
 /// Lint a schema (`.novs`) source. Findings are located at whole lines.
 /// An `@x-lint` directive in the schema adjusts `config` for it.
 ///
@@ -367,6 +402,36 @@ pub fn lint_schema(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_
 
     let config = &config;
     let mut out = Vec::new();
+    if let Some(name) = &schema.name {
+        let at = src.find("@schema").map_or((0, 0), |i| (i, i + src[i..].find('\n').unwrap_or(src.len() - i)));
+        let last = name.rsplit('/').next().unwrap_or(name);
+        let versionish = last.strip_prefix('v').unwrap_or(last);
+        if config.on("schema-name-version") && !versionish.is_empty() && versionish.split('.').all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit())) {
+            out.push(Finding {
+                rule: "schema-name-version",
+                level: Level::Warning,
+                message: format!("schema name {name:?} ends in a version; versions belong after `@` (spec §6.7)"),
+                start: at.0,
+                end: at.1,
+                fix: None,
+            });
+        }
+
+        if config.on("schema-name-reserved")
+            && novafile_schema::catalog::is_reserved(name)
+            && ![novafile_schema::META_SCHEMA_NAME, novafile_schema::META_CATALOG_NAME].contains(&name.as_str())
+        {
+            out.push(Finding {
+                rule: "schema-name-reserved",
+                level: Level::Warning,
+                message: format!("{name:?} is in the novafile.dev/ namespace, which is reserved for schemas the specification defines"),
+                start: at.0,
+                end: at.1,
+                fix: None,
+            });
+        }
+    }
+
     let line_of = |needle: &str, after: usize| -> (usize, usize) {
         let i = src[after..].find(needle).map_or(0, |i| after + i);
         (i, i + needle.len())

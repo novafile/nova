@@ -168,3 +168,14 @@ fn fetch_locations_and_checks() {
     put(&d, "nova-catalog.nova", "remote:\n  - prefix: acme.dev/\n    url: \"http://x/{name}\"\n");
     assert!(Resolver::new(&Options { start: Some(d.clone()), ..Options::default() }).is_err());
 }
+
+#[test]
+fn cached_versions_are_listed_by_name_and_version() {
+    let d = scratch("cache");
+    put(&d, "acme.dev/billing/invoice/2.1.0.novs", "");
+    put(&d, "acme.dev/billing/invoice/2.2.0.novs", "");
+    put(&d, "acme.dev/a/not-a-version.novs", "");
+    let mut got: Vec<String> = novafile_schema::catalog::cached_versions(&d).iter().map(ToString::to_string).collect();
+    got.sort();
+    assert_eq!(got, ["acme.dev/billing/invoice@2.1.0", "acme.dev/billing/invoice@2.2.0"]);
+}

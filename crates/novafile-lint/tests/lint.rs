@@ -120,3 +120,16 @@ fn schema_patterns_literals_and_x_lint() {
     assert!(lint_schema(&plain, &Config::default()).unwrap().iter().any(|f| f.rule == "field-case"));
     assert!(lint_schema("@x-lint case=nope\nrecord R:\n  a: int\n", &Config::default()).is_err());
 }
+
+#[test]
+fn schema_name_lints() {
+    let rules = |name: &str| -> Vec<&'static str> {
+        let src = format!("@schema {name}@1.0.0\n@root R\nrecord R:\n  a: int\n");
+        lint_schema(&src, &Config::default()).unwrap().into_iter().map(|f| f.rule).collect()
+    };
+    assert_eq!(rules("acme.example/invoice/v2"), ["schema-name-version"]);
+    assert_eq!(rules("acme/2.1"), ["schema-name-version"]);
+    assert_eq!(rules("acme.example/invoice"), [] as [&str; 0]);
+    assert_eq!(rules("acme.example/v2x"), [] as [&str; 0]);
+    assert_eq!(rules("novafile.dev/community/pddl"), ["schema-name-reserved"]);
+}
