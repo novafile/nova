@@ -225,6 +225,18 @@ impl fmt::Display for Origin {
     }
 }
 
+/// Where and how to fetch a schema version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fetch {
+    /// The `https:` URL.
+    pub url: String,
+    /// Whether the result may go into the user cache. False when the location
+    /// comes from the project catalog, which arrives with a repository: what it
+    /// fetches is used for this run only, so it cannot plant content that other
+    /// projects would later find in the shared cache.
+    pub cacheable: bool,
+}
+
 /// A schema found for a reference.
 #[derive(Clone, Debug)]
 pub struct Resolved {
@@ -315,8 +327,8 @@ pub struct Resolver {
     /// Catalogs in search order: explicit, project, user.
     catalogs: Vec<Catalog>,
     /// Index of the project catalog in `catalogs`, if any. It arrives with a
-    /// cloned repository, so it cannot enable fetching, and its `remote` entries
-    /// are only followed for pinned or fingerprinted versions.
+    /// cloned repository, so it cannot enable fetching, and what its `remote`
+    /// entries fetch is never written to the cache all projects share.
     project: Option<usize>,
     /// Whether the user catalog enables fetching.
     user_fetch: bool,
@@ -529,10 +541,7 @@ impl Resolver {
     /// # Errors
     ///
     /// Local names, special-use domains and bundled schemas are never fetched.
-    /// A location that only the project catalog gives is followed only for a
-    /// version that is pinned or that `r` fingerprints: the catalog comes with
-    /// the repository, and the cache it fills is shared by every project.
-    pub fn fetch_url(&self, r: &SchemaRef) -> Result<String, String> {
+    pub fn fetch_url(&self, r: &SchemaRef) -> Result<Fetch, String> {
         if schema_name_kind(&r.name) != Some(NameKind::Qualified) || is_special_use(&r.name) || r.name.starts_with("novafile.dev/meta/") {
             return Err(format!("{r} is never fetched: only qualified names outside special-use domains are"));
         }
@@ -544,26 +553,20 @@ impl Resolver {
             .flat_map(|(i, c)| c.remote.iter().map(move |m| (i, m)))
             .filter(|(_, m)| if m.prefix.ends_with('/') { r.name.starts_with(&m.prefix) } else { r.name == m.prefix })
             .max_by_key(|(_, m)| m.prefix.len());
-        if let Some((i, m)) = remote
-            && Some(i) == self.project
-            && r.fingerprint.is_none()
-            && self.pin(&r.name, &r.version).is_none()
-        {
-            return Err(format!(
-                "{r}: the project catalog redirects it to {}; fetch it with a #fingerprint or pin its revision first",
-                m.url
-            ));
-        }
-
+        // Anything the repository's own catalog redirects stays out of the shared
+        // cache: its pins and the document's fingerprint come from the same source.
+        let cacheable = remote.is_none_or(|(i, _)| Some(i) != self.project);
         let remote = remote.map(|(_, m)| m);
-        Ok(match remote {
+        let url = match remote {
             Some(m) => m
                 .url
                 .replace("{name}", &r.name)
                 .replace("{rest}", r.name.strip_prefix(&m.prefix).unwrap_or(""))
                 .replace("{version}", &r.version.to_string()),
             None => format!("https://{}/{}.novs", r.name, r.version),
-        })
+        };
+
+        Ok(Fetch { url, cacheable })
     }
 
     /// Check a fetched schema text for `r`: it must declare exactly `r`'s name and

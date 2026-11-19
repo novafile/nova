@@ -653,12 +653,17 @@ fn lookup(reference: &str, catalogs: &[PathBuf], start: Option<PathBuf>, fetch: 
         }
         Err(LookupError::NotFound(m)) if fetch_requested(fetch) || r.fetch_enabled() => {
             let sr = novafile_schema::SchemaRef::parse(reference)?;
-            let url = r.fetch_url(&sr).map_err(|why| format!("{m}; {why}"))?;
-            let text = http_get(&url)?;
+            let fetch = r.fetch_url(&sr).map_err(|why| format!("{m}; {why}"))?;
+            let text = http_get(&fetch.url)?;
             let s = r.accept_fetched(&sr, &text).map_err(|e| e.to_string())?;
-            let path = r.store(&s, &text).map_err(|e| e.to_string())?;
-            eprintln!("fetched {sr} from {url} into {}", path.display());
-            Ok((s, url))
+            if fetch.cacheable {
+                let path = r.store(&s, &text).map_err(|e| e.to_string())?;
+                eprintln!("fetched {sr} from {} into {}", fetch.url, path.display());
+            } else {
+                eprintln!("fetched {sr} from {} (the project catalog's location; not cached)", fetch.url);
+            }
+
+            Ok((s, fetch.url))
         }
         Err(e @ LookupError::NotFound(_)) => Err(format!("{e}; pass --schema, add it to a catalog, or allow --fetch").into()),
         Err(e) => Err(format!("{} ({})", e, e.kind()).into()),
@@ -691,11 +696,15 @@ fn schema_fetch(reference: &str, catalogs: &[PathBuf], pin: bool) -> R<()> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let r = Resolver::new(&Options::from_env(catalogs.to_vec(), Some(cwd.clone())))?;
     let sr = novafile_schema::SchemaRef::parse(reference)?;
-    let url = r.fetch_url(&sr)?;
-    let text = http_get(&url)?;
+    let fetch = r.fetch_url(&sr)?;
+    let text = http_get(&fetch.url)?;
     let s = r.accept_fetched(&sr, &text).map_err(|e| e.to_string())?;
-    let path = r.store(&s, &text).map_err(|e| e.to_string())?;
-    println!("{sr}  {url}\n{}\ncached at {}", s.revision(), path.display());
+    println!("{sr}  {}\n{}", fetch.url, s.revision());
+    if fetch.cacheable {
+        println!("cached at {}", r.store(&s, &text).map_err(|e| e.to_string())?.display());
+    } else {
+        println!("not cached: the location comes from the project catalog, and the cache is shared by all projects");
+    }
     if !pin {
         return Ok(());
     }

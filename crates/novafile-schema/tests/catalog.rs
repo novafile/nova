@@ -133,7 +133,7 @@ fn fetch_locations_and_checks() {
         ..Options::default()
     })
     .unwrap();
-    let at = |s: &str| r.fetch_url(&SchemaRef::parse(s).unwrap()).ok();
+    let at = |s: &str| r.fetch_url(&SchemaRef::parse(s).unwrap()).ok().map(|f| f.url);
     assert_eq!(at("acme.dev/x/y@1.0.0").as_deref(), Some("https://schemas.acme.dev/x/y/1.0.0.novs"));
     assert_eq!(
         at("acme.dev/billing/invoice@2.1.0").as_deref(),
@@ -144,13 +144,15 @@ fn fetch_locations_and_checks() {
         assert_eq!(at(never), None, "{never}");
     }
 
-    // As the project catalog, it redirects only fingerprinted or pinned versions:
-    // it arrives with the repository, and the cache it would fill is shared.
+    assert!(r.fetch_url(&SchemaRef::parse("acme.dev/x/y@1.0.0").unwrap()).unwrap().cacheable);
+
+    // As the project catalog, its redirects are followed but never cached: it
+    // arrives with the repository, and the cache is shared by every project.
     let project = resolver(&d);
-    let e = project.fetch_url(&SchemaRef::parse("acme.dev/x/y@1.0.0").unwrap()).unwrap_err();
-    assert!(e.contains("pin"), "{e}");
-    assert!(project.fetch_url(&SchemaRef::parse("acme.dev/x/y@1.0.0#0123456789abcdef").unwrap()).is_ok());
-    assert!(project.fetch_url(&SchemaRef::parse("other.org/a@1.0.0").unwrap()).is_ok());
+    let redirected = project.fetch_url(&SchemaRef::parse("acme.dev/x/y@1.0.0").unwrap()).unwrap();
+    assert_eq!(redirected.url, "https://schemas.acme.dev/x/y/1.0.0.novs");
+    assert!(!redirected.cacheable);
+    assert!(project.fetch_url(&SchemaRef::parse("other.org/a@1.0.0").unwrap()).unwrap().cacheable);
 
     // Fetched text must declare exactly the requested version and match its fingerprint.
     let want = SchemaRef::parse("acme.dev/a@1.0.0").unwrap();
