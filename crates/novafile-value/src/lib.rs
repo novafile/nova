@@ -22,6 +22,14 @@ pub mod serde_support;
 mod time;
 mod value_ref;
 
+/// Whether `s` is a valid variant tag: an identifier, `[A-Za-z_][A-Za-z0-9_-]*`
+/// (spec §2.11). Decoders reject other tags, and bindings refuse to write them.
+#[must_use]
+pub fn is_variant_tag(s: &str) -> bool {
+    let mut cs = s.chars();
+    cs.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && cs.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 pub use codec::{DecodeError, EncodeOptions, Limits, canonical_bytes, decode, decode_prefix, decode_ref, decode_ref_prefix, encode};
 pub use decimal::Decimal;
 pub use numeric::{f32_to_f64, numeric_cmp};

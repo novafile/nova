@@ -281,7 +281,7 @@ fn enumeration(e: PeekEnum<'_, '_>) -> R {
         // As with novafile-serde: serde writes the adjacent tag as a unit variant.
         (Some(t), Some(c)) => {
             let mut r = Record::new();
-            r.insert(t, Value::Variant(tag.into(), None)).map_err(|e| Error::new(e.to_string()))?;
+            r.insert(t, Value::Variant(checked_tag(tag)?, None)).map_err(|e| Error::new(e.to_string()))?;
             if let Some(p) = payload {
                 r.insert(c, p).map_err(|e| Error::new(e.to_string()))?;
             }
@@ -308,6 +308,16 @@ fn enumeration(e: PeekEnum<'_, '_>) -> R {
 
             Ok(Value::Record(r))
         }
-        _ => Ok(Value::Variant(tag.into(), payload.map(Box::new))),
+        _ => Ok(Value::Variant(checked_tag(tag)?, payload.map(Box::new))),
+    }
+}
+
+/// `tag` as a variant tag, or an error if it is not an identifier (§2.11):
+/// such a tag cannot be written as text, and decoders reject it.
+fn checked_tag(tag: &str) -> Result<String, Error> {
+    if novafile_value::is_variant_tag(tag) {
+        Ok(tag.to_owned())
+    } else {
+        Err(Error::new(format!("variant tag {tag:?} is not an identifier")))
     }
 }
