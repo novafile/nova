@@ -1007,6 +1007,12 @@ impl<'a> Parser<'a> {
             return Err(self.error_at(start, format!("unexpected `{}`; quote the string", tok.chars().next().unwrap())));
         }
 
+        // As for plain values (§4.4); a flow word or table cell accepted one, and
+        // re-rendered as a block value it no longer parsed.
+        if let Some(i) = tok.find(char::is_control) {
+            return Err(self.error_at(start + i, "control character in plain value"));
+        }
+
         classify(tok).map(Node::Lit).map_err(|m| self.error_at(start, m))
     }
 

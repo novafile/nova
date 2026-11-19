@@ -518,3 +518,12 @@ fn parse_error_with_source_points_at_the_column() {
     assert_eq!(lines[2], format!("{} | port: [80, }}", e.line));
     assert_eq!(lines[3].find('^').unwrap() - lines[3].find('|').unwrap() - 2, e.col - 1, "{shown}");
 }
+
+/// Control characters are rejected in flow words and table cells, as in plain values.
+#[test]
+fn control_characters_in_flow_words_are_errors() {
+    assert!(parse("a: \u{f}2\n").is_err());
+    assert!(parse("a: [\u{f}2]\n").is_err());
+    assert!(novafile_text::parse_row("\u{f}2").is_err());
+    assert!(parse("a: [\"\\u000f2\"]\n").is_ok());
+}
