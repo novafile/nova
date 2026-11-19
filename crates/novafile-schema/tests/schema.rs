@@ -760,3 +760,11 @@ fn defaults_must_match_and_new_keys_break() {
     let new = parse_schema("@schema s@1.1.0\n@root list<S>\nrecord S:\n  n: int\n  k: string @key = \"x\"\n").unwrap();
     assert!(check_compatibility(&old, &new).iter().any(|c| c.breaking && c.at == "S.k"));
 }
+
+#[test]
+fn positional_tuples_keep_their_length() {
+    let s = parse_schema("@root R\nrecord R:\n  p: (int, int)\n").unwrap();
+    let pos = novafile_value::Value::Tuple(vec![novafile_value::Value::Tuple(vec![1.into(), 2.into(), 3.into()])]);
+    let e = s.from_positional(&pos).unwrap_err();
+    assert!(e.contains("2-tuple"), "{e}");
+}
