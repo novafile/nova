@@ -118,6 +118,24 @@ impl<'a> Eval<'a> {
         Ok(())
     }
 
+    /// Fail if producing `nodes` more nodes and `bytes` more content bytes would exceed the
+    /// output budget, without charging them: built-ins call this before building a result that
+    /// can be much larger than their arguments, so the budget also bounds memory.
+    pub(crate) fn reserve(&self, nodes: usize, bytes: usize) -> Result<(), TemplateError> {
+        if self.budget.nodes.saturating_add(nodes) > self.limits.max_nodes {
+            return err(format!("template output exceeds the limit of {} nodes", self.limits.max_nodes));
+        }
+
+        if self.budget.bytes.saturating_add(bytes) > self.limits.max_bytes {
+            return err(format!(
+                "template output exceeds the limit of {} bytes of string and bytes content",
+                self.limits.max_bytes
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Count `n` evaluation steps; fails once the step budget is exceeded.
     pub(crate) fn step(&mut self, n: u64) -> Result<(), TemplateError> {
         self.budget.steps = self.budget.steps.saturating_add(n);
@@ -168,8 +186,17 @@ impl<'a> Eval<'a> {
     }
 
     /// Resolve a `$name.path` reference, searching local scopes from the innermost outwards,
-    /// then the visible template-level bindings.
-    fn lookup(&self, p: &Path) -> Result<Value, TemplateError> {
+    /// then the visible template-level bindings. Reading a value copies it, so a reference
+    /// costs [`weight`] steps: nothing for a scalar, but a reference to a large value read in a
+    /// loop cannot do unbounded work.
+    fn lookup(&mut self, p: &Path) -> Result<Value, TemplateError> {
+        let v = self.find(p)?;
+        self.step(weight(&v))?;
+        Ok(v)
+    }
+
+    /// [`Self::lookup`] without the step charge.
+    fn find(&self, p: &Path) -> Result<Value, TemplateError> {
         let Some((Segment::Field(name), rest)) = p.0.split_first() else {
             return err(format!("invalid reference ${p}"));
         };
@@ -275,10 +302,15 @@ impl<'a> Eval<'a> {
             return Ok(Value::Bool(want_bool(&self.eval(b)?, &what)?));
         }
 
-        let l = self.eval(a)?;
-        let r = self.eval(b)?;
-        self.step(1)?;
-        ops::binary(op, &l, &r).map_err(TemplateError)
+        let (lhs, rhs) = (self.eval(a)?, self.eval(b)?);
+        // Comparing walks both operands, so a comparison also costs their weight.
+        let w = if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+            0
+        } else {
+            weight(&lhs) + weight(&rhs)
+        };
+        self.step(1 + w)?;
+        ops::binary(op, &lhs, &rhs).map_err(TemplateError)
     }
 
     /// Call a `@def` visible here, or else a built-in.
@@ -542,6 +574,15 @@ impl<'a> Eval<'a> {
 
         Ok(())
     }
+}
+
+/// The step weight of reading or comparing `v`, beyond the step of the operation itself: one per
+/// node below the top (elements, fields, entries and payloads, recursively) and one per full 64
+/// bytes of string and byte-string content. Scalars other than long strings weigh nothing, so
+/// templates that do not handle large values count steps exactly as in proposal 0006 §0006.7.
+fn weight(v: &Value) -> u64 {
+    let c = Cost::of(v);
+    (c.nodes - 1 + c.bytes / 64) as u64
 }
 
 /// Schema issues as one message.

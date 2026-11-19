@@ -297,7 +297,8 @@ fn builtin_list_has_forty_functions() {
 
 #[test]
 fn steps_are_counted_exactly() {
-    // 3 iterations + 3 filters + 3 `>` + 2 `*` = 11; `upper` of a 1-byte string: 1 + 1 + 1 = 3.
+    // Reading `$xs` weighs its 3 elements; 3 iterations + 3 filters + 3 `>` + 2 `*` = 11;
+    // `upper` of a 1-byte string: 1 + 1 + 1 = 3.
     let src = "@template\n@let xs = [1, 2, 3]\nx: $([for v in $xs if $v > 1: $v * 2])\ny: $upper(a)\n";
     let with = |max_steps| {
         render(
@@ -312,8 +313,8 @@ fn steps_are_counted_exactly() {
             },
         )
     };
-    assert!(with(14).is_ok());
-    assert!(with(13).unwrap_err().to_string().contains("limit of 13 steps"));
+    assert!(with(17).is_ok());
+    assert!(with(16).unwrap_err().to_string().contains("limit of 16 steps"));
 }
 
 #[test]
@@ -479,4 +480,59 @@ env:
     assert_eq!(name.get(&v).unwrap(), &Value::String("my-release-web".into()));
     let ru = novafile_text::Path::parse("spec.strategy.rollingUpdate.maxUnavailable").unwrap();
     assert_eq!(ru.get(&v).unwrap(), &Value::Int(1));
+}
+
+/// Arguments `big` (a string of `n` bytes) and `xs` (a list of `m` copies of it).
+fn big_args(n: usize, m: usize) -> Record {
+    let mut a = Record::new();
+    a.set("big", Value::String("x".repeat(n)));
+    a.set("xs", Value::List(vec![Value::String("a".into()); m]));
+    a
+}
+
+#[test]
+fn amplifying_builtins_check_the_budget_before_building() {
+    let opts = Options::default();
+    // 1000 occurrences replaced by 100 KB each would be 100 MB.
+    let src = "@template\n@param big: string\n@param xs: list<string>\nx: $len($replace($join($xs, \"\"), a, $big))\n";
+    let e = render(src, &big_args(100_000, 1000), &opts).unwrap_err().to_string();
+    assert!(e.contains("replace: template output exceeds the limit of 67108864 bytes"), "{e}");
+    let src = "@template\n@param big: string\n@param xs: list<string>\nx: $len($join($xs, $big))\n";
+    let e = render(src, &big_args(100_000, 1000), &opts).unwrap_err().to_string();
+    assert!(e.contains("join: template output exceeds the limit"), "{e}");
+    let src = "@template\n@param big: string\n@param xs: list<string>\nx: $len($split($big, x))\n";
+    let e = render(src, &big_args(2_000_000, 0), &opts).unwrap_err().to_string();
+    assert!(e.contains("split: template output exceeds the limit of 1000000 nodes"), "{e}");
+}
+
+#[test]
+fn merging_large_maps_is_linear() {
+    let map = |off: i128| Value::Map((0..100_000).map(|i| (Value::Int(i + off), Value::Int(off))).collect());
+    let mut a = Record::new();
+    a.set("a", map(0));
+    a.set("b", map(50_000));
+    let start = std::time::Instant::now();
+    let v = render(
+        "@template\n@param a: any\n@param b: any\nn: $len($merge($a, $b))\nv: $get($merge($a, $b), 60000, null)\n",
+        &a,
+        &Options::default(),
+    )
+    .unwrap();
+    assert_eq!(v, novafile_text::parse("n: 150000\nv: 50000\n").unwrap());
+    assert!(start.elapsed() < std::time::Duration::from_secs(30), "took {:?}", start.elapsed());
+}
+
+#[test]
+fn reading_large_values_costs_steps() {
+    // 1000 lists of 100 ints: `len` charges only the 1000 top-level elements, but every
+    // read copies all 101,000 nodes, so 200 reads exceed the step budget.
+    let mut a = Record::new();
+    a.set("xs", Value::List(vec![ints(100); 1000]));
+    a.set("n", ints(200));
+    let src = "@template\n@param xs: any\n@param n: list<int>\nx: $([for i in $n: $len($xs)])\n";
+    let e = render(src, &a, &Options::default()).unwrap_err().to_string();
+    assert!(e.contains("steps"), "{e}");
+    let src = "@template\n@param xs: any\n@param n: list<int>\nx: $([for i in $n: $(1 == 2)])\ny: $([for i in $n if $xs == [1]: 1])\n";
+    let e = render(src, &a, &Options::default()).unwrap_err().to_string();
+    assert!(e.contains("steps"), "{e}");
 }

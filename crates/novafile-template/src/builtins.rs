@@ -14,7 +14,8 @@ use base64::Engine;
 use novafile_text::{Profile, classify, to_text};
 use novafile_value::{Decimal, Record, Value, canonical_bytes};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 /// The names of the built-in functions, by group: strings, values in general, collections,
@@ -151,7 +152,11 @@ fn extreme(xs: Vec<Value>, max: bool) -> Result<Value, String> {
 }
 
 /// The function body of built-in `name`; errors are prefixed with the name by [`call`].
-#[expect(clippy::too_many_lines, clippy::many_single_char_names, reason = "one arm per built-in function, flat by design; short names for operands")]
+#[expect(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "one arm per built-in function, flat by design; short names for operands"
+)]
 fn apply(ev: &mut Eval<'_>, name: &str, mut a: Vec<Value>) -> Result<Value, String> {
     let n = a.len();
     let arity = |lo: usize, hi: usize| -> Result<(), String> {
@@ -208,6 +213,9 @@ fn apply(ev: &mut Eval<'_>, name: &str, mut a: Vec<Value>) -> Result<Value, Stri
                 return Err("the string to replace must not be empty".into());
             }
 
+            // Bound the result before building it: the output budget must also bound memory.
+            let count = x.matches(old).count();
+            ev.reserve(1, x.len() - count * old.len() + count * new.len()).map_err(|e| e.0)?;
             str_(x.replace(old, new))
         }
         "split" => {
@@ -217,21 +225,19 @@ fn apply(ev: &mut Eval<'_>, name: &str, mut a: Vec<Value>) -> Result<Value, Stri
                 return Err("the separator must not be empty".into());
             }
 
+            ev.reserve(2 + x.matches(sep).count(), x.len()).map_err(|e| e.0)?;
             Ok(Value::List(x.split(sep).map(|p| Value::String(p.to_owned())).collect()))
         }
         "join" => {
             arity(2, 2)?;
             let sep = s(&a, 1)?.to_owned();
-            let mut out = String::new();
-            for (i, x) in elements(a.swap_remove(0), 0)?.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(&sep);
-                }
-
-                out.push_str(&scalar_text(x).ok_or_else(|| format!("cannot join a {}; only scalars have text", x.kind()))?);
-            }
-
-            str_(out)
+            let texts = elements(a.swap_remove(0), 0)?
+                .iter()
+                .map(|x| scalar_text(x).ok_or_else(|| format!("cannot join a {}; only scalars have text", x.kind())))
+                .collect::<Result<Vec<_>, _>>()?;
+            let len = texts.iter().map(String::len).sum::<usize>() + sep.len() * texts.len().saturating_sub(1);
+            ev.reserve(1, len).map_err(|e| e.0)?;
+            str_(texts.join(&sep))
         }
         "slice" => {
             arity(2, 3)?;
@@ -351,6 +357,8 @@ fn apply(ev: &mut Eval<'_>, name: &str, mut a: Vec<Value>) -> Result<Value, Stri
             arity(2, usize::MAX)?;
             let maps = matches!(a[0], Value::Map(_));
             let (mut rec, mut map) = (Record::new(), Vec::<(Value, Value)>::new());
+            // Map keys by their canonical encoding, so merging is linear like its step cost.
+            let mut at: HashMap<Vec<u8>, usize> = HashMap::new();
             for (i, x) in a.into_iter().enumerate() {
                 match x {
                     Value::Record(r) if !maps => r.into_entries().into_iter().for_each(|(k, v)| {
@@ -358,9 +366,12 @@ fn apply(ev: &mut Eval<'_>, name: &str, mut a: Vec<Value>) -> Result<Value, Stri
                     }),
                     Value::Map(m) if maps => {
                         for (k, v) in m {
-                            match map.iter_mut().find(|(x, _)| *x == k) {
-                                Some(e) => e.1 = v,
-                                None => map.push((k, v)),
+                            match at.entry(canonical_bytes(&k)) {
+                                Entry::Occupied(e) => map[*e.get()].1 = v,
+                                Entry::Vacant(e) => {
+                                    e.insert(map.len());
+                                    map.push((k, v));
+                                }
                             }
                         }
                     }
