@@ -245,7 +245,7 @@ Exceptions, which keep the license of the format they belong to:
 
 | Files | License |
 | --- | --- |
-| [`crates/novafile-schema/meta/nova-schema.novs`](crates/novafile-schema/meta/nova-schema.novs), a verbatim copy of the [specification's meta-schema](https://github.com/novafile/spec/blob/main/meta/nova-schema.novs) | Apache-2.0 ([LICENSE-APACHE](crates/novafile-schema/LICENSE-APACHE)) |
+| [`crates/novafile-schema/meta/schema.novs`](crates/novafile-schema/meta/schema.novs) and [`catalog.novs`](crates/novafile-schema/meta/catalog.novs), verbatim copies of the [specification's meta-schemas](https://github.com/novafile/spec/tree/main/meta) | Apache-2.0 ([LICENSE-APACHE](crates/novafile-schema/LICENSE-APACHE)) |
 | [`examples/`](examples/) | CC0-1.0 ([LICENSE](examples/LICENSE)) |
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this work shall be dual-licensed as above, without any additional terms or conditions.

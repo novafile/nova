@@ -234,16 +234,63 @@ pub struct SchemaRef {
     pub fingerprint: Option<String>,
 }
 
-/// Whether `n` is a valid schema name: a lowercase letter, then lowercase
-/// letters, digits or `-_./`, with no empty `/`-separated segment.
+/// The two kinds of schema name (spec §6.7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NameKind {
+    /// Its first segment is a domain name (`acme.example/billing/invoice`), owned
+    /// through that domain.
+    Qualified,
+    /// No `.` in the first segment (`infrastructure`): meaningful within a project.
+    Local,
+}
+
+/// The kind of the schema name `n`, or `None` if it is not a valid name
+/// (spec §6.7, proposal 0005 §0005.2.1). There is exactly one spelling per
+/// name, so names compare as plain strings.
+#[must_use]
+pub fn schema_name_kind(n: &str) -> Option<NameKind> {
+    /// `[a-z0-9]`.
+    fn alnum(c: u8) -> bool {
+        c.is_ascii_lowercase() || c.is_ascii_digit()
+    }
+
+    /// A path segment: an alphanumeric, then alphanumerics, `-`, `_` or `.`.
+    fn segment(s: &str) -> bool {
+        s.bytes().next().is_some_and(alnum) && s.bytes().all(|c| alnum(c) || b"-_.".contains(&c))
+    }
+
+    /// A DNS label: 1 to 63 alphanumerics and inner `-`.
+    fn label(l: &str) -> bool {
+        let b = l.as_bytes();
+        (1..=63).contains(&b.len()) && alnum(b[0]) && alnum(b[b.len() - 1]) && b.iter().all(|&c| alnum(c) || c == b'-')
+    }
+
+    if n.is_empty() || n.len() > 255 {
+        return None;
+    }
+
+    let mut segs = n.split('/');
+    let first = segs.next()?;
+    let rest: Vec<&str> = segs.collect();
+    if !rest.iter().all(|s| segment(s)) {
+        return None;
+    }
+
+    if first.contains('.') {
+        let labels: Vec<&str> = first.split('.').collect();
+        // The last label starts with a letter, so an IP address is not a host.
+        let tld_ok = labels.last().is_some_and(|l| l.as_bytes()[..].first().is_some_and(u8::is_ascii_lowercase));
+        (first.len() <= 253 && labels.iter().all(|l| label(l)) && tld_ok && !rest.is_empty()).then_some(NameKind::Qualified)
+    } else {
+        let b = first.as_bytes();
+        (b.first().is_some_and(u8::is_ascii_lowercase) && b.iter().all(|&c| alnum(c) || c == b'-' || c == b'_')).then_some(NameKind::Local)
+    }
+}
+
+/// Whether `n` is a valid schema name, qualified or local (see [`schema_name_kind`]).
 #[must_use]
 pub fn valid_schema_name(n: &str) -> bool {
-    let b = n.as_bytes();
-    !b.is_empty()
-        && b[0].is_ascii_lowercase()
-        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"-_./".contains(c))
-        && !n.ends_with('/')
-        && !n.contains("//")
+    schema_name_kind(n).is_some()
 }
 
 impl SchemaRef {
@@ -269,7 +316,9 @@ impl SchemaRef {
             .rsplit_once('@')
             .ok_or_else(|| format!("schema reference {s:?} must be `name@MAJOR.MINOR.PATCH`"))?;
         if !valid_schema_name(name) {
-            return Err(format!("invalid schema name {name:?} (lowercase letters, digits, `-_./`)"));
+            return Err(format!(
+                "invalid schema name {name:?} (a local name such as `infrastructure`, or a domain and a path such as `acme.example/billing/invoice`)"
+            ));
         }
 
         Ok(SchemaRef {
@@ -297,6 +346,39 @@ mod tests {
 
     fn v(s: &str) -> Version {
         Version::parse(s).unwrap()
+    }
+
+    #[test]
+    fn schema_names_follow_the_grammar() {
+        use NameKind::{Local, Qualified};
+        for (n, k) in [
+            ("infrastructure", Some(Local)),
+            ("acme/order", Some(Local)),
+            ("acme.example/billing/invoice", Some(Qualified)),
+            ("github.com/alice/pddl/domain", Some(Qualified)),
+            ("xn--bcher-kva.example/catalog", Some(Qualified)),
+            ("3m.com/parts", Some(Qualified)),
+            ("json.schemastore.org/package.json", Some(Qualified)),
+            ("Acme.example/x", None),
+            ("acme.example", None),
+            ("my.schema", None),
+            ("acme.example/", None),
+            ("acme.example//x", None),
+            ("acme.example/./x", None),
+            ("10.0.0.1/x", None),
+            ("-acme.example/x", None),
+            ("acme_corp.example/x", None),
+            ("1abc", None),
+            ("a/-b", None),
+            ("", None),
+        ] {
+            assert_eq!(schema_name_kind(n), k, "{n:?}");
+        }
+
+        let long = format!("a.example/{}", "x".repeat(246));
+        assert_eq!(long.len(), 256);
+        assert_eq!(schema_name_kind(&long), None);
+        assert!(schema_name_kind(&long[..255]).is_some());
     }
 
     #[test]

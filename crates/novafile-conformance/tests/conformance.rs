@@ -36,10 +36,8 @@ fn embedded_meta_schema_matches_spec() {
         return;
     };
 
-    let spec = std::fs::read_to_string(dir.join("../meta/nova-schema.novs")).expect("spec meta/nova-schema.novs");
-    assert_eq!(
-        novafile_schema::META_SCHEMA_SRC,
-        spec,
-        "crates/novafile-schema/meta/nova-schema.novs drifted from the spec's meta/nova-schema.novs"
-    );
+    for (file, embedded) in [("schema.novs", novafile_schema::META_SCHEMA_SRC), ("catalog.novs", novafile_schema::META_CATALOG_SRC)] {
+        let spec = std::fs::read_to_string(dir.join("../meta").join(file)).unwrap_or_else(|e| panic!("spec meta/{file}: {e}"));
+        assert_eq!(embedded, spec, "crates/novafile-schema/meta/{file} drifted from the spec's meta/{file}");
+    }
 }

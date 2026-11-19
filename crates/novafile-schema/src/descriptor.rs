@@ -2,7 +2,7 @@
 //!
 //! [`Schema::to_value`] produces the *descriptor* of a schema: an ordinary
 //! NOVA value described by the meta-schema [`meta_schema`]
-//! (`nova-schema@0.3.2`). [`Schema::from_value`] turns a descriptor back
+//! (`novafile.dev/meta/schema@0.3.3`). [`Schema::from_value`] turns a descriptor back
 //! into a schema by rendering its canonical text and parsing that, so
 //! descriptors are validated exactly like hand-written schemas.
 
@@ -10,7 +10,20 @@ use crate::model::{Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, Type
 use novafile_value::{Record, Value};
 
 /// Source of the meta-schema.
-pub const META_SCHEMA_SRC: &str = include_str!("../meta/nova-schema.novs");
+pub const META_SCHEMA_SRC: &str = include_str!("../meta/schema.novs");
+
+/// Source of the catalog meta-schema (`novafile.dev/meta/catalog`, spec §6.9).
+pub const META_CATALOG_SRC: &str = include_str!("../meta/catalog.novs");
+
+/// Name of the meta-schema, which describes schema descriptors.
+pub const META_SCHEMA_NAME: &str = "novafile.dev/meta/schema";
+
+/// Name of the catalog meta-schema.
+pub const META_CATALOG_NAME: &str = "novafile.dev/meta/catalog";
+
+/// The meta-schema's name before it moved into `novafile.dev/` (spec §6.8);
+/// readers map it to [`META_SCHEMA_NAME`] until NOVA 1.0.
+pub const LEGACY_META_SCHEMA_NAME: &str = "nova-schema";
 
 /// The meta-schema, which validates descriptors (including its own).
 ///
@@ -21,6 +34,16 @@ pub const META_SCHEMA_SRC: &str = include_str!("../meta/nova-schema.novs");
 #[must_use]
 pub fn meta_schema() -> Schema {
     crate::parse_schema(META_SCHEMA_SRC).expect("the meta-schema is valid")
+}
+
+/// The catalog meta-schema, which validates `nova-catalog.nova` files.
+///
+/// # Panics
+///
+/// Panics if the embedded source fails to parse (a build defect the tests rule out).
+#[must_use]
+pub fn meta_catalog() -> Schema {
+    crate::parse_schema(META_CATALOG_SRC).expect("the catalog meta-schema is valid")
 }
 
 /// A record value with the given entries, in order.

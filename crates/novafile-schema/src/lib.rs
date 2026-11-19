@@ -2,6 +2,7 @@
 //! constraints, stable field identities, schema-directed resolution of text
 //! values, `@key` uniqueness and evolution checks.
 
+pub mod catalog;
 mod compat;
 pub mod derive;
 mod descriptor;
@@ -15,14 +16,14 @@ mod warn;
 
 pub use compat::{Change, check_compatibility, widens};
 pub use derive::{NovaSchema, SchemaGen, schema_for};
-pub use descriptor::{META_SCHEMA_SRC, meta_schema};
+pub use descriptor::{LEGACY_META_SCHEMA_NAME, META_CATALOG_NAME, META_CATALOG_SRC, META_SCHEMA_NAME, META_SCHEMA_SRC, meta_catalog, meta_schema};
 pub use model::*;
 #[cfg(feature = "derive")]
 pub use novafile_derive::NovaSchema;
 pub use parse::{SchemaError, parse_schema, parse_type, parse_type_within};
 pub use pattern::{Pattern, SCHEMA_BUDGET};
 pub use resolve::Issue;
-pub use version::{ChangeKind, PreId, SchemaRef, Version, valid_schema_name};
+pub use version::{ChangeKind, NameKind, PreId, SchemaRef, Version, schema_name_kind, valid_schema_name};
 pub use warn::UnionWarning;
 
 impl Schema {
@@ -42,6 +43,13 @@ impl Schema {
             Some((first, rest)) if first.starts_with("@schema ") => format!("{first}\n{ext}{rest}"),
             _ => ext + &canon,
         }
+    }
+
+    /// The full revision of the canonical text, `sha256:` and 64 hex digits:
+    /// what catalog pins record (spec §6.9). The fingerprint is its first 16 digits.
+    #[must_use]
+    pub fn revision(&self) -> String {
+        novafile_value::revision(&novafile_value::Value::String(self.to_canonical_text())).to_string()
     }
 
     /// The first 64 bits of SHA-256 over the canonical text, as 16 hex digits (spec §6.6).
@@ -77,7 +85,12 @@ impl Schema {
     /// Fails, with the reason, if `reference` is malformed, this schema has no
     /// name and version, or the name, version or fingerprint does not match.
     pub fn accepts_reference(&self, reference: &str) -> Result<(), String> {
-        let r = SchemaRef::parse(reference)?;
+        let mut r = SchemaRef::parse(reference)?;
+        // Until NOVA 1.0, the meta-schema's old name still refers to it (spec §6.8).
+        if r.name == LEGACY_META_SCHEMA_NAME && self.name.as_deref() == Some(META_SCHEMA_NAME) {
+            META_SCHEMA_NAME.clone_into(&mut r.name);
+        }
+
         let mine = self.reference().ok_or("an anonymous schema cannot check @schema references")?;
         if r.name != mine.name {
             return Err(format!("document is for schema {:?}, not {:?}", r.name, mine.name));
