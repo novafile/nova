@@ -334,7 +334,7 @@ impl<'s> Ctx<'s> {
                         (k2, v2)
                     })
                     .collect();
-                Value::Map(out)
+                self.unique_keys(out)
             }
             (TypeKind::Map(kt, vt), Value::Record(r)) => {
                 let out = r
@@ -349,12 +349,24 @@ impl<'s> Ctx<'s> {
                         (k2, v2)
                     })
                     .collect();
-                Value::Map(out)
+                self.unique_keys(out)
             }
             (kind, v) => {
                 let t = TypeRef::new(kind.clone());
                 self.mismatch(&t.to_string(), &v);
                 v
+            }
+        }
+    }
+
+    /// A map of `entries`, reporting keys that conversion made equal
+    /// (`"1/2"` and `"2/4"` as `rational`), as the set arm does for elements.
+    fn unique_keys(&mut self, entries: Vec<(Value, Value)>) -> Value {
+        match Value::map(entries.clone()) {
+            Ok(m) => m,
+            Err(e) => {
+                self.issue(e);
+                Value::Map(entries)
             }
         }
     }

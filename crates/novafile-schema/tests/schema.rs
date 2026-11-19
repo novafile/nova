@@ -736,3 +736,12 @@ fn self_referential_defaults_stop_at_a_depth_limit() {
     let e = s.resolve(&doc).unwrap_err();
     assert!(e.iter().any(|i| i.message.contains("deeper")), "{:?}", &e[..e.len().min(3)]);
 }
+
+/// Keys that resolve to the same value are duplicates, like set elements.
+#[test]
+fn map_keys_equal_after_conversion_are_duplicates() {
+    let s = parse_schema("@root map<rational, int>\n").unwrap();
+    let e = s.resolve(&novafile_text::parse("\"1/2\": 1\n\"2/4\": 2\n").unwrap()).unwrap_err();
+    assert!(e[0].message.contains("duplicate"), "{e:?}");
+    assert!(s.resolve(&novafile_text::parse("\"1/2\": 1\n\"1/3\": 2\n").unwrap()).is_ok());
+}
