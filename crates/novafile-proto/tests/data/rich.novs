@@ -1,5 +1,5 @@
 # A schema exercising every Protobuf mapping of novafile-proto.
-@schema acme.rich-test@3.2.1
+@schema acme/rich-test@3.2.1
 @root Doc
 
 type Percent = u8 @range(0..100)

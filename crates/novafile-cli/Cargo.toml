@@ -29,6 +29,7 @@ novafile-proto.workspace = true
 novafile-lint.workspace = true
 novafile-schemars.workspace = true
 serde_json.workspace = true
+ureq.workspace = true
 clap.workspace = true
 miette = { workspace = true, features = ["fancy"] }
 detect-coding-agent.workspace = true

@@ -175,9 +175,16 @@ enum Cmd {
     Validate {
         /// Document to validate.
         file: PathBuf,
-        /// Schema to validate against.
+        /// Schema to validate against. Without it, the document's `@schema`
+        /// reference is looked up in catalogs (spec §6.9).
         #[arg(long)]
-        schema: PathBuf,
+        schema: Option<PathBuf>,
+        /// Extra catalog to look the reference up in (repeatable; also `NOVA_CATALOG`).
+        #[arg(long)]
+        catalog: Vec<PathBuf>,
+        /// Fetch a qualified schema over HTTPS if no catalog has it (also `NOVA_FETCH=1`).
+        #[arg(long)]
+        fetch: bool,
         /// Print the resolved document instead of a status line.
         #[arg(long)]
         resolve: bool,
@@ -324,7 +331,29 @@ enum SchemaCmd {
         /// Schema descriptor (NOVA data).
         file: PathBuf,
     },
-    /// Print the meta-schema `nova-schema@0.3.2`, which describes schema descriptors.
+    /// Where a reference such as `acme.example/invoice@2.1.0` resolves from (spec §6.9).
+    Resolve {
+        /// The reference, `name@version[#fingerprint]`.
+        reference: String,
+        /// Extra catalog to search first (repeatable; also `NOVA_CATALOG`).
+        #[arg(long)]
+        catalog: Vec<PathBuf>,
+        /// Fetch it over HTTPS if no catalog has it (also `NOVA_FETCH=1`).
+        #[arg(long)]
+        fetch: bool,
+    },
+    /// Fetch exactly the version a reference names into the user cache.
+    Fetch {
+        /// The reference, `name@version[#fingerprint]`.
+        reference: String,
+        /// Extra catalog for remote locations and pins (repeatable).
+        #[arg(long)]
+        catalog: Vec<PathBuf>,
+        /// Record its revision as a pin in the project catalog (nova-catalog.nova).
+        #[arg(long)]
+        pin: bool,
+    },
+    /// Print the meta-schema `novafile.dev/meta/schema@0.3.3`, which describes schema descriptors.
     Meta,
     /// Print a JSON Schema (2020-12) describing the JSON form of valid documents.
     JsonSchema {
@@ -421,7 +450,7 @@ fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
 }
 
 /// Schema reference of the meta-schema that describes schema descriptors.
-const META_REF: &str = "nova-schema@0.3.2";
+const META_REF: &str = "novafile.dev/meta/schema@0.3.3";
 
 /// Loads a document in the given input format.
 ///
@@ -597,6 +626,125 @@ fn is_nova_text(p: &Path, text: &str) -> bool {
     matches!(detect(p, text.as_bytes(), InputFormat::Auto), InputFormat::Auto | InputFormat::Nova) && novafile_text::parse(text).is_ok()
 }
 
+/// Whether fetching is enabled by `--fetch` or `NOVA_FETCH=1`; the user catalog's
+/// `fetch: true` is checked by the resolver (spec §6.9).
+fn fetch_requested(flag: bool) -> bool {
+    flag || std::env::var("NOVA_FETCH").is_ok_and(|v| v == "1")
+}
+
+/// Look up `reference` in built-in schemas, catalogs (explicit, then the project
+/// catalog above `start`, then the user catalog) and the cache, and fetch it over
+/// HTTPS if that finds nothing and fetching is enabled. Returns the schema and a
+/// description of where it came from.
+fn lookup(reference: &str, catalogs: &[PathBuf], start: Option<PathBuf>, fetch: bool) -> R<(Schema, String)> {
+    use novafile_schema::catalog::{LookupError, Options, Resolver};
+    let r = Resolver::new(&Options::from_env(catalogs.to_vec(), start))?;
+    for p in &r.problems {
+        eprintln!("warning: {p}");
+    }
+
+    match r.resolve(reference) {
+        Ok(found) => {
+            for w in &found.warnings {
+                eprintln!("warning: {w}");
+            }
+
+            Ok((found.schema, found.origin.to_string()))
+        }
+        Err(LookupError::NotFound(m)) if fetch_requested(fetch) || r.fetch_enabled() => {
+            let sr = novafile_schema::SchemaRef::parse(reference)?;
+            let fetch = r.fetch_url(&sr).map_err(|why| format!("{m}; {why}"))?;
+            let text = http_get(&fetch.url)?;
+            let s = r.accept_fetched(&sr, &text).map_err(|e| e.to_string())?;
+            if fetch.cacheable {
+                let path = r.store(&s, &text).map_err(|e| e.to_string())?;
+                eprintln!("fetched {sr} from {} into {}", fetch.url, path.display());
+            } else {
+                eprintln!("fetched {sr} from {} (the project catalog's location; not cached)", fetch.url);
+            }
+
+            Ok((s, fetch.url))
+        }
+        Err(e @ LookupError::NotFound(_)) => Err(format!("{e}; pass --schema, add it to a catalog, or allow --fetch").into()),
+        Err(e) => Err(format!("{} ({})", e, e.kind()).into()),
+    }
+}
+
+/// GET an `https:` URL, following only HTTPS redirects, with the body bounded by
+/// [`novafile_schema::catalog::MAX_FETCH_BYTES`].
+fn http_get(url: &str) -> R<String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .https_only(true)
+        .max_redirects(5)
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .into();
+    let mut resp = agent.get(url).call().map_err(|e| format!("fetching {url}: {e}"))?;
+    let text = resp
+        .body_mut()
+        .with_config()
+        .limit(novafile_schema::catalog::MAX_FETCH_BYTES)
+        .read_to_string()
+        .map_err(|e| format!("fetching {url}: {e}"))?;
+    Ok(text)
+}
+
+/// `nvf schema fetch`: fetch exactly `reference` into the cache and, with `pin`,
+/// record its revision in the project catalog.
+fn schema_fetch(reference: &str, catalogs: &[PathBuf], pin: bool) -> R<()> {
+    use novafile_schema::catalog::{CATALOG_FILE, Options, Resolver, project_catalog};
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let r = Resolver::new(&Options::from_env(catalogs.to_vec(), Some(cwd.clone())))?;
+    let sr = novafile_schema::SchemaRef::parse(reference)?;
+    let fetch = r.fetch_url(&sr)?;
+    let text = http_get(&fetch.url)?;
+    let s = r.accept_fetched(&sr, &text).map_err(|e| e.to_string())?;
+    println!("{sr}  {}\n{}", fetch.url, s.revision());
+    if fetch.cacheable {
+        println!("cached at {}", r.store(&s, &text).map_err(|e| e.to_string())?.display());
+    } else {
+        println!("not cached: the location comes from the project catalog, and the cache is shared by all projects");
+    }
+    if !pin {
+        return Ok(());
+    }
+
+    // Trust on first use, then pinned (spec §6.9): add the pin, keeping the catalog's comments.
+    let catalog = project_catalog(&cwd).unwrap_or_else(|| cwd.join(CATALOG_FILE));
+    let src = std::fs::read_to_string(&catalog).unwrap_or_else(|_| format!("@schema {}@0.1.0\n", novafile_schema::META_CATALOG_NAME));
+    let value = novafile_text::parse(&src).map_err(|e| format!("{}: {e}", catalog.display()))?;
+    let key = format!("{}@{}", sr.name, sr.version);
+    let pins = value.as_record().and_then(|r| r.get("pins")).and_then(Value::as_list);
+    if let Some(p) = pins
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_record)
+        .find(|p| p.get("schema").and_then(Value::as_str) == Some(&key))
+    {
+        let have = p.get("revision").and_then(Value::as_str).unwrap_or("");
+        if have == s.revision() {
+            println!("already pinned in {}", catalog.display());
+            return Ok(());
+        }
+
+        return Err(format!("{}: {key} is pinned to {have}, but the fetched file has {}", catalog.display(), s.revision()).into());
+    }
+
+    let entry = format!("{{schema: {}, revision: {}}}", novafile_text::quote(&key), novafile_text::quote(&s.revision()));
+    let op = if pins.is_some() {
+        format!("+ pins: {entry}")
+    } else {
+        format!("= pins: [{entry}]")
+    };
+    let patch = novafile_patch::parse_patch(&format!("@patch\n{op}\n")).map_err(|e| e.to_string())?;
+    let meta = novafile_schema::meta_catalog();
+    let check = |v: &Value| meta.validate(v).map_err(|i| i.iter().map(ToString::to_string).collect());
+    let edit = novafile_patch::apply_to_source(&src, &patch, &check).map_err(|e| format!("{}: {e}", catalog.display()))?;
+    write_atomic(&catalog, edit.text.as_bytes())?;
+    println!("pinned in {}", catalog.display());
+    Ok(())
+}
+
 /// Loads a schema from the schema language or from a schema descriptor (NOVA data).
 fn load_schema(p: &Path) -> R<Schema> {
     schema_from_text(p, &read_text(p)?)
@@ -608,7 +756,9 @@ fn schema_from_text(p: &Path, src: &str) -> R<Schema> {
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
     if ext != "novs"
         && let Ok(doc) = novafile_text::parse_document(src)
-        && doc.directive("schema").is_some_and(|r| r.starts_with("nova-schema@"))
+        && doc.directive("schema").is_some_and(|r| {
+            r.starts_with(&format!("{}@", novafile_schema::META_SCHEMA_NAME)) || r.starts_with(&format!("{}@", novafile_schema::LEGACY_META_SCHEMA_NAME))
+        })
     {
         let v = doc.body.to_value().map_err(|e| format!("{}: {e}", p.display()))?;
         return Ok(Schema::from_value(&v).map_err(|e| format!("{}: {e}", p.display()))?);
@@ -931,9 +1081,26 @@ fn run(cli: Cli) -> R<ExitCode> {
             out(&render_with(&l, to, strict, s.as_ref())?, output.as_deref())?;
         }
         Cmd::Hash { file } => println!("{}", revision(&load(&file)?.value)),
-        Cmd::Validate { file, schema, resolve } => {
-            let s = load_schema(&schema)?;
+        Cmd::Validate {
+            file,
+            schema,
+            catalog,
+            fetch,
+            resolve,
+        } => {
             let l = load(&file)?;
+            let s = if let Some(p) = &schema {
+                load_schema(p)?
+            } else {
+                let r = l
+                    .directives
+                    .iter()
+                    .find(|(n, _)| n == "schema")
+                    .map(|(_, r)| r.as_str())
+                    .ok_or_else(|| format!("{}: no @schema line to look up; pass --schema SCHEMA.novs", file.display()))?;
+                let start = file.parent().filter(|_| file.as_os_str() != "-").map(Path::to_path_buf);
+                lookup(r, &catalog, start, fetch)?.0
+            };
             if let Some((_, r)) = l.directives.iter().find(|(n, _)| n == "schema")
                 && s.reference().is_some()
             {
@@ -1197,6 +1364,16 @@ fn run(cli: Cli) -> R<ExitCode> {
                 print!("{}", document_to_text(&[("schema", META_REF)], &v, Profile::Human));
             }
             SchemaCmd::Meta => print!("{}", novafile_schema::META_SCHEMA_SRC),
+            SchemaCmd::Resolve { reference, catalog, fetch } => {
+                let cwd = std::env::current_dir().ok();
+                let (s, origin) = lookup(&reference, &catalog, cwd, fetch)?;
+                println!(
+                    "{}  {origin}\n{}",
+                    s.reference().map_or_else(|| reference.clone(), |r| r.to_string()),
+                    s.revision()
+                );
+            }
+            SchemaCmd::Fetch { reference, catalog, pin } => schema_fetch(&reference, &catalog, pin)?,
             SchemaCmd::JsonSchema { file } => {
                 let j = novafile_schemars::to_json_schema(&load_schema(&file)?);
                 println!("{}", serde_json::to_string_pretty(&j).map_err(|e| e.to_string())?);

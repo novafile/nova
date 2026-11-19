@@ -16,16 +16,21 @@ const NON_FINITE: &str = "^(NaN|-?inf)$";
 /// corresponding Rust types).
 ///
 /// Named definitions go to `$defs`, the `@root` becomes a top-level `$ref`,
-/// and a named schema gets `$id: urn:nova:name@version` and a matching
-/// `title`. Constraints JSON Schema cannot check are kept as `x-nova-*`
+/// and a named schema gets `x-nova-schema: name@version` and a matching
+/// `title`; a qualified name also gets `$id: https://{name}/{version}.schema.json`
+/// (spec §11.2), while a local name has no global identity to state. Constraints JSON Schema cannot check are kept as `x-nova-*`
 /// annotations so that [`crate::from_json_schema`] restores them.
 #[must_use]
 pub fn to_json_schema(schema: &Schema) -> Json {
     let mut root = Map::new();
     root.insert("$schema".into(), DRAFT_2020_12.into());
     if let Some(r) = schema.reference() {
-        root.insert("$id".into(), format!("urn:nova:{r}").into());
+        if novafile_schema::schema_name_kind(&r.name) == Some(novafile_schema::NameKind::Qualified) {
+            root.insert("$id".into(), format!("https://{}/{}.schema.json", r.name, r.version).into());
+        }
+
         root.insert("title".into(), r.to_string().into());
+        root.insert("x-nova-schema".into(), r.to_string().into());
     }
 
     if let Some(r) = &schema.root {

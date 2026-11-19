@@ -7,7 +7,7 @@ pub fn example(name: &str) -> String {
 
 /// Every type, constraint and attribute the schema language has.
 pub const KITCHEN_SINK: &str = "\
-@schema kitchen.sink@0.3.0-beta.1
+@schema kitchen/sink@0.3.0-beta.1
 @root Everything
 
 type Port = u16 @range(1..65535)

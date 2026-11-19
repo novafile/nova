@@ -14,7 +14,7 @@
 //!
 //! | NOVA | Protobuf | Notes |
 //! | --- | --- | --- |
-//! | `@schema name@X.Y.Z` | `package name.vX;` | Characters other than `[A-Za-z0-9_]` in the name become `_`; anonymous schemas get no `package`. |
+//! | `@schema name@X.Y.Z` | `package name.vX;` | A qualified name gives the reversed domain and its path (`acme.example/billing/invoice@2.1.0` → `example.acme.billing.invoice.v2`); in a local name characters other than `[A-Za-z0-9_]` become `_`. Anonymous schemas get no `package`. |
 //! | `record R` | `message R` | Every field needs `@id(n)`: the field number (1..=536870911, not 19000..=19999). |
 //! | `bool` | `bool` | |
 //! | `i8` `i16` `i32` | `sint32` | |

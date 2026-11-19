@@ -4,11 +4,29 @@ use crate::shape::{Plan, Shape, Single, classify_field, classify_payload, enum_v
 use novafile_schema::{Def, RecordDef, Schema, VariantDef};
 use std::fmt::Write;
 
-/// The `package` of the generated file: the schema name with every
-/// non-identifier character replaced by `_`, plus `.v<MAJOR>`.
+/// The `package` of the generated file, plus `.v<MAJOR>` (spec §11.2). A local
+/// name has every non-identifier character replaced by `_`. A qualified name
+/// becomes the reversed domain followed by its path segments, each cleaned the
+/// same way and given a leading `_` if it starts with a digit:
+/// `acme.example/billing/invoice@2.1.0` → `example.acme.billing.invoice.v2`.
 pub(crate) fn package(schema: &Schema) -> Option<String> {
     let r = schema.reference()?;
-    let name: String = r.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
+    let clean = |s: &str| -> String { s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect() };
+    let name = if novafile_schema::schema_name_kind(&r.name) == Some(novafile_schema::NameKind::Qualified) {
+        let (host, path) = r.name.split_once('/').expect("a qualified name has a path");
+        host.split('.')
+            .rev()
+            .chain(path.split('/'))
+            .map(|c| {
+                let c = clean(c);
+                if c.starts_with(|d: char| d.is_ascii_digit()) { format!("_{c}") } else { c }
+            })
+            .collect::<Vec<_>>()
+            .join(".")
+    } else {
+        clean(&r.name)
+    };
+
     Some(format!("{name}.v{}", r.version.major))
 }
 

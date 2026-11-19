@@ -46,7 +46,9 @@ fn every_kind_round_trips_exactly() {
 fn infrastructure_json_schema_shape() {
     let json = to_json_schema(&parse_schema(&example("infrastructure.novs")).unwrap());
     assert_eq!(json["$schema"], "https://json-schema.org/draft/2020-12/schema");
-    assert_eq!(json["$id"], "urn:nova:infrastructure@1.0.0");
+    // A local name has no global identity, so no `$id`; the reference rides along.
+    assert_eq!(json.get("$id"), None);
+    assert_eq!(json["x-nova-schema"], "infrastructure@1.0.0");
     assert_eq!(json["$ref"], "#/$defs/Infrastructure");
     assert_eq!(
         json["$defs"]["Port"],

@@ -220,3 +220,33 @@ fn rewrites_never_change_the_format_or_target_stdin() {
     let o = nvf(&d, &["lint", "--fix", "k.nova"], "");
     assert_eq!(std::fs::read_to_string(d.join("k.nova")).unwrap(), "foo_bar: 1\n", "{o:?}");
 }
+
+#[test]
+fn validate_looks_the_schema_up_in_the_project_catalog() {
+    let d = scratch("catalog");
+    std::fs::create_dir_all(d.join("schemas")).unwrap();
+    std::fs::write(d.join("nova-catalog.nova"), "schemas:\n  - path: schemas/\n").unwrap();
+    std::fs::write(d.join("schemas/a.novs"), "@schema acme.test/a@1.2.0\n@root R\nrecord R:\n  n: int\n").unwrap();
+    std::fs::write(d.join("ok.nova"), "@schema acme.test/a@1.0.0\nn: 1\n").unwrap();
+    std::fs::write(d.join("bad.nova"), "@schema acme.test/a@1.0.0\nn: x\n").unwrap();
+    std::fs::write(d.join("other.nova"), "@schema other.test/a@1.0.0\nn: 1\n").unwrap();
+
+    let o = nvf(&d, &["validate", "ok.nova"], "");
+    assert!(o.status.success(), "{o:?}");
+    assert!(!nvf(&d, &["validate", "bad.nova"], "").status.success());
+
+    // Nothing to find: an error that names the ways out, and no network access.
+    let o = nvf(&d, &["validate", "other.nova", "--fetch"], "");
+    assert!(!o.status.success(), "{o:?}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("never fetched"), "{o:?}");
+
+    let o = nvf(&d, &["schema", "resolve", "acme.test/a@1.1.0"], "");
+    assert!(o.status.success(), "{o:?}");
+    assert!(stdout(&o).starts_with("acme.test/a@1.2.0  "), "{}", stdout(&o));
+    assert!(stdout(&o).contains("schemas/a.novs") && stdout(&o).contains("sha256:"), "{}", stdout(&o));
+
+    // The meta-schema is built in, also under its old name.
+    let o = nvf(&d, &["schema", "resolve", "nova-schema@0.3.2"], "");
+    assert!(o.status.success() && stdout(&o).contains("built-in"), "{o:?}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("novafile.dev/meta/schema"), "{o:?}");
+}

@@ -171,6 +171,67 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
         out.push((expect_path(&f), json!({"error": true, "message": e.message})));
     }
 
+    // schema names: classify each (§6.7).
+    let names = root.join("schema-names/names.json");
+    if names.is_file() {
+        let list: Vec<String> = serde_json::from_str(&read(&names)).unwrap_or_else(|e| panic!("{}: {e}", names.display()));
+        let classes: serde_json::Map<String, J> = list
+            .into_iter()
+            .map(|n| {
+                let class = match novafile_schema::schema_name_kind(&n) {
+                    Some(novafile_schema::NameKind::Qualified) => "qualified",
+                    Some(novafile_schema::NameKind::Local) => "local",
+                    None => "invalid",
+                };
+                (n, J::from(class))
+            })
+            .collect();
+        out.push((root.join("schema-names/expect.json"), J::Object(classes)));
+    }
+
+    // schema lookup: resolve the document's @schema through its catalogs (§6.9), never fetching.
+    for d in dirs(&root.join("schema-lookup")) {
+        let doc = [d.join("doc.nova"), d.join("sub/doc.nova")]
+            .into_iter()
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| panic!("{}: no doc.nova", d.display()));
+        let reference = novafile_text::parse_document(&read(&doc))
+            .ok()
+            .and_then(|x| x.directive("schema").map(str::to_owned))
+            .unwrap_or_else(|| panic!("{}: no @schema", doc.display()));
+        let opts = novafile_schema::catalog::Options {
+            start: doc.parent().map(Path::to_path_buf),
+            ..Default::default()
+        };
+        let result = novafile_schema::catalog::Resolver::new(&opts)
+            .map_err(novafile_schema::catalog::LookupError::Invalid)
+            .and_then(|r| r.resolve(&reference));
+        let j = match result {
+            Ok(r) => {
+                let resolved = match &r.origin {
+                    novafile_schema::catalog::Origin::File(p) => p.strip_prefix(&d).unwrap_or(p).display().to_string(),
+                    other => format!(
+                        "<{}>",
+                        if matches!(other, novafile_schema::catalog::Origin::Builtin) {
+                            "builtin"
+                        } else {
+                            "cache"
+                        }
+                    ),
+                };
+                let mut j = json!({"resolved": resolved});
+                if !r.warnings.is_empty() {
+                    j["warnings"] = json!(r.warnings);
+                }
+
+                j
+            }
+            // Paths in messages relative to the case, so expectations are portable.
+            Err(e) => json!({"error": e.kind(), "message": e.to_string().replace(&format!("{}/", d.display()), "")}),
+        };
+        out.push((d.join("expect.json"), j));
+    }
+
     // schema versions: change classification and bump check (§6.7).
     for d in dirs(&root.join("schema-versions")) {
         let old = novafile_schema::parse_schema(&read(&d.join("old.novs"))).unwrap();

@@ -105,6 +105,7 @@ fn serve(mut inbox: impl Iterator<Item = Result<Message, Error>>, mut send: impl
         docs: HashMap::new(),
         disk_schemas: Vec::new(),
         scanned: Vec::new(),
+        resolvers: std::cell::RefCell::default(),
         send: &mut send,
     };
 
@@ -123,6 +124,9 @@ struct Server<'c> {
     disk_schemas: Vec<(PathBuf, Schema)>,
     /// Directories already searched for schemas; nothing below them is scanned again.
     scanned: Vec<PathBuf>,
+    /// Catalog resolvers by project catalog file, built on first use: building one
+    /// reads every source file. Cleared when a schema or catalog is saved or closed.
+    resolvers: std::cell::RefCell<HashMap<PathBuf, std::rc::Rc<novafile_schema::catalog::Resolver>>>,
     /// Sends a message to the client.
     send: &'c mut dyn FnMut(Message) -> Result<(), Error>,
 }
@@ -339,6 +343,18 @@ impl Server<'_> {
         }
     }
 
+    /// Drops the cached catalog resolvers if `uri` is a schema or a catalog, whose
+    /// change can alter what references resolve to. Returns whether it did.
+    fn forget_catalogs(&self, uri: &Uri) -> bool {
+        let catalog = file_path(uri).is_some_and(|p| p.file_name().is_some_and(|n| n == novafile_schema::catalog::CATALOG_FILE));
+        let relevant = catalog || has_ext(uri, "novs");
+        if relevant {
+            self.resolvers.borrow_mut().clear();
+        }
+
+        relevant
+    }
+
     /// Re-reads the `.novs` file at `uri` from disk into the known schemas, dropping it
     /// if it is gone or no longer parses. Returns whether `uri` is a schema file.
     fn reload_schema(&mut self, uri: &Uri) -> bool {
@@ -380,6 +396,26 @@ impl Server<'_> {
     fn find_schema(&self, reference: &str, doc: &Uri) -> Result<Option<Schema>, String> {
         let r = SchemaRef::parse(reference)?;
         let doc_dir = file_path(doc).and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+        // With a project catalog, lookup follows it (spec §6.9) instead of guessing
+        // from the workspace; it never fetches.
+        if let Some(catalog) = doc_dir.as_deref().and_then(novafile_schema::catalog::project_catalog) {
+            use novafile_schema::catalog::{LookupError, Options, Resolver};
+            let cached = self.resolvers.borrow().get(&catalog).cloned();
+            let resolver = if let Some(r) = cached {
+                r
+            } else {
+                let made = std::rc::Rc::new(Resolver::new(&Options::from_env(Vec::new(), doc_dir.clone()))?);
+                self.resolvers.borrow_mut().insert(catalog, made.clone());
+                made
+            };
+
+            return match resolver.resolve(reference) {
+                Ok(found) => Ok(Some(found.schema)),
+                Err(LookupError::NotFound(_)) => Ok(None),
+                Err(e) => Err(format!("{e} ({})", e.kind())),
+            };
+        }
+
         let distance = |schema_file: &PathBuf| match (&doc_dir, schema_file.parent()) {
             (Some(d), Some(s)) => dir_distance(d, s),
             _ => usize::MAX,
@@ -576,7 +612,7 @@ impl Server<'_> {
             }
             DidSaveTextDocument::METHOD => {
                 let p: DidSaveTextDocumentParams = serde_json::from_value(n.params)?;
-                if self.reload_schema(&p.text_document.uri) {
+                if self.reload_schema(&p.text_document.uri) | self.forget_catalogs(&p.text_document.uri) {
                     self.publish_all()?;
                 }
             }
@@ -584,7 +620,7 @@ impl Server<'_> {
                 let p: DidCloseTextDocumentParams = serde_json::from_value(n.params)?;
                 self.docs.remove(&p.text_document.uri);
                 // The disk copy, possibly older than the editor's, takes over again.
-                if self.reload_schema(&p.text_document.uri) {
+                if self.reload_schema(&p.text_document.uri) | self.forget_catalogs(&p.text_document.uri) {
                     self.publish_all()?;
                 }
 
