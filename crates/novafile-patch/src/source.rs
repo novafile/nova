@@ -47,9 +47,15 @@ pub fn apply_to_source(src: &str, patch: &Patch, validate: &dyn Fn(&Value) -> Re
     let value = doc.body.to_value().map_err(|m| PatchError::Invalid(vec![m]))?;
     let applied = apply(&value, patch, validate)?;
 
-    let mut text = src.to_owned();
+    // Each surgical edit re-parses the text, so long patches re-render once instead.
+    const MAX_SURGICAL_OPS: usize = 64;
+    let mut text = if patch.ops.len() > MAX_SURGICAL_OPS { String::new() } else { src.to_owned() };
     let mut cur = value;
     for op in &patch.ops {
+        if text.is_empty() {
+            break;
+        }
+
         let full = patch.scope.join(&op.path);
         let mut next = cur.clone();
         if apply_op(&mut next, &full, &op.kind).is_err() {

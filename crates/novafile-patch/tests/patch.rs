@@ -254,3 +254,30 @@ fn existence_absence_and_in_filters() {
     assert!(novafile_text::Path::parse("services[?!tags=1]").is_err());
     assert!(novafile_text::Path::parse("services[?id in auth]").is_err());
 }
+
+/// Removing the scope target must not let later operations reach the sibling
+/// that slides into its position (§7.5).
+#[test]
+fn scope_target_cannot_be_removed() {
+    let doc = parse("items:\n  - {name: mine, owner: agent}\n  - {name: admin, owner: root}\n").unwrap();
+    let p = parse_patch("@patch\n@scope items[0]\n- \nowner: \"root\" -> \"agent\"\n").unwrap();
+    let e = apply_unchecked(&doc, &p).unwrap_err();
+    assert!(matches!(e, PatchError::Op { index: 0, .. }), "{e:?}");
+    // Removing inside the scope still works.
+    let p = parse_patch("@patch\n@scope items[0]\n- owner\n").unwrap();
+    apply_unchecked(&doc, &p).unwrap();
+}
+
+/// Long patches on text fall back to one re-render and keep the result.
+#[test]
+fn long_patch_on_source_rerenders() {
+    let src = "# keep\na: 0\n";
+    let mut p = String::from("@patch\n");
+    for i in 0..100 {
+        p.push_str(&format!("= f{i}: {i}\n"));
+    }
+
+    let e = novafile_patch::apply_to_source(src, &parse_patch(&p).unwrap(), &|_| Ok(())).unwrap();
+    assert!(!e.surgical);
+    assert!(e.text.contains("# keep") && e.text.contains("f99: 99"), "{}", e.text);
+}

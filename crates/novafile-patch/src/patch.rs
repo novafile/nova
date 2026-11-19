@@ -179,6 +179,9 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
 
     let mut patch = Patch::default();
     let mut seen_header = false;
+    // Line of `counted`; advanced incrementally, since counting from the
+    // start for every operation made parsing quadratic in the patch length.
+    let (mut counted, mut line) = (0, 1);
     loop {
         p.skip_blank_lines();
         if p.at_eof() {
@@ -186,7 +189,8 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
         }
 
         let start = p.pos;
-        let line = p.error_at(start, "").line;
+        line += src[counted..start].matches('\n').count();
+        counted = start;
         let rest_line = src[start..].lines().next().unwrap_or("");
         if let Some(d) = rest_line.strip_prefix('@') {
             if !patch.ops.is_empty() {
@@ -330,8 +334,15 @@ pub fn apply(doc: &Value, patch: &Patch, validate: &dyn Fn(&Value) -> Result<(),
 
     let mut work = doc.clone();
     for (index, op) in patch.ops.iter().enumerate() {
-        let full = patch.scope.join(&op.path);
-        apply_op(&mut work, &full, &op.kind).map_err(|message| PatchError::Op {
+        // Removing the scope target lets a positional scope (`items[0]`) slide
+        // onto the next sibling, which later operations would then change (§7.5).
+        let result = if !patch.scope.is_root() && op.path.is_root() && matches!(op.kind, OpKind::Remove(_)) {
+            Err("cannot remove the scope target itself".to_owned())
+        } else {
+            apply_op(&mut work, &patch.scope.join(&op.path), &op.kind)
+        };
+
+        result.map_err(|message| PatchError::Op {
             index,
             line: op.line,
             op: op.to_string(),
