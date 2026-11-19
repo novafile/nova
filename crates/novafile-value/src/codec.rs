@@ -694,6 +694,15 @@ impl<'a> Decoder<'a> {
             tag::RECORD_LIST => {
                 let n = self.count()?;
                 let k = self.count()?;
+                // Rows of zero fields take no bytes, so `n` would not be bounded by
+                // the input; the encoder never writes such a list.
+                if k == 0 {
+                    return Err(DecodeError {
+                        offset: start,
+                        message: "record list without fields".into(),
+                    });
+                }
+
                 let mut fields: Vec<&'a str> = Vec::with_capacity(k);
                 let mut seen = HashSet::with_capacity(k);
                 for _ in 0..k {
@@ -1031,6 +1040,14 @@ fn decode_whole<'a, T: Build<'a>>(buf: &'a [u8]) -> Result<T, DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Zero-field rows cost no input bytes, so their count is not bounded by it.
+    #[test]
+    fn record_list_without_fields_is_rejected() {
+        // A list holding a record list of 3 rows, 0 fields, dense, then filler bytes.
+        let e = decode(&[tag::LIST, 1, tag::RECORD_LIST, 3, 0, 0, 0, 0, 0]).unwrap_err();
+        assert!(e.message.contains("without fields"), "{e:?}");
+    }
 
     fn rec(entries: Vec<(&str, Value)>) -> Value {
         Value::Record(Record::from_entries(entries.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()).unwrap())
