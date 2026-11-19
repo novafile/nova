@@ -22,7 +22,7 @@ mod writer;
 pub use ast::Document;
 pub use columns::{Column, Columns, decode_row, encode_row, infer_columns, row_line, validate_columns};
 pub use format::{format_preserving, inline_value, render_fragment, render_preserving};
-pub use parser::{ParseError, Parser};
+pub use parser::{ParseError, Parser, classify};
 pub use path::{CmpOp, Path, PathError, Segment};
 pub use writer::{Profile, canonicalize, document_to_text, flow_string, key_text, quote, to_text};
 

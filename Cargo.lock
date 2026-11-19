@@ -1413,9 +1413,12 @@ dependencies = [
 name = "novafile-template"
 version = "0.4.0"
 dependencies = [
+ "base64",
  "novafile-schema",
  "novafile-text",
  "novafile-value",
+ "num-bigint 0.5.1",
+ "sha2",
 ]
 
 [[package]]

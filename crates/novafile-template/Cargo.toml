@@ -1,6 +1,6 @@
 [package]
 name = "novafile-template"
-description = "NOVA template rendering: typed parameters, reuse, conditionals and loops over values"
+description = "NOVA template rendering: typed parameters, reuse, conditionals, loops, expressions and functions over values"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,9 @@ categories.workspace = true
 novafile-value.workspace = true
 novafile-text.workspace = true
 novafile-schema.workspace = true
+base64.workspace = true
+num-bigint.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true
