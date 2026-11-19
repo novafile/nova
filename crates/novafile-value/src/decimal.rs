@@ -82,8 +82,11 @@ impl Decimal {
             } else {
                 10i128.checked_pow(zeros + 1).and_then(|p| coeff.checked_mul(p))
             };
+            // Negative numbers accumulate downwards, so the whole i128 range
+            // parses, including i128::MIN (which can come from CBOR or binary).
+            let d = i128::from(c - b'0');
             *coeff = scaled
-                .and_then(|v| v.checked_add(i128::from(c - b'0')))
+                .and_then(|v| if neg { v.checked_sub(d) } else { v.checked_add(d) })
                 .ok_or_else(|| format!("decimal {s:?} exceeds 38 significant digits"))?;
             zeros = 0;
             Ok(())
@@ -131,7 +134,9 @@ impl Decimal {
             let start = i;
             while i < b.len() && b[i].is_ascii_digit() {
                 e = e * 10 + i64::from(b[i] - b'0');
-                if e > i64::from(i32::MAX) {
+                // Only guards the i64; the final exponent is checked below, after
+                // the fraction and trailing zeros move it (`1e-2147483648` is valid).
+                if e > 1 << 40 {
                     return Err(err());
                 }
 
@@ -152,7 +157,7 @@ impl Decimal {
         }
 
         let exp = i32::try_from(e - frac + i64::from(zeros)).map_err(|_| err())?;
-        Ok(Decimal::new(if neg { -coeff } else { coeff }, exp))
+        Ok(Decimal::new(coeff, exp))
     }
 
     /// Nearest binary64 value; `±inf` when the magnitude exceeds the `f64` range.
@@ -208,6 +213,24 @@ impl fmt::Display for Decimal {
 
 #[cfg(test)]
 mod tests {
+    /// Every decimal the value model holds is written as text that parses back
+    /// to it, including the extremes CBOR or binary input can carry.
+    #[test]
+    fn extremes_round_trip_through_text() {
+        for d in [
+            Decimal::new(1, i32::MIN),
+            Decimal::new(-7, i32::MIN),
+            Decimal::new(7, i32::MAX),
+            Decimal::new(i128::MIN, 0),
+            Decimal::new(i128::MAX, -3),
+        ] {
+            assert_eq!(Decimal::parse(&d.to_string()), Ok(d), "{d}");
+        }
+
+        assert!(Decimal::parse("1e-2147483649").is_err());
+        assert!(Decimal::parse("170141183460469231731687303715884105728").is_err());
+    }
+
     use super::*;
 
     #[test]
