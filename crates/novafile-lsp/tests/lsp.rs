@@ -1,6 +1,8 @@
 //! The language server driven over an in-memory connection: diagnostics, hover,
 //! completion, symbols and formatting.
 
+use std::fmt::Write as _;
+
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -234,6 +236,12 @@ fn end_to_end() {
     open(&c, &patch, "@patch\nreplicas: 1\n");
     let d = c.diagnostics();
     assert_eq!(d[0]["code"], "nova::patch::syntax");
+
+    // Columns after emoji count UTF-16 units: the `]` sits at unit 14.
+    let emoji = format!("{}/y.patch", base(&dir));
+    open(&c, &emoji, "@patch\n+ k: \"éé😀😀\" ]\n");
+    let d = c.diagnostics_for(&emoji);
+    assert_eq!(d[0]["range"]["start"], json!({"line": 1, "character": 14}), "{d}");
 
     c.request("shutdown", Value::Null);
     c.notify("exit", Value::Null);
@@ -471,4 +479,33 @@ fn schema_scan_ignores_symlinks() {
     h.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
     std::fs::remove_dir_all(outside).ok();
+}
+
+/// Large documents: diagnostics with many findings and the outline stay linear.
+#[test]
+fn large_documents_stay_fast() {
+    let (mut c, server, dir) = start();
+    let uri = format!("{}/big.nova", base(&dir));
+    let mut text = String::new();
+    for i in 0..20_000 {
+        let _ = writeln!(text, "keyNumber{i}: {i}");
+    }
+
+    text.push_str("items:\n");
+    for i in 0..4_000 {
+        let _ = writeln!(text, "  - id: x{i}\n    n: {i}");
+    }
+
+    let started = std::time::Instant::now();
+    open(&c, &uri, &text);
+    let d = c.diagnostics_for(&uri);
+    assert!(d.as_array().unwrap().len() >= 20_000);
+    let symbols = c.request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri}}));
+    assert_eq!(symbols.as_array().unwrap().len(), 20_001);
+    assert!(started.elapsed() < Duration::from_secs(15), "took {:?}", started.elapsed());
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    server.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
 }
