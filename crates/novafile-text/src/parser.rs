@@ -712,10 +712,12 @@ impl<'a> Parser<'a> {
         let r = f(self);
         self.bracket_depth -= 1;
         let node = r?;
-        if outer {
+        // Only a value spanning lines needs its line's indentation; finding the
+        // line start for every one-line cell of a long table row is quadratic.
+        let mut off = self.src[start..self.pos].find('\n').map(|i| start + i + 1);
+        if outer && off.is_some() {
             let ls = self.src[..start].rfind('\n').map_or(0, |i| i + 1);
             let base = self.src[ls..].bytes().take_while(|&c| c == b' ').count();
-            let mut off = self.src[start..self.pos].find('\n').map(|i| start + i + 1);
             while let Some(line) = off.filter(|&o| o < self.pos) {
                 let end = self.src[line..].find('\n').map_or(self.src.len(), |i| line + i);
                 let text = &self.src[line..end];
