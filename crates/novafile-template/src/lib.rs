@@ -88,9 +88,11 @@ impl Loader for FsLoader {
         }
 
         // The check above is lexical; a symlink beneath the root may still point out of it.
-        let full = self.root.join(&joined);
+        // Read the resolved path that was checked, not `full`, so a symlink
+        // swapped in between the check and the read is not followed.
         let root = self.root.canonicalize().map_err(|e| format!("template root {}: {e}", self.root.display()))?;
-        if !full.canonicalize().map_err(|e| format!("cannot import {path:?}: {e}"))?.starts_with(&root) {
+        let full = self.root.join(&joined).canonicalize().map_err(|e| format!("cannot import {path:?}: {e}"))?;
+        if !full.starts_with(&root) {
             return Err(format!("import {path:?} escapes the template root"));
         }
 
