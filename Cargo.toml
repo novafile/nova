@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "EUPL-1.2 OR MPL-2.0"
 rust-version = "1.90"
@@ -15,20 +15,20 @@ keywords = ["nova", "serialization", "configuration", "schema", "llm"]
 categories = ["encoding", "parser-implementations", "config"]
 
 [workspace.dependencies]
-novafile-value = { path = "crates/novafile-value", version = "0.2.0", default-features = false }
-novafile-binary = { path = "crates/novafile-binary", version = "0.2.0" }
-novafile-text = { path = "crates/novafile-text", version = "0.2.0" }
-novafile-schema = { path = "crates/novafile-schema", version = "0.2.0" }
-novafile-derive = { path = "crates/novafile-derive", version = "0.2.0" }
-novafile-patch = { path = "crates/novafile-patch", version = "0.2.0" }
-novafile-template = { path = "crates/novafile-template", version = "0.2.0" }
-novafile-json = { path = "crates/novafile-json", version = "0.2.0" }
-novafile-serde = { path = "crates/novafile-serde", version = "0.2.0", default-features = false }
-novafile-facet = { path = "crates/novafile-facet", version = "0.2.0" }
-novafile-formats = { path = "crates/novafile-formats", version = "0.2.0" }
-novafile-proto = { path = "crates/novafile-proto", version = "0.2.0" }
-novafile-lint = { path = "crates/novafile-lint", version = "0.2.0" }
-novafile-schemars = { path = "crates/novafile-schemars", version = "0.2.0" }
+novafile-value = { path = "crates/novafile-value", version = "0.3.0", default-features = false }
+novafile-binary = { path = "crates/novafile-binary", version = "0.3.0" }
+novafile-text = { path = "crates/novafile-text", version = "0.3.0" }
+novafile-schema = { path = "crates/novafile-schema", version = "0.3.0" }
+novafile-derive = { path = "crates/novafile-derive", version = "0.3.0" }
+novafile-patch = { path = "crates/novafile-patch", version = "0.3.0" }
+novafile-template = { path = "crates/novafile-template", version = "0.3.0" }
+novafile-json = { path = "crates/novafile-json", version = "0.3.0" }
+novafile-serde = { path = "crates/novafile-serde", version = "0.3.0", default-features = false }
+novafile-facet = { path = "crates/novafile-facet", version = "0.3.0" }
+novafile-formats = { path = "crates/novafile-formats", version = "0.3.0" }
+novafile-proto = { path = "crates/novafile-proto", version = "0.3.0" }
+novafile-lint = { path = "crates/novafile-lint", version = "0.3.0" }
+novafile-schemars = { path = "crates/novafile-schemars", version = "0.3.0" }
 base64 = "0.23"
 clap = { version = "4", features = ["derive", "env"] }
 criterion = "0.8"
