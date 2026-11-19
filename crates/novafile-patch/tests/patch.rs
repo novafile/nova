@@ -1,6 +1,8 @@
 //! Integration tests for queries, patch parsing and application, diffing and
 //! source-preserving edits.
 
+use std::fmt::Write as _;
+
 use novafile_patch::{PatchError, apply_unchecked, diff, get, parse_patch};
 use novafile_text::{Profile, parse};
 use novafile_value::{Value, revision};
@@ -274,7 +276,7 @@ fn long_patch_on_source_rerenders() {
     let src = "# keep\na: 0\n";
     let mut p = String::from("@patch\n");
     for i in 0..100 {
-        p.push_str(&format!("= f{i}: {i}\n"));
+        let _ = writeln!(p, "= f{i}: {i}");
     }
 
     let e = novafile_patch::apply_to_source(src, &parse_patch(&p).unwrap(), &|_| Ok(())).unwrap();

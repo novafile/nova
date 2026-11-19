@@ -1,5 +1,7 @@
 //! Hand-computed wire bytes, decoder robustness and error reporting.
 
+use std::fmt::Write as _;
+
 use novafile_proto::{decode, encode, proto_file};
 use novafile_schema::{Schema, parse_schema};
 use novafile_value::{Record, Value};
@@ -534,7 +536,7 @@ fn collection_defaults_are_refused_and_zero_fill_is_bounded() {
     // Two message fields per level: absent ones fill in, doubling per level.
     let mut src = String::from("@root R0\n");
     for i in 0..24 {
-        src.push_str(&format!("record R{i}:\n  a: R{} @id(1)\n  b: R{} @id(2)\n", i + 1, i + 1));
+        let _ = write!(src, "record R{i}:\n  a: R{} @id(1)\n  b: R{} @id(2)\n", i + 1, i + 1);
     }
 
     src.push_str("record R24:\n  x: int @id(1)\n");

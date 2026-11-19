@@ -26,6 +26,9 @@ pub struct SourceEdit {
     pub surgical: bool,
 }
 
+/// Patches longer than this re-render once: each surgical edit re-parses the text.
+const MAX_SURGICAL_OPS: usize = 64;
+
 /// Apply `patch` to the document text `src`.
 ///
 /// # Errors
@@ -47,8 +50,6 @@ pub fn apply_to_source(src: &str, patch: &Patch, validate: &dyn Fn(&Value) -> Re
     let value = doc.body.to_value().map_err(|m| PatchError::Invalid(vec![m]))?;
     let applied = apply(&value, patch, validate)?;
 
-    // Each surgical edit re-parses the text, so long patches re-render once instead.
-    const MAX_SURGICAL_OPS: usize = 64;
     let mut text = if patch.ops.len() > MAX_SURGICAL_OPS { String::new() } else { src.to_owned() };
     let mut cur = value;
     for op in &patch.ops {
