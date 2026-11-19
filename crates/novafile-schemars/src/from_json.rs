@@ -14,6 +14,7 @@ type Obj = Map<String, Json>;
 const ANNOTATIONS: &[&str] = &[
     "$schema",
     "$id",
+    "x-nova-schema",
     "$anchor",
     "$dynamicAnchor",
     "$comment",
@@ -151,13 +152,38 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
     Ok(Conversion { schema, warnings: c.warnings })
 }
 
-/// Work out the schema name and version from the arguments, `$id` or `title`.
+/// The schema name, and the version if it has one, that an `https:` `$id`
+/// gives (spec §11.2): its host and path, lowercased, form a qualified name; a
+/// trailing `/{version}.schema.json` or `/{version}.json` gives the version, and
+/// any other `.json` stays part of the name.
+fn name_from_https_id(id: &str) -> Option<(String, Option<Version>)> {
+    let rest = id.strip_prefix("https://")?.trim_end_matches('#').to_ascii_lowercase();
+    if rest.contains(['?', '#', ':', '%']) {
+        return None;
+    }
+
+    for suffix in [".schema.json", ".json"] {
+        if let Some((name, v)) = rest.strip_suffix(suffix).and_then(|r| r.rsplit_once('/'))
+            && let Ok(v) = Version::parse(v)
+            && novafile_schema::schema_name_kind(name) == Some(novafile_schema::NameKind::Qualified)
+        {
+            return Some((name.to_owned(), Some(v)));
+        }
+    }
+
+    (novafile_schema::schema_name_kind(&rest) == Some(novafile_schema::NameKind::Qualified)).then_some((rest, None))
+}
+
+/// Work out the schema name and version from the arguments, `x-nova-schema`,
+/// `$id` (an `https:` URL, or the legacy `urn:nova:name@version`) or `title`.
 fn schema_ref(json: &Json, name: Option<&str>, version: Option<&str>, warnings: &mut Vec<String>) -> Result<(Option<String>, Option<Version>), Error> {
-    let from_doc = ["$id", "title"].iter().find_map(|k| {
-        let s = json.get(k)?.as_str()?;
-        let r = novafile_schema::SchemaRef::parse(s.strip_prefix("urn:nova:").unwrap_or(s)).ok()?;
-        Some((r.name, r.version))
-    });
+    let reference = |s: &str| novafile_schema::SchemaRef::parse(s).ok().map(|r| (r.name, Some(r.version)));
+    let text = |k: &str| json.get(k).and_then(Json::as_str);
+    let from_doc = text("x-nova-schema")
+        .and_then(reference)
+        .or_else(|| text("$id").and_then(name_from_https_id))
+        .or_else(|| text("$id").and_then(|s| s.strip_prefix("urn:nova:")).and_then(reference))
+        .or_else(|| text("title").and_then(reference));
     let Some(name) = name.map(str::to_owned).or_else(|| from_doc.as_ref().map(|(n, _)| n.clone())) else {
         if let Some(v) = version {
             Version::parse(v).map_err(Error::InvalidVersion)?;
@@ -173,8 +199,8 @@ fn schema_ref(json: &Json, name: Option<&str>, version: Option<&str>, warnings: 
 
     let version = match (version, from_doc) {
         (Some(v), _) => Version::parse(v).map_err(Error::InvalidVersion)?,
-        (None, Some((_, v))) => v,
-        (None, None) => {
+        (None, Some((_, Some(v)))) => v,
+        (None, _) => {
             warnings.push("#: no schema version given; using 0.1.0".into());
             Version::new(0, 1, 0)
         }

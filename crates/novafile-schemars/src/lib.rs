@@ -150,7 +150,7 @@
 //! | `@len` in another unit, or on `bytes`; `@range` on `decimal`/`rational` | `x-nova-len` / `x-nova-range` only (not enforced by JSON Schema validators) |
 //! | field default, `@deprecated` | `default` (as JSON), `deprecated: true` |
 //! | `@id(n)`, `@key` | `x-nova-id: n`; `x-nova-key: true` and a note in `description` |
-//! | `@schema name@version` | `$id: urn:nova:name@version`, `title: name@version` |
+//! | `@schema name@version` | `x-nova-schema` and `title`: `name@version`; for a qualified name also `$id: https://{name}/{version}.schema.json` |
 //! | `@root R` | `$ref: "#/$defs/R"` at the top level |
 //!
 //! JSON Schema cannot express `@key` uniqueness or NOVA value equality: a
@@ -224,8 +224,10 @@ pub fn conversion_for<T: schemars::JsonSchema>(name: &str, version: &str) -> Res
 /// Convert a JSON Schema document (draft 2020-12; draft-07 `definitions` and
 /// array-form `items` are accepted too) to a NOVA schema.
 ///
-/// The schema name and version default to those in `$id` (`urn:nova:name@version`,
-/// as written by [`to_json_schema`]) or `title`; without either the schema is
+/// The schema name and version default to those in `x-nova-schema` (as written by
+/// [`to_json_schema`]), then an `https:` `$id` whose host and path form a qualified
+/// name (a trailing `/{version}.schema.json` gives the version), then the legacy
+/// `$id: urn:nova:name@version`, then `title`; without any of them the schema is
 /// anonymous. A name without a version gets `0.1.0` and a warning.
 ///
 /// # Errors

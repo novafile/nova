@@ -545,3 +545,11 @@ fn collection_defaults_are_refused_and_zero_fill_is_bounded() {
     assert!(e.contains("messages"), "{e}");
     assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
 }
+
+#[test]
+fn qualified_names_give_reversed_domain_packages() {
+    let p = |n: &str| novafile_proto::package_name(&schema(&format!("@schema {n}@2.1.0\n@root R\nrecord R:\n  a: int @id(1)\n")));
+    assert_eq!(p("acme.example/billing/invoice").as_deref(), Some("example.acme.billing.invoice.v2"));
+    assert_eq!(p("3m.com/parts-list/2x").as_deref(), Some("com._3m.parts_list._2x.v2"));
+    assert_eq!(p("acme/rich-test").as_deref(), Some("acme_rich_test.v2"));
+}
