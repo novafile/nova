@@ -94,6 +94,7 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
         root_name: String::new(),
         depth: 0,
         patterns: std::cell::Cell::new(novafile_schema::SCHEMA_BUDGET),
+        inlined: HashMap::new(),
     };
 
     let mut schema = Schema::default();
@@ -205,6 +206,9 @@ struct Conv<'a> {
     depth: usize,
     /// Compiled-pattern bytes left for this schema.
     patterns: std::cell::Cell<usize>,
+    /// Types already converted for `$ref`s that point outside the definitions,
+    /// so a pointer used twice per level is not converted 2^depth times.
+    inlined: HashMap<String, TypeRef>,
 }
 
 /// What a (non-nullable) schema maps to at definition level.
@@ -711,9 +715,15 @@ impl Conv<'_> {
             return TypeRef::new(TypeKind::Named(n.clone()));
         }
 
+        if let Some(t) = self.inlined.get(&r) {
+            return t.clone();
+        }
+
         if let Some(target) = r.strip_prefix('#').and_then(|p| self.doc.pointer(p)) {
             let target = target.clone();
-            return self.ty(&target, &r, hint);
+            let t = self.ty(&target, &r, hint);
+            self.inlined.insert(r, t.clone());
+            return t;
         }
 
         self.warn(at, format!("$ref {r:?} cannot be resolved (only local references are supported); using any"));

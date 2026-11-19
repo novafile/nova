@@ -393,3 +393,22 @@ fn foreign_patterns_and_consts() {
     assert!(text.contains("  fixed?: \"x\"\n"), "{text}");
     novafile_schema::parse_schema(&c.schema.to_string()).unwrap();
 }
+
+/// A `$ref` outside the definitions, used twice per level, is converted once.
+#[test]
+fn repeated_inline_refs_are_converted_once() {
+    let mut x = serde_json::Map::new();
+    for i in 0..30 {
+        let next = format!("#/x/a{}", i + 1);
+        x.insert(
+            format!("a{i}"),
+            json!({"type": "object", "properties": {"p": {"$ref": next}, "q": {"$ref": next}}}),
+        );
+    }
+
+    x.insert("a30".into(), json!({"type": "string"}));
+    let started = std::time::Instant::now();
+    let c = convert(&json!({"x": x, "$ref": "#/x/a0"}));
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+    assert!(c.schema.defs.len() <= 40, "{} definitions", c.schema.defs.len());
+}
