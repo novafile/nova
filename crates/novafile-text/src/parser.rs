@@ -1284,6 +1284,8 @@ impl<'a> Parser<'a> {
             Some(b'|') => self.block_string(parent),
             Some(b'!') => {
                 let n = self.variant_flow()?;
+                // parse_flow would set this; spans and `fmt` rely on it ending after `)`.
+                self.last_end = self.pos;
                 if let Node::Variant(tag, None) = &n {
                     self.skip_inline_ws();
                     if self.at_eol_or_comment() {
