@@ -726,3 +726,13 @@ fn review_fixes_for_patterns() {
     let e = parse_schema(&format!("record R:\n{many}")).unwrap_err();
     assert!(e.message.contains("MiB"), "{e}");
 }
+
+/// A field defaulting to its own record stops at the depth limit instead of
+/// overflowing the stack; this runs on a test thread's 2 MiB stack.
+#[test]
+fn self_referential_defaults_stop_at_a_depth_limit() {
+    let s = parse_schema("@root list<R>\nrecord R:\n  a: R = {}\n").unwrap();
+    let doc = novafile_text::parse(&"- {}\n".repeat(1000)).unwrap();
+    let e = s.resolve(&doc).unwrap_err();
+    assert!(e.iter().any(|i| i.message.contains("deeper")), "{:?}", &e[..e.len().min(3)]);
+}
