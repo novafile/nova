@@ -1,7 +1,7 @@
 //! Schema evolution checks (spec §6.5). "Compatible" means every value valid
 //! under the old schema resolves under the new one (new readers, old data).
 
-use crate::model::{Def, IntKind, Num, Schema, TypeKind, TypeRef, VariantDef};
+use crate::model::{Constraints, Def, IntKind, Num, Schema, TypeKind, TypeRef, VariantDef};
 
 /// One difference between two schema versions, as found by [`check_compatibility`].
 #[derive(Clone, Debug, PartialEq)]
@@ -91,8 +91,40 @@ fn widens_in(s: (&Schema, &Schema), old: &TypeRef, new: &TypeRef, depth: usize) 
         return b.len() >= a.len() && a[..last] == b[..last] && widens(&a[last], &b[last]);
     }
 
+    // An alias stands for its target. Same names were compared by name above.
+    if !same_name {
+        let expand = |sc: &Schema, t: &TypeRef| match &t.kind {
+            TypeKind::Named(n) if t.constraints == Constraints::default() => match sc.def(n) {
+                Some(Def::Alias(a)) => Some(TypeRef {
+                    nullable: t.nullable || a.nullable,
+                    ..a.clone()
+                }),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        match (expand(s.0, old), expand(s.1, new)) {
+            (None, None) => {}
+            (a, b) => return widens(a.as_ref().unwrap_or(old), b.as_ref().unwrap_or(new)),
+        }
+    }
+
     if old.nullable && !new.nullable {
         return false;
+    }
+
+    // A literal widens to itself, or to a string it satisfies (spec §6.5).
+    if let TypeKind::Literal(l) = &old.kind {
+        return match &new.kind {
+            TypeKind::Literal(m) => l == m,
+            TypeKind::String => {
+                let c = &new.constraints;
+                let len = c.len_unit.measure(l) as u64;
+                c.len.is_none_or(|(lo, hi)| lo.is_none_or(|lo| lo <= len) && hi.is_none_or(|hi| len <= hi)) && c.pattern.as_ref().is_none_or(|p| p.is_match(l))
+            }
+            _ => false,
+        };
     }
 
     let kinds = match (&old.kind, &new.kind) {
@@ -129,7 +161,9 @@ fn widens_in(s: (&Schema, &Schema), old: &TypeRef, new: &TypeRef, depth: usize) 
     let len_ok = nlen.0.is_none_or(|n| olen.0.is_some_and(|o| n <= o)) && nlen.1.is_none_or(|n| olen.1.is_some_and(|o| o <= n));
     // Changing what @len counts is only safe if the new type has no @len.
     let unit_ok = new.constraints.len.is_none() || old.constraints.len.is_none() || old.constraints.len_unit == new.constraints.len_unit;
-    lo_ok && hi_ok && len_ok && unit_ok
+    // Patterns are compared by text, never by the languages they match (§6.5).
+    let pattern_ok = new.constraints.pattern.is_none() || new.constraints.pattern == old.constraints.pattern;
+    lo_ok && hi_ok && len_ok && unit_ok && pattern_ok
 }
 
 /// Collect into `out` the members of `t` that count for union positions:

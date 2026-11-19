@@ -660,3 +660,49 @@ fn union_order_warnings() {
         assert!(g.starts_with(want), "{g} does not start with {want}");
     }
 }
+
+#[test]
+fn patterns_and_literals_round_trip() {
+    let src = "@schema p@1.0.0\n@x-lint case=kebab\n@root R\ntype Op = \"=\" | \">=\" | \"a \\\"q\\\" #x\"\nrecord R:\n  s?: string @len(..8) @pattern(\"[)( #\\\"]\\\\n?\")\n  o?: Op\n  k?: map<string @pattern(\"[a-z]+\"), int>\n";
+    let s = parse_schema(src).unwrap();
+    assert_eq!(s.extensions, ["x-lint case=kebab"]);
+    assert!(!s.to_canonical_text().contains("x-lint"), "extensions stay out of the canonical text");
+    let again = parse_schema(&s.to_canonical_text()).unwrap();
+    assert_eq!(again.fingerprint_hex(), s.fingerprint_hex());
+    let from_desc = novafile_schema::Schema::from_value(&s.to_value()).unwrap();
+    assert_eq!(from_desc.fingerprint_hex(), s.fingerprint_hex());
+    assert!(novafile_schema::meta_schema().validate(&s.to_value()).is_ok());
+
+    let ok = |doc: &str| s.resolve(&novafile_text::parse(doc).unwrap());
+    ok("s: \")\\n\"\no: \">=\"\n").unwrap();
+    assert!(ok("o: \"a \\\"q\\\" #x\"\n").is_ok());
+    assert!(ok("o: \"<\"\n").is_err());
+    let e = ok("k: {Ab: 1}\n").unwrap_err();
+    assert_eq!(e[0].path.to_string(), "k");
+    assert!(e[0].message.starts_with("key \"Ab\" does not match"), "{e:?}");
+}
+
+#[test]
+fn descriptor_rejects_misplaced_pattern_and_literal() {
+    let bad = |t: &str| {
+        let d = novafile_text::parse(&format!("root: {t}\ndefs: []\n")).unwrap();
+        novafile_schema::Schema::from_value(&d).unwrap_err()
+    };
+    let m = bad("{kind: !int, pattern: \"[0-9]+\"}");
+    assert!(m.contains("pattern"), "{m}");
+    assert!(bad("{kind: !string, literal: x}").contains("literal"));
+    assert!(bad("{kind: !literal, literal: x, len: {max: 3}}").contains("literal"));
+    assert!(bad("{kind: !string, pattern: \"\\\\d\"}").contains("I-Regexp"));
+}
+
+#[test]
+fn source_text_keeps_extensions() {
+    let s = parse_schema("@schema a@1.0.0\n@x-lint case=kebab\n@root R\nrecord R:\n  v: string\n").unwrap();
+    assert!(
+        s.to_source_text().starts_with("@schema a@1.0.0\n@x-lint case=kebab\n@root R\n"),
+        "{}",
+        s.to_source_text()
+    );
+    assert_eq!(parse_schema(&s.to_source_text()).unwrap(), s);
+    assert!(parse_schema("record R:\n  v: string\n@x-lint case=kebab\n").is_err());
+}

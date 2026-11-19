@@ -114,6 +114,9 @@ pub enum TypeKind {
     Tuple(Vec<TypeRef>),
     /// A reference to a record, enum or alias definition by name.
     Named(String),
+    /// `"text"`: a string literal type, exactly the string `text` (spec
+    /// §6.1). It takes no constraints.
+    Literal(String),
     /// `A | B | …`: two or more members, tried in order (spec §6.1, §6.3).
     /// The union itself is never nullable and carries no constraints; its
     /// members do.
@@ -232,7 +235,7 @@ impl LenUnit {
     }
 }
 
-/// Type-level attributes `@range` and `@len` (spec §6.1).
+/// Type-level attributes `@range`, `@len` and `@pattern` (spec §6.1).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Constraints {
     /// `@range(lo..hi)`: inclusive numeric bounds, either side optional.
@@ -243,6 +246,8 @@ pub struct Constraints {
     pub len: Option<(Option<u64>, Option<u64>)>,
     /// What `@len` counts for strings; other values always count elements.
     pub len_unit: LenUnit,
+    /// `@pattern("…")`: an I-Regexp the whole string must match. Only on `string`.
+    pub pattern: Option<crate::Pattern>,
 }
 
 /// A type expression as used for a field, element, payload or alias: kind,
@@ -361,6 +366,9 @@ pub struct Schema {
     pub root: Option<TypeRef>,
     /// Definitions in declaration order; names are unique.
     pub defs: Vec<(String, Def)>,
+    /// `@x-…` extension directives as written (without `@`), in order. They
+    /// are not part of the canonical text or the descriptor (spec §6.6).
+    pub extensions: Vec<String>,
 }
 
 impl Schema {
@@ -424,6 +432,7 @@ impl fmt::Display for TypeRef {
                 f.write_str(")")?;
             }
             TypeKind::Named(n) => f.write_str(n)?,
+            TypeKind::Literal(s) => f.write_str(&novafile_text::quote(s))?,
             TypeKind::Union(ms) => {
                 for (i, m) in ms.iter().enumerate() {
                     if i > 0 {
@@ -456,6 +465,10 @@ impl fmt::Display for TypeRef {
             }
 
             f.write_str(")")?;
+        }
+
+        if let Some(p) = &self.constraints.pattern {
+            write!(f, " @pattern({})", novafile_text::quote(p.as_str()))?;
         }
 
         Ok(())

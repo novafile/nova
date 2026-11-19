@@ -71,3 +71,13 @@ fn infrastructure_json_schema_shape() {
     );
     assert_eq!(json["$defs"]["Infrastructure"]["properties"]["status"]["default"], "active");
 }
+
+#[test]
+fn patterns_and_literals_round_trip_exactly() {
+    let old = parse_schema(
+        "@root R\ntype Op = \"=\" | \">=\"\ntype Agg = \"sum\" | \"max\"\nrecord R:\n  agg?: Agg\n  maybe?: \"x\"?\n  caret?: string @pattern(\"^[a-z]+$\\\\-\")\n  slug: string @len(..8) @pattern(\"[a-z0-9]([a-z0-9-]*[a-z0-9])?\")\n  dot?: string @pattern(\"a.c[.]\")\n  op?: Op\n  one?: \"x\"\n",
+    )
+    .unwrap();
+    let new = assert_round_trip(&old);
+    assert_eq!(new.fingerprint(), old.fingerprint());
+}

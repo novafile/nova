@@ -7,6 +7,7 @@ pub mod derive;
 mod descriptor;
 mod model;
 mod parse;
+mod pattern;
 mod positional;
 mod resolve;
 mod version;
@@ -19,6 +20,7 @@ pub use model::*;
 #[cfg(feature = "derive")]
 pub use novafile_derive::NovaSchema;
 pub use parse::{SchemaError, parse_schema, parse_type};
+pub use pattern::Pattern;
 pub use resolve::Issue;
 pub use version::{ChangeKind, PreId, SchemaRef, Version, valid_schema_name};
 pub use warn::UnionWarning;
@@ -28,6 +30,18 @@ impl Schema {
     #[must_use]
     pub fn to_canonical_text(&self) -> String {
         self.to_string()
+    }
+
+    /// The canonical text with the `@x-…` extension directives kept after the
+    /// `@schema` line: what tools write when they put a schema back in a file.
+    #[must_use]
+    pub fn to_source_text(&self) -> String {
+        let canon = self.to_canonical_text();
+        let ext: String = self.extensions.iter().flat_map(|e| ["@", e.as_str(), "\n"]).collect();
+        match canon.split_once('\n') {
+            Some((first, rest)) if first.starts_with("@schema ") => format!("{first}\n{ext}{rest}"),
+            _ => ext + &canon,
+        }
     }
 
     /// The first 64 bits of SHA-256 over the canonical text, as 16 hex digits (spec §6.6).

@@ -166,6 +166,12 @@ fn ty(schema: &Schema, t: &TypeRef) -> Json {
     let mut s = kind(schema, &t.kind);
     constrain(schema, t, &mut s);
     if t.nullable {
+        // `const` alone would still reject the `null` that `type` now admits.
+        if let Some(c) = s.get_mut("const").map(Json::take) {
+            s["enum"] = json!([c, null]);
+            s.as_object_mut().expect("has const").remove("const");
+        }
+
         s = nullable(s);
     }
 
@@ -250,8 +256,21 @@ fn kind(schema: &Schema, k: &TypeKind) -> Json {
         TypeKind::Duration => json!({"type": "string", "pattern": patterns::DURATION, "x-nova-kind": "duration"}),
         TypeKind::List(t) => json!({"type": "array", "items": ty(schema, t)}),
         TypeKind::Set(t) => json!({"type": "array", "items": ty(schema, t), "uniqueItems": true}),
-        // JSON Schema has no ordered choice; `anyOf` accepts the same values.
-        TypeKind::Union(ms) => json!({"anyOf": ms.iter().map(|t| ty(schema, t)).collect::<Vec<_>>()}),
+        TypeKind::Union(ms) => {
+            let lits: Option<Vec<&str>> = ms
+                .iter()
+                .map(|m| match &m.kind {
+                    TypeKind::Literal(l) if !m.nullable => Some(l.as_str()),
+                    _ => None,
+                })
+                .collect();
+            match lits {
+                // Literals are disjoint, so their order needs no ordered choice.
+                Some(lits) => json!({"type": "string", "enum": lits, "x-nova-kind": "literal"}),
+                // JSON Schema has no ordered choice; `anyOf` accepts the same values.
+                None => json!({"anyOf": ms.iter().map(|t| ty(schema, t)).collect::<Vec<_>>()}),
+            }
+        }
         TypeKind::Tuple(ts) => {
             let items: Vec<Json> = ts.iter().map(|t| ty(schema, t)).collect();
             json!({"type": "array", "prefixItems": items, "items": false, "minItems": ts.len()})
@@ -276,6 +295,8 @@ fn kind(schema: &Schema, k: &TypeKind) -> Json {
             }
         }
         TypeKind::Named(n) => json!({"$ref": def_ref(n)}),
+        // The marker keeps identifier literals from reading back as an enum.
+        TypeKind::Literal(l) => json!({"type": "string", "const": l, "x-nova-kind": "literal"}),
     }
 }
 
@@ -315,7 +336,7 @@ fn target(schema: &Schema, t: &TypeRef) -> Target {
     }
 }
 
-/// Add the `@range` and `@len` constraints of `t` to `s`, as JSON Schema
+/// Add the `@range`, `@len` and `@pattern` constraints of `t` to `s`, as JSON Schema
 /// keywords where they apply and as `x-nova-range`/`x-nova-len` otherwise.
 fn constrain(schema: &Schema, t: &TypeRef, s: &mut Json) {
     let c = &t.constraints;
@@ -384,6 +405,13 @@ fn constrain(schema: &Schema, t: &TypeRef, s: &mut Json) {
 
             obj.insert("x-nova-len".into(), format!("{}..{}{unit}", bound(lo), bound(hi)).into());
         }
+    }
+
+    // The parser allows @pattern only on `string`; the exact text rides along
+    // so reading the JSON Schema back restores it (spec §11.2).
+    if let Some(p) = &c.pattern {
+        obj.insert("pattern".into(), p.to_ecmascript().into());
+        obj.insert("x-nova-pattern".into(), p.as_str().into());
     }
 }
 

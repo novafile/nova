@@ -1349,6 +1349,7 @@ dependencies = [
  "novafile-derive",
  "novafile-text",
  "novafile-value",
+ "regex",
  "unicode-segmentation",
 ]
 

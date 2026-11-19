@@ -324,7 +324,7 @@ enum SchemaCmd {
         /// Schema descriptor (NOVA data).
         file: PathBuf,
     },
-    /// Print the meta-schema `nova-schema@0.3.1`, which describes schema descriptors.
+    /// Print the meta-schema `nova-schema@0.3.2`, which describes schema descriptors.
     Meta,
     /// Print a JSON Schema (2020-12) describing the JSON form of valid documents.
     JsonSchema {
@@ -421,7 +421,7 @@ fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
 }
 
 /// Schema reference of the meta-schema that describes schema descriptors.
-const META_REF: &str = "nova-schema@0.3.1";
+const META_REF: &str = "nova-schema@0.3.2";
 
 /// Loads a document in the given input format.
 ///
@@ -870,7 +870,7 @@ fn run(cli: Cli) -> R<ExitCode> {
             };
 
             if file.extension().is_some_and(|e| e == "novs") && matches!(to, Format::Nova | Format::Canonical) {
-                out(load_schema(&file)?.to_canonical_text().as_bytes(), write.then_some(file.as_path()))?;
+                out(load_schema(&file)?.to_source_text().as_bytes(), write.then_some(file.as_path()))?;
                 return Ok(ExitCode::SUCCESS);
             }
 
@@ -1058,9 +1058,14 @@ fn run(cli: Cli) -> R<ExitCode> {
                 let applied = novafile_patch::apply(&l.value, &p, check).map_err(|e| patch_error(&e, &patch, &patch_src))?;
                 if is_schema {
                     // Patched schema descriptors are written back in the schema language.
-                    let s = Schema::from_value(&applied.value)?;
+                    let mut s = Schema::from_value(&applied.value)?;
+                    // Descriptors leave out `@x-…` directives; keep the file's own.
+                    if let Ok(old) = novafile_schema::parse_schema(&String::from_utf8_lossy(&bytes)) {
+                        s.extensions = old.extensions;
+                    }
+
                     eprintln!("note: {} is rewritten in canonical form (comments are not kept)", file.display());
-                    (s.to_canonical_text().into_bytes(), applied)
+                    (s.to_source_text().into_bytes(), applied)
                 } else {
                     // Written back in the format it was read in.
                     let to = match detect(&file, &bytes, InputFormat::Auto) {
@@ -1171,7 +1176,7 @@ fn run(cli: Cli) -> R<ExitCode> {
             eprintln!("(token counts are a tokenizer-independent heuristic; see spec §10)");
         }
         Cmd::Schema { cmd } => match cmd {
-            SchemaCmd::Fmt { file } | SchemaCmd::FromNova { file } => print!("{}", load_schema(&file)?.to_canonical_text()),
+            SchemaCmd::Fmt { file } | SchemaCmd::FromNova { file } => print!("{}", load_schema(&file)?.to_source_text()),
             SchemaCmd::Fingerprint { file } => println!("{}", load_schema(&file)?.fingerprint()),
             SchemaCmd::Proto { file } => print!("{}", novafile_proto::proto_file(&load_schema(&file)?)?),
             SchemaCmd::ToNova { file } => {

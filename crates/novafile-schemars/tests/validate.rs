@@ -176,3 +176,30 @@ fn every_kind_validates() {
     assert!(bad(&|j| j["price"] = "2000".into()).is_empty(), "decimal @range is x-nova-range only");
     assert!(bad(&|j| j["name"] = "x".repeat(11).into()).is_empty(), "@len(.., utf8) is x-nova-len only");
 }
+
+#[test]
+fn patterns_and_literals_validate_like_nova() {
+    let schema = parse_schema(
+        "@root R\nrecord R:\n  slug?: string @pattern(\"[a-z]+.[?]\")\n  op?: \"=\" | \">=\"\n  caret?: string @pattern(\"^[a-z]+\")\n  maybe?: \"x\"?\n",
+    )
+    .unwrap();
+    let v = validator(&schema);
+    for (doc, ok) in [
+        ("slug: \"ab-?\"", true),
+        ("slug: \"xab-?\"", true),
+        ("slug: \"ab\\n?\"", false),
+        ("slug: \"1ab-?\"", false),
+        ("slug: \"ab-?x\"", false),
+        ("op: \">=\"", true),
+        ("op: \"<\"", false),
+        ("caret: \"^abc\"", true),
+        ("caret: abc", false),
+        ("maybe: null", true),
+        ("maybe: x", true),
+        ("maybe: y", false),
+    ] {
+        let value = novafile_text::parse(&format!("{doc}\n")).unwrap();
+        assert_eq!(schema.validate(&value).is_ok(), ok, "nova: {doc}");
+        assert_eq!(errors(&v, &json_of(&value)).is_empty(), ok, "json schema: {doc}");
+    }
+}

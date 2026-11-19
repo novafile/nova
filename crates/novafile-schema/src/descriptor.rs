@@ -2,7 +2,7 @@
 //!
 //! [`Schema::to_value`] produces the *descriptor* of a schema: an ordinary
 //! NOVA value described by the meta-schema [`meta_schema`]
-//! (`nova-schema@0.3.1`). [`Schema::from_value`] turns a descriptor back
+//! (`nova-schema@0.3.2`). [`Schema::from_value`] turns a descriptor back
 //! into a schema by rendering its canonical text and parsing that, so
 //! descriptors are validated exactly like hand-written schemas.
 
@@ -64,11 +64,13 @@ fn type_value(t: &TypeRef) -> Value {
         TypeKind::Tuple(_) => "tuple",
         TypeKind::Named(_) => "named",
         TypeKind::Union(_) => "union",
+        TypeKind::Literal(_) => "literal",
     };
 
     e.push(("kind", tag(kind)));
     match &t.kind {
         TypeKind::Named(n) => e.push(("ref", s(n))),
+        TypeKind::Literal(l) => e.push(("literal", s(l))),
         TypeKind::List(i) | TypeKind::Set(i) => e.push(("item", type_value(i))),
         TypeKind::Map(k, v) => {
             e.push(("key", type_value(k)));
@@ -110,6 +112,10 @@ fn type_value(t: &TypeRef) -> Value {
         }
 
         e.push(("len", rec(l)));
+    }
+
+    if let Some(p) = &t.constraints.pattern {
+        e.push(("pattern", s(p.as_str())));
     }
 
     rec(e)
@@ -226,6 +232,7 @@ impl Schema {
             version: None,
             root: r.get("root").map(value_type).transpose()?,
             defs: Vec::new(),
+            extensions: Vec::new(),
         };
 
         if let Some(ver) = text("version") {
@@ -338,8 +345,8 @@ fn value_type(v: &Value) -> Result<TypeRef, String> {
                     return Err("a union needs at least two `items`".into());
                 }
 
-                if matches!(r.get("nullable"), Some(Value::Bool(true))) || r.contains_key("range") || r.contains_key("len") {
-                    return Err("a union carries no `nullable`, `range` or `len`; its members do".into());
+                if matches!(r.get("nullable"), Some(Value::Bool(true))) || ["range", "len", "pattern"].iter().any(|k| r.contains_key(k)) {
+                    return Err("a union carries no `nullable`, `range`, `len` or `pattern`; its members do".into());
                 }
 
                 if items.iter().any(|m| matches!(m.kind, TypeKind::Union(_))) {
@@ -349,9 +356,20 @@ fn value_type(v: &Value) -> Result<TypeRef, String> {
                 TypeKind::Union(items)
             }
         }
+        "literal" => {
+            if ["range", "len", "pattern"].iter().any(|k| r.contains_key(k)) {
+                return Err("a literal type carries no `range`, `len` or `pattern`".into());
+            }
+
+            TypeKind::Literal(r.get("literal").and_then(Value::as_str).ok_or("literal type needs `literal`")?.to_owned())
+        }
         "named" => TypeKind::Named(r.get("ref").and_then(Value::as_str).ok_or("named type needs `ref`")?.to_owned()),
         other => TypeKind::Int(IntKind::from_name(other).ok_or_else(|| format!("unknown kind {other:?}"))?),
     };
+
+    if kind != "literal" && r.contains_key("literal") {
+        return Err(format!("only a literal type has `literal`, not {kind}"));
+    }
 
     let mut t = TypeRef::new(tk);
     t.nullable = matches!(r.get("nullable"), Some(Value::Bool(true)));
@@ -370,6 +388,15 @@ fn value_type(v: &Value) -> Result<TypeRef, String> {
         if let Some(Value::Variant(u, None)) = l.get("unit") {
             t.constraints.len_unit = LenUnit::from_name(u).ok_or("unknown len unit")?;
         }
+    }
+
+    if let Some(p) = r.get("pattern") {
+        if kind != "string" {
+            return Err(format!("`pattern` applies to string, not {kind}"));
+        }
+
+        let p = p.as_str().ok_or("pattern must be a string")?;
+        t.constraints.pattern = Some(crate::Pattern::new(p).map_err(|e| format!("pattern {}: {e}", novafile_text::quote(p)))?);
     }
 
     Ok(t)

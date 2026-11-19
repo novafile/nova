@@ -197,6 +197,8 @@ impl<'s> Ctx<'s> {
             ((_, Some(Def::Record(_))), Value::Record(_)) | ((_, Some(Def::Enum(_))), Value::String(_) | Value::Variant(..) | Value::Record(_)) => true,
             ((rt, None), v) => match (&rt.kind, v) {
                 (TypeKind::Union(ms), v) => ms.iter().any(|m| self.accepts(v, m, seen)),
+                // A literal explains a failure only for its own string.
+                (TypeKind::Literal(l), Value::String(s)) => l == s,
                 (TypeKind::Any, _)
                 | (TypeKind::Null, Value::Null)
                 | (TypeKind::Bool, Value::Bool(_))
@@ -231,6 +233,7 @@ impl<'s> Ctx<'s> {
     /// conversions of spec §6.3.
     #[expect(clippy::match_same_arms, reason = "one arm per kind keeps the conversion table readable")]
     #[expect(clippy::cast_precision_loss, reason = "the int-to-float arm only takes integers up to 2^53, exact in f64")]
+    #[expect(clippy::too_many_lines, reason = "one arm per kind and conversion")]
     fn structural(&mut self, v: Value, kind: &'s TypeKind) -> Value {
         match (kind, v) {
             (TypeKind::Any, v) => v,
@@ -263,6 +266,7 @@ impl<'s> Ctx<'s> {
             }
             (TypeKind::Rational, Value::String(s)) => self.lexical(s, "rational", |s| Rational::parse(s).map(Value::Rational)),
             (TypeKind::String, v @ Value::String(_)) => v,
+            (TypeKind::Literal(l), v @ Value::String(_)) if v.as_str() == Some(l) => v,
             (TypeKind::Bytes, v @ Value::Bytes(_)) => v,
             (TypeKind::Bytes, Value::String(s)) => self.lexical(s, "bytes", |s| {
                 base64::engine::general_purpose::STANDARD.decode(s).map(Value::Bytes).map_err(|e| e.to_string())
@@ -305,8 +309,9 @@ impl<'s> Ctx<'s> {
                 let out = entries
                     .into_iter()
                     .map(|(k, v)| {
-                        self.path.push(Segment::Key(k.clone()));
-                        let k2 = self.check(k, kt);
+                        let seg = Segment::Key(k.clone());
+                        let k2 = self.key(k, kt);
+                        self.path.push(seg);
                         let v2 = self.check(v, vt);
                         self.path.pop();
                         (k2, v2)
@@ -319,8 +324,9 @@ impl<'s> Ctx<'s> {
                     .into_entries()
                     .into_iter()
                     .map(|(k, v)| {
-                        self.path.push(Segment::Field(k.clone()));
-                        let k2 = self.check(Value::String(k), kt);
+                        let seg = Segment::Field(k.clone());
+                        let k2 = self.key(Value::String(k), kt);
+                        self.path.push(seg);
                         let v2 = self.check(v, vt);
                         self.path.pop();
                         (k2, v2)
@@ -334,6 +340,18 @@ impl<'s> Ctx<'s> {
                 v
             }
         }
+    }
+
+    /// Resolve a map key against `kt`. Its issues are reported at the map,
+    /// since a path cannot point at a key itself, and say that a key failed.
+    fn key(&mut self, k: Value, kt: &'s TypeRef) -> Value {
+        let mark = self.issues.len();
+        let k = self.check(k, kt);
+        for is in &mut self.issues[mark..] {
+            is.message.insert_str(0, "key ");
+        }
+
+        k
     }
 
     /// Parse the string `s` with `f` as a `what`; on failure, record an issue
@@ -495,6 +513,16 @@ impl<'s> Ctx<'s> {
                 let b = |o: &Option<Num>| o.as_ref().map(std::string::ToString::to_string).unwrap_or_default();
                 self.issue(format!("{n} is outside @range({}..{})", b(lo), b(hi)));
             }
+        }
+
+        if let (Some(p), Value::String(s)) = (&c.pattern, v)
+            && !p.is_match(s)
+        {
+            self.issue(format!(
+                "{} does not match @pattern({})",
+                novafile_text::quote(s),
+                novafile_text::quote(p.as_str())
+            ));
         }
 
         if let Some((lo, hi)) = c.len {
