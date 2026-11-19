@@ -401,13 +401,12 @@ impl Server<'_> {
         if let Some(catalog) = doc_dir.as_deref().and_then(novafile_schema::catalog::project_catalog) {
             use novafile_schema::catalog::{LookupError, Options, Resolver};
             let cached = self.resolvers.borrow().get(&catalog).cloned();
-            let resolver = match cached {
-                Some(r) => r,
-                None => {
-                    let made = std::rc::Rc::new(Resolver::new(&Options::from_env(Vec::new(), doc_dir.clone()))?);
-                    self.resolvers.borrow_mut().insert(catalog, made.clone());
-                    made
-                }
+            let resolver = if let Some(r) = cached {
+                r
+            } else {
+                let made = std::rc::Rc::new(Resolver::new(&Options::from_env(Vec::new(), doc_dir.clone()))?);
+                self.resolvers.borrow_mut().insert(catalog, made.clone());
+                made
             };
 
             return match resolver.resolve(reference) {

@@ -210,7 +210,14 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
             Ok(r) => {
                 let resolved = match &r.origin {
                     novafile_schema::catalog::Origin::File(p) => p.strip_prefix(&d).unwrap_or(p).display().to_string(),
-                    other => format!("<{}>", if matches!(other, novafile_schema::catalog::Origin::Builtin) { "builtin" } else { "cache" }),
+                    other => format!(
+                        "<{}>",
+                        if matches!(other, novafile_schema::catalog::Origin::Builtin) {
+                            "builtin"
+                        } else {
+                            "cache"
+                        }
+                    ),
                 };
                 let mut j = json!({"resolved": resolved});
                 if !r.warnings.is_empty() {

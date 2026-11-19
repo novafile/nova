@@ -284,8 +284,14 @@ fn names_and_versions() {
         named(json!({"x-nova-schema": "acme.example/a@1.2.3", "$id": "https://other.example/b/9.9.9.schema.json"})).as_deref(),
         Some("acme.example/a@1.2.3")
     );
-    assert_eq!(named(json!({"$id": "https://Acme.Example/billing/invoice/2.1.0.schema.json"})).as_deref(), Some("acme.example/billing/invoice@2.1.0"));
-    assert_eq!(named(json!({"$id": "https://json.schemastore.org/package.json"})).as_deref(), Some("json.schemastore.org/package.json@0.1.0"));
+    assert_eq!(
+        named(json!({"$id": "https://Acme.Example/billing/invoice/2.1.0.schema.json"})).as_deref(),
+        Some("acme.example/billing/invoice@2.1.0")
+    );
+    assert_eq!(
+        named(json!({"$id": "https://json.schemastore.org/package.json"})).as_deref(),
+        Some("json.schemastore.org/package.json@0.1.0")
+    );
     assert_eq!(named(json!({"$id": "https://acme.example/x?y=1"})), None);
     let c = from_json_schema(&json!({"title": "shop@1.0.0-rc.1", "type": "boolean"}), None, Some("1.0.0")).unwrap();
     assert_eq!(c.schema.reference().unwrap().to_string(), "shop@1.0.0");

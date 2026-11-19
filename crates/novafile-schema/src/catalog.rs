@@ -6,9 +6,7 @@
 //! the tools; [`Resolver::fetch_url`], [`Resolver::accept_fetched`] and
 //! [`Resolver::store`] give them everything else.
 
-use crate::{
-    LEGACY_META_SCHEMA_NAME, META_SCHEMA_NAME, NameKind, Schema, SchemaRef, Version, meta_catalog, meta_schema, parse_schema, schema_name_kind,
-};
+use crate::{LEGACY_META_SCHEMA_NAME, META_SCHEMA_NAME, NameKind, Schema, SchemaRef, Version, meta_catalog, meta_schema, parse_schema, schema_name_kind};
 use novafile_value::Value;
 use std::cmp::Ordering;
 use std::fmt;
@@ -153,7 +151,9 @@ fn check_template(url: &str) -> Result<(), String> {
         let end = rest[i..].find('}').ok_or_else(|| format!("remote URL {url:?} has an unclosed `{{`"))?;
         let name = &rest[i + 1..i + end];
         if !matches!(name, "name" | "rest" | "version") {
-            return Err(format!("remote URL {url:?} has an unknown placeholder {{{name}}} ({{name}}, {{rest}}, {{version}})"));
+            return Err(format!(
+                "remote URL {url:?} has an unknown placeholder {{{name}}} ({{name}}, {{rest}}, {{version}})"
+            ));
         }
 
         rest = &rest[i + end + 1..];
@@ -215,7 +215,11 @@ pub fn cached_versions(cache: &Path) -> Vec<SchemaRef> {
             let name = f.parent()?.strip_prefix(cache).ok()?.to_str()?.replace('\\', "/");
             let version = Version::parse(f.file_stem()?.to_str()?).ok()?;
             schema_name_kind(&name)?;
-            Some(SchemaRef { name, version, fingerprint: None })
+            Some(SchemaRef {
+                name,
+                version,
+                fingerprint: None,
+            })
         })
         .collect()
 }
@@ -421,8 +425,9 @@ impl Resolver {
         }
 
         if visited >= MAX_SOURCE_ENTRIES {
-            self.problems
-                .push(format!("catalog sources hold more than {MAX_SOURCE_ENTRIES} entries; the rest were not searched"));
+            self.problems.push(format!(
+                "catalog sources hold more than {MAX_SOURCE_ENTRIES} entries; the rest were not searched"
+            ));
         }
 
         let mut seen = std::collections::HashSet::new();
@@ -459,7 +464,9 @@ impl Resolver {
 
     /// Fetched versions of `name` in the cache.
     fn cached(&self, name: &str) -> Vec<Found> {
-        let Some(dir) = self.cache.as_ref().map(|c| c.join(name)) else { return Vec::new() };
+        let Some(dir) = self.cache.as_ref().map(|c| c.join(name)) else {
+            return Vec::new();
+        };
         let Ok(rd) = std::fs::read_dir(&dir) else { return Vec::new() };
         rd.flatten()
             .map(|e| e.path())
@@ -487,14 +494,24 @@ impl Resolver {
         let mut r = SchemaRef::parse(reference).map_err(LookupError::Invalid)?;
         let mut warnings = Vec::new();
         if r.name == LEGACY_META_SCHEMA_NAME {
-            warnings.push(format!("`{LEGACY_META_SCHEMA_NAME}` is now `{META_SCHEMA_NAME}`; update the @schema line (spec §6.8)"));
+            warnings.push(format!(
+                "`{LEGACY_META_SCHEMA_NAME}` is now `{META_SCHEMA_NAME}`; update the @schema line (spec §6.8)"
+            ));
             META_SCHEMA_NAME.clone_into(&mut r.name);
         }
 
         self.check_conflicts(&r.name)?;
         let places: [Vec<Found>; 3] = [
-            self.builtin.iter().filter(|f| f.schema.name.as_deref() == Some(r.name.as_str())).cloned().collect(),
-            self.sources.iter().filter(|f| f.schema.name.as_deref() == Some(r.name.as_str())).cloned().collect(),
+            self.builtin
+                .iter()
+                .filter(|f| f.schema.name.as_deref() == Some(r.name.as_str()))
+                .cloned()
+                .collect(),
+            self.sources
+                .iter()
+                .filter(|f| f.schema.name.as_deref() == Some(r.name.as_str()))
+                .cloned()
+                .collect(),
             self.cached(&r.name),
         ];
 
@@ -519,7 +536,12 @@ impl Resolver {
     /// Two files (or a file and a built-in schema) declaring the same version of
     /// `name` must have the same canonical text.
     fn check_conflicts(&self, name: &str) -> Result<(), LookupError> {
-        let all: Vec<&Found> = self.builtin.iter().chain(&self.sources).filter(|f| f.schema.name.as_deref() == Some(name)).collect();
+        let all: Vec<&Found> = self
+            .builtin
+            .iter()
+            .chain(&self.sources)
+            .filter(|f| f.schema.name.as_deref() == Some(name))
+            .collect();
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {
                 let (va, vb) = (a.schema.version.as_ref().unwrap(), b.schema.version.as_ref().unwrap());
@@ -567,7 +589,13 @@ impl Resolver {
             .iter()
             .enumerate()
             .flat_map(|(i, c)| c.remote.iter().map(move |m| (i, m)))
-            .filter(|(_, m)| if m.prefix.ends_with('/') { r.name.starts_with(&m.prefix) } else { r.name == m.prefix })
+            .filter(|(_, m)| {
+                if m.prefix.ends_with('/') {
+                    r.name.starts_with(&m.prefix)
+                } else {
+                    r.name == m.prefix
+                }
+            })
             .max_by_key(|(_, m)| m.prefix.len());
         // Anything the repository's own catalog redirects stays out of the shared
         // cache: its pins and the document's fingerprint come from the same source.
@@ -593,7 +621,9 @@ impl Resolver {
     /// Fails, and the text must be discarded, if any check fails.
     pub fn accept_fetched(&self, r: &SchemaRef, text: &str) -> Result<Schema, LookupError> {
         let schema = parse_schema(text).map_err(|e| LookupError::Invalid(format!("fetched {r}: not a valid schema: {e}")))?;
-        let declared = schema.reference().ok_or_else(|| LookupError::Invalid(format!("fetched {r}: the file is an anonymous schema")))?;
+        let declared = schema
+            .reference()
+            .ok_or_else(|| LookupError::Invalid(format!("fetched {r}: the file is an anonymous schema")))?;
         if declared.name != r.name || declared.version.precedence(&r.version) != Ordering::Equal || declared.version.build != r.version.build {
             return Err(LookupError::Invalid(format!("fetched {r}: the file declares {declared}")));
         }
@@ -618,8 +648,14 @@ impl Resolver {
     /// Fails if there is no cache directory, it cannot be written, or a different
     /// revision of the same version is already cached (versions are immutable).
     pub fn store(&self, schema: &Schema, text: &str) -> Result<PathBuf, LookupError> {
-        let r = schema.reference().ok_or_else(|| LookupError::Invalid("anonymous schemas are not cached".into()))?;
-        let dir = self.cache.as_ref().ok_or_else(|| LookupError::Invalid("no user cache directory".into()))?.join(&r.name);
+        let r = schema
+            .reference()
+            .ok_or_else(|| LookupError::Invalid("anonymous schemas are not cached".into()))?;
+        let dir = self
+            .cache
+            .as_ref()
+            .ok_or_else(|| LookupError::Invalid("no user cache directory".into()))?
+            .join(&r.name);
         let path = dir.join(format!("{}.novs", r.version));
         if let Ok(old) = std::fs::read_to_string(&path).map_err(|_| ()).and_then(|t| parse_schema(&t).map_err(|_| ()))
             && old.revision() != schema.revision()
@@ -644,9 +680,9 @@ fn choose(place: Vec<Found>, r: &SchemaRef) -> Option<Found> {
     let readable = place.into_iter().filter(|f| f.schema.version.as_ref().is_some_and(|v| v.can_read(&r.version)));
     let mut readable: Vec<Found> = readable.collect();
     if let Some(fp) = &r.fingerprint
-        && let Some(i) = readable.iter().position(|f| {
-            f.schema.version.as_ref().is_some_and(|v| v.precedence(&r.version) == Ordering::Equal) && f.schema.fingerprint_hex() == *fp
-        })
+        && let Some(i) = readable
+            .iter()
+            .position(|f| f.schema.version.as_ref().is_some_and(|v| v.precedence(&r.version) == Ordering::Equal) && f.schema.fingerprint_hex() == *fp)
     {
         return Some(readable.swap_remove(i));
     }

@@ -523,7 +523,7 @@ fn project_catalog_decides_the_schema() {
     // Outside the catalog: the workspace heuristic would have used it.
     std::fs::write(dir.join("stray/b.novs"), "@schema acme.test/b@1.0.0\n@root R\nrecord R:\n  n: int\n").unwrap();
 
-    let (client, h) = serve(&dir);
+    let (client, server) = serve(&dir);
     let mut c = Client { conn: client, next: 0 };
     let root = base(&dir);
     c.request(
@@ -532,23 +532,23 @@ fn project_catalog_decides_the_schema() {
     );
     c.notify("initialized", json!({}));
 
-    let a = format!("{root}/a.nova");
-    open(&c, &a, "@schema acme.test/a@1.0.0\nn: x\n");
-    assert_eq!(c.diagnostics_for(&a)[0]["code"], "nova::invalid");
+    let doc_a = format!("{root}/a.nova");
+    open(&c, &doc_a, "@schema acme.test/a@1.0.0\nn: x\n");
+    assert_eq!(c.diagnostics_for(&doc_a)[0]["code"], "nova::invalid");
 
-    let b = format!("{root}/b.nova");
-    open(&c, &b, "@schema acme.test/b@1.0.0\nn: 1\n");
-    assert_eq!(c.diagnostics_for(&b)[0]["code"], "nova::schema::missing");
+    let doc_b = format!("{root}/b.nova");
+    open(&c, &doc_b, "@schema acme.test/b@1.0.0\nn: 1\n");
+    assert_eq!(c.diagnostics_for(&doc_b)[0]["code"], "nova::schema::missing");
 
     // A second file with other content for the same version is a conflict.
     std::fs::write(dir.join("schemas/a2.novs"), "@schema acme.test/a@1.0.0\n@root R\nrecord R:\n  n: string\n").unwrap();
     c.notify("textDocument/didSave", json!({"textDocument": {"uri": format!("{root}/schemas/a2.novs")}}));
-    let d = c.diagnostics_for(&a);
+    let d = c.diagnostics_for(&doc_a);
     assert_eq!(d[0]["code"], "nova::schema::reference", "{d}");
     assert!(d[0]["message"].as_str().unwrap().contains("conflict"), "{d}");
 
     c.request("shutdown", Value::Null);
     c.notify("exit", Value::Null);
-    h.join().unwrap();
+    server.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
 }

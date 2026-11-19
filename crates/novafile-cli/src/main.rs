@@ -715,7 +715,12 @@ fn schema_fetch(reference: &str, catalogs: &[PathBuf], pin: bool) -> R<()> {
     let value = novafile_text::parse(&src).map_err(|e| format!("{}: {e}", catalog.display()))?;
     let key = format!("{}@{}", sr.name, sr.version);
     let pins = value.as_record().and_then(|r| r.get("pins")).and_then(Value::as_list);
-    if let Some(p) = pins.into_iter().flatten().filter_map(Value::as_record).find(|p| p.get("schema").and_then(Value::as_str) == Some(&key)) {
+    if let Some(p) = pins
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_record)
+        .find(|p| p.get("schema").and_then(Value::as_str) == Some(&key))
+    {
         let have = p.get("revision").and_then(Value::as_str).unwrap_or("");
         if have == s.revision() {
             println!("already pinned in {}", catalog.display());
@@ -726,7 +731,11 @@ fn schema_fetch(reference: &str, catalogs: &[PathBuf], pin: bool) -> R<()> {
     }
 
     let entry = format!("{{schema: {}, revision: {}}}", novafile_text::quote(&key), novafile_text::quote(&s.revision()));
-    let op = if pins.is_some() { format!("+ pins: {entry}") } else { format!("= pins: [{entry}]") };
+    let op = if pins.is_some() {
+        format!("+ pins: {entry}")
+    } else {
+        format!("= pins: [{entry}]")
+    };
     let patch = novafile_patch::parse_patch(&format!("@patch\n{op}\n")).map_err(|e| e.to_string())?;
     let meta = novafile_schema::meta_catalog();
     let check = |v: &Value| meta.validate(v).map_err(|i| i.iter().map(ToString::to_string).collect());
@@ -748,8 +757,7 @@ fn schema_from_text(p: &Path, src: &str) -> R<Schema> {
     if ext != "novs"
         && let Ok(doc) = novafile_text::parse_document(src)
         && doc.directive("schema").is_some_and(|r| {
-            r.starts_with(&format!("{}@", novafile_schema::META_SCHEMA_NAME))
-                || r.starts_with(&format!("{}@", novafile_schema::LEGACY_META_SCHEMA_NAME))
+            r.starts_with(&format!("{}@", novafile_schema::META_SCHEMA_NAME)) || r.starts_with(&format!("{}@", novafile_schema::LEGACY_META_SCHEMA_NAME))
         })
     {
         let v = doc.body.to_value().map_err(|e| format!("{}: {e}", p.display()))?;
@@ -1084,9 +1092,12 @@ fn run(cli: Cli) -> R<ExitCode> {
             let s = if let Some(p) = &schema {
                 load_schema(p)?
             } else {
-                let r = l.directives.iter().find(|(n, _)| n == "schema").map(|(_, r)| r.as_str()).ok_or_else(|| {
-                    format!("{}: no @schema line to look up; pass --schema SCHEMA.novs", file.display())
-                })?;
+                let r = l
+                    .directives
+                    .iter()
+                    .find(|(n, _)| n == "schema")
+                    .map(|(_, r)| r.as_str())
+                    .ok_or_else(|| format!("{}: no @schema line to look up; pass --schema SCHEMA.novs", file.display()))?;
                 let start = file.parent().filter(|_| file.as_os_str() != "-").map(Path::to_path_buf);
                 lookup(r, &catalog, start, fetch)?.0
             };
@@ -1356,7 +1367,11 @@ fn run(cli: Cli) -> R<ExitCode> {
             SchemaCmd::Resolve { reference, catalog, fetch } => {
                 let cwd = std::env::current_dir().ok();
                 let (s, origin) = lookup(&reference, &catalog, cwd, fetch)?;
-                println!("{}  {origin}\n{}", s.reference().map_or_else(|| reference.clone(), |r| r.to_string()), s.revision());
+                println!(
+                    "{}  {origin}\n{}",
+                    s.reference().map_or_else(|| reference.clone(), |r| r.to_string()),
+                    s.revision()
+                );
             }
             SchemaCmd::Fetch { reference, catalog, pin } => schema_fetch(&reference, &catalog, pin)?,
             SchemaCmd::JsonSchema { file } => {

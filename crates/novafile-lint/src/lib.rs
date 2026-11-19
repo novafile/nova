@@ -149,7 +149,9 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
     })?;
 
     let has_schema = doc.directive("schema").is_some();
-    let is_catalog = doc.directive("schema").is_some_and(|r| r.starts_with(&format!("{}@", novafile_schema::META_CATALOG_NAME)));
+    let is_catalog = doc
+        .directive("schema")
+        .is_some_and(|r| r.starts_with(&format!("{}@", novafile_schema::META_CATALOG_NAME)));
     let mut catalog_hints = if is_catalog && config.on("unpinned-fetch") {
         unpinned_fetches(src)
     } else {
@@ -365,7 +367,15 @@ fn unpinned_fetches(src: &str) -> Vec<Finding> {
     let at = src.find("remote:").map_or((0, 0), |i| (i, i + "remote".len()));
     cached_versions(&cache)
         .into_iter()
-        .filter(|v| c.remote.iter().any(|m| if m.prefix.ends_with('/') { v.name.starts_with(&m.prefix) } else { v.name == m.prefix }))
+        .filter(|v| {
+            c.remote.iter().any(|m| {
+                if m.prefix.ends_with('/') {
+                    v.name.starts_with(&m.prefix)
+                } else {
+                    v.name == m.prefix
+                }
+            })
+        })
         .filter(|v| !c.pins.iter().any(|p| p.schema.name == v.name && p.schema.version == v.version))
         .map(|v| Finding {
             rule: "unpinned-fetch",

@@ -82,7 +82,10 @@ fn conflicts_and_pins_are_errors() {
     put(
         &d,
         "nova-catalog.nova",
-        &format!("schemas:\n  - path: s/\npins:\n  - schema: acme.test/a@1.0.0\n    revision: \"sha256:{}\"\n", "0".repeat(64)),
+        &format!(
+            "schemas:\n  - path: s/\npins:\n  - schema: acme.test/a@1.0.0\n    revision: \"sha256:{}\"\n",
+            "0".repeat(64)
+        ),
     );
     put(&d, "s/x.novs", &schema("acme.test/a@1.0.0", "int"));
     let e = resolver(&d).resolve("acme.test/a@1.0.0").unwrap_err();
@@ -90,7 +93,11 @@ fn conflicts_and_pins_are_errors() {
 
     // The right revision passes.
     let rev = parse_schema(&schema("acme.test/a@1.0.0", "int")).unwrap().revision();
-    put(&d, "nova-catalog.nova", &format!("schemas:\n  - path: s/\npins:\n  - schema: acme.test/a@1.0.0\n    revision: \"{rev}\"\n"));
+    put(
+        &d,
+        "nova-catalog.nova",
+        &format!("schemas:\n  - path: s/\npins:\n  - schema: acme.test/a@1.0.0\n    revision: \"{rev}\"\n"),
+    );
     assert_eq!(resolved(&d, "acme.test/a@1.0.0"), "s/x.novs");
 }
 
@@ -164,9 +171,21 @@ fn fetch_locations_and_checks() {
 
     // Unknown placeholders and http: URLs make a catalog invalid.
     put(&d, "nova-catalog.nova", "remote:\n  - prefix: acme.dev/\n    url: \"https://x/{host}\"\n");
-    assert!(Resolver::new(&Options { start: Some(d.clone()), ..Options::default() }).is_err());
+    assert!(
+        Resolver::new(&Options {
+            start: Some(d.clone()),
+            ..Options::default()
+        })
+        .is_err()
+    );
     put(&d, "nova-catalog.nova", "remote:\n  - prefix: acme.dev/\n    url: \"http://x/{name}\"\n");
-    assert!(Resolver::new(&Options { start: Some(d.clone()), ..Options::default() }).is_err());
+    assert!(
+        Resolver::new(&Options {
+            start: Some(d.clone()),
+            ..Options::default()
+        })
+        .is_err()
+    );
 }
 
 #[test]
