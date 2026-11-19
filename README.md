@@ -176,6 +176,27 @@ nvf schema check old.novs new.novs    # exits 1 on breaking changes
 
 `nvf patch` prints the result, or with `-w` writes it back, in the input's format. NOVA text keeps its comments and layout. JSON, YAML, TOML, CBOR and binary documents are rendered in the same format, so `nvf patch x.json p.patch` prints JSON (YAML and TOML comments are not kept). `.novs` schemas are rewritten in canonical form. JSON Lines, NOVA Lines, binary record streams and Protobuf are not written back: their result is printed as NOVA text, and `-w` refuses them. For another output format, pipe the result through `nvf convert`.
 
+### Finding schemas
+
+Schema names are either local (`infrastructure`) or qualified by a domain you control (`acme.example/billing/invoice`), the way Go module paths are. A `nova-catalog.nova` file tells the tools where the `.novs` files live, so `nvf validate` can look up a document's `@schema` reference without `--schema`:
+
+```
+@schema novafile.dev/meta/catalog@0.1.0
+schemas:
+  - path: schemas/
+pins:
+  - schema: acme.example/billing/invoice@2.1.0
+    revision: "sha256:…"
+```
+
+```bash
+nvf validate invoice.nova                          # @schema looked up in nova-catalog.nova
+nvf schema resolve acme.example/billing/invoice@2.1.0   # where it resolves from, and its revision
+nvf schema fetch acme.example/billing/invoice@2.1.0 --pin   # HTTPS, into the user cache, pinned
+```
+
+Lookup is offline: built-in schemas, then catalogs (`--catalog`, `NOVA_CATALOG`, the nearest `nova-catalog.nova`, the user catalog), then the cache. Conflicting files and pin mismatches are errors. Fetching qualified names over HTTPS only happens when you ask for it (`--fetch`, `NOVA_FETCH=1`, or `fetch: true` in your user catalog); a project catalog can say where to fetch from, but what it redirects is never put in the shared cache. See [spec §6.9](https://github.com/novafile/spec/blob/main/SPEC.md).
+
 `nvf patch -w` and `nvf lint --fix` lock the file while they read, change and rewrite it, so parallel patches are not lost. The new contents are written to a temporary file and renamed over the old one. On Unix the lock is on the file itself. On Windows it is a `<file>.lock` file next to it, which stays on disk: ignore it in version control with patterns such as `*.nova.lock` (not `*.lock`, which also matches `Cargo.lock`).
 
 ## Conventions and `nvf lint`
@@ -201,7 +222,7 @@ cargo install novafile-lsp                 # from crates.io
 cargo install --path crates/novafile-lsp   # from a checkout
 ```
 
-It reports syntax errors in documents, templates, patches and `.novs` schemas. A document that declares `@schema name@version` is validated against a `.novs` file that can read that version: the one closest to the document in the directory tree (its own folder first), and the newest among equally close ones. Files opened without a workspace folder use the schemas in their own folder. Hover shows the path, value and declared type. Completion offers missing record fields and enum variants. Formatting is only offered for documents without comments.
+It reports syntax errors in documents, templates, patches and `.novs` schemas. A document that declares `@schema name@version` is validated against a `.novs` file that can read that version. With a `nova-catalog.nova` above the document, that file comes from the catalogs (conflicts and pin mismatches are reported); otherwise it is the one closest to the document in the directory tree (its own folder first), and the newest among equally close ones. Files opened without a workspace folder use the schemas in their own folder. Hover shows the path, value and declared type. Completion offers missing record fields and enum variants. Formatting is only offered for documents without comments.
 
 Helix (`languages.toml`):
 
