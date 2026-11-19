@@ -132,6 +132,7 @@ pub enum Item {
 ///
 /// Iterating yields records and errors. Once it returns `None`, [`Reader::segments`] holds
 /// one [`Segment`] per segment of the input.
+#[expect(clippy::struct_excessive_bools, reason = "independent per-segment and per-stream flags, not a state machine")]
 pub struct Reader<'s, R> {
     /// The input.
     input: R,
