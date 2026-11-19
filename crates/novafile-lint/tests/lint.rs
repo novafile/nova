@@ -103,3 +103,20 @@ fn compat_mode() {
     );
     assert!(lint_document("@compat xml\na: 1\n", &Config::default()).is_err());
 }
+
+#[test]
+fn schema_patterns_literals_and_x_lint() {
+    let src = "@schema pddl@0.1.0\n@x-lint case=kebab\n@root R\ntype Name = string @pattern(\"[A-Za-z][A-Za-z0-9_-]*\")\nrecord R:\n  scale-up: int\n  m: Name | \"total-time\"\n  d: \"a\" | \"a\"\n  c: string @pattern(\"^[a-z]+$\")\n";
+    let f = lint_schema(src, &Config::default()).unwrap();
+    let got: Vec<(&str, &str)> = f.iter().map(|f| (f.rule, &src[f.start..f.end])).collect();
+    assert_eq!(
+        got,
+        [("union-order", "  m"), ("union-order", "  d"), ("pattern-anchor", "\"^[a-z]+$\"")],
+        "{f:#?}"
+    );
+    assert!(f[0].message.contains("`\"total-time\"` is unreachable"), "{}", f[0].message);
+    // Without the directive, `scale-up` is not snake case.
+    let plain = src.replace("@x-lint case=kebab\n", "");
+    assert!(lint_schema(&plain, &Config::default()).unwrap().iter().any(|f| f.rule == "field-case"));
+    assert!(lint_schema("@x-lint case=nope\nrecord R:\n  a: int\n", &Config::default()).is_err());
+}
