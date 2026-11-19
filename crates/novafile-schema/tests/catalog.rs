@@ -127,8 +127,13 @@ fn fetch_locations_and_checks() {
         "nova-catalog.nova",
         "remote:\n  - prefix: acme.dev/\n    url: \"https://schemas.acme.dev/{rest}/{version}.novs\"\n  - prefix: acme.dev/billing/\n    url: \"https://billing.acme.dev/{name}@{version}\"\n",
     );
-    let r = resolver(&d);
-    let at = |s: &str| r.fetch_url(&SchemaRef::parse(s).unwrap());
+    // Named explicitly (as with --catalog), the catalog's remote entries are followed.
+    let r = Resolver::new(&Options {
+        catalogs: vec![d.join("nova-catalog.nova")],
+        ..Options::default()
+    })
+    .unwrap();
+    let at = |s: &str| r.fetch_url(&SchemaRef::parse(s).unwrap()).ok();
     assert_eq!(at("acme.dev/x/y@1.0.0").as_deref(), Some("https://schemas.acme.dev/x/y/1.0.0.novs"));
     assert_eq!(
         at("acme.dev/billing/invoice@2.1.0").as_deref(),
@@ -138,6 +143,14 @@ fn fetch_locations_and_checks() {
     for never in ["local@1.0.0", "acme.test/a@1.0.0", "x.example/a@1.0.0", "novafile.dev/meta/schema@0.3.3"] {
         assert_eq!(at(never), None, "{never}");
     }
+
+    // As the project catalog, it redirects only fingerprinted or pinned versions:
+    // it arrives with the repository, and the cache it would fill is shared.
+    let project = resolver(&d);
+    let e = project.fetch_url(&SchemaRef::parse("acme.dev/x/y@1.0.0").unwrap()).unwrap_err();
+    assert!(e.contains("pin"), "{e}");
+    assert!(project.fetch_url(&SchemaRef::parse("acme.dev/x/y@1.0.0#0123456789abcdef").unwrap()).is_ok());
+    assert!(project.fetch_url(&SchemaRef::parse("other.org/a@1.0.0").unwrap()).is_ok());
 
     // Fetched text must declare exactly the requested version and match its fingerprint.
     let want = SchemaRef::parse("acme.dev/a@1.0.0").unwrap();

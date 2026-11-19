@@ -20,9 +20,12 @@ pub const CATALOG_FILE: &str = "nova-catalog.nova";
 /// The most bytes a fetched schema may have.
 pub const MAX_FETCH_BYTES: u64 = 4 << 20;
 
-/// How many files a catalog source directory may contribute, so a catalog
-/// pointing at a huge tree cannot stall every lookup.
-const MAX_SOURCE_FILES: usize = 10_000;
+/// How many directory entries the catalog sources may make lookup visit, so a
+/// catalog pointing at a huge tree cannot stall every lookup.
+const MAX_SOURCE_ENTRIES: usize = 100_000;
+
+/// How deep the catalog source directories are searched.
+const MAX_SOURCE_DEPTH: usize = 32;
 
 /// Whether `name` lies in a special-use domain (RFC 2606, RFC 6761, ICANN's
 /// `.internal`): such names are never fetched.
@@ -311,6 +314,10 @@ struct Found {
 pub struct Resolver {
     /// Catalogs in search order: explicit, project, user.
     catalogs: Vec<Catalog>,
+    /// Index of the project catalog in `catalogs`, if any. It arrives with a
+    /// cloned repository, so it cannot enable fetching, and its `remote` entries
+    /// are only followed for pinned or fingerprinted versions.
+    project: Option<usize>,
     /// Whether the user catalog enables fetching.
     user_fetch: bool,
     /// The fetch cache, when the user's places are in use.
@@ -332,7 +339,11 @@ impl Resolver {
     /// files only become [`Resolver::problems`].
     pub fn new(opts: &Options) -> Result<Resolver, String> {
         let mut paths = opts.catalogs.clone();
-        if let Some(p) = opts.start.as_deref().and_then(project_catalog) {
+        let mut project = None;
+        if let Some(p) = opts.start.as_deref().and_then(project_catalog)
+            && !paths.contains(&p)
+        {
+            project = Some(paths.len());
             paths.push(p);
         }
 
@@ -357,6 +368,7 @@ impl Resolver {
             .collect();
         let mut r = Resolver {
             catalogs,
+            project,
             user_fetch,
             cache: if opts.user { user_cache() } else { None },
             builtin,
@@ -369,15 +381,20 @@ impl Resolver {
 
     /// Read every `.novs` file the catalogs' sources reach.
     fn index_sources(&mut self) {
-        let mut files = Vec::new();
+        let (mut files, mut visited) = (Vec::new(), 0);
         for c in &self.catalogs {
             for s in &c.sources {
                 if s.is_dir() {
-                    walk(s, &mut files);
+                    walk(s, 0, &mut visited, &mut files);
                 } else {
                     files.push(s.clone());
                 }
             }
+        }
+
+        if visited >= MAX_SOURCE_ENTRIES {
+            self.problems
+                .push(format!("catalog sources hold more than {MAX_SOURCE_ENTRIES} entries; the rest were not searched"));
         }
 
         let mut seen = std::collections::HashSet::new();
@@ -386,7 +403,7 @@ impl Resolver {
                 continue;
             }
 
-            match std::fs::read_to_string(&f).map_err(|e| e.to_string()).and_then(|t| parse_schema(&t).map_err(|e| e.to_string())) {
+            match read_bounded(&f).and_then(|t| parse_schema(&t).map_err(|e| e.to_string())) {
                 // Anonymous schemas have no name to be found by.
                 Ok(schema) if schema.reference().is_some() => self.sources.push(Found {
                     origin: Origin::File(f),
@@ -420,7 +437,7 @@ impl Resolver {
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "novs"))
             .filter_map(|p| {
-                let schema = parse_schema(&std::fs::read_to_string(&p).ok()?).ok()?;
+                let schema = parse_schema(&read_bounded(&p).ok()?).ok()?;
                 (schema.name.as_deref() == Some(name)).then_some(Found {
                     origin: Origin::Cache(p),
                     schema,
@@ -505,23 +522,41 @@ impl Resolver {
         }
     }
 
-    /// Where to fetch exactly `r`'s version, or `None` if it may not be fetched:
-    /// local names, special-use domains and bundled schemas are never fetched.
-    /// A catalog's `remote` entry with the longest matching prefix wins over
-    /// the default location `https://{name}/{version}.novs`.
-    #[must_use]
-    pub fn fetch_url(&self, r: &SchemaRef) -> Option<String> {
+    /// Where to fetch exactly `r`'s version. A catalog's `remote` entry with the
+    /// longest matching prefix wins over the default location
+    /// `https://{name}/{version}.novs`.
+    ///
+    /// # Errors
+    ///
+    /// Local names, special-use domains and bundled schemas are never fetched.
+    /// A location that only the project catalog gives is followed only for a
+    /// version that is pinned or that `r` fingerprints: the catalog comes with
+    /// the repository, and the cache it fills is shared by every project.
+    pub fn fetch_url(&self, r: &SchemaRef) -> Result<String, String> {
         if schema_name_kind(&r.name) != Some(NameKind::Qualified) || is_special_use(&r.name) || r.name.starts_with("novafile.dev/meta/") {
-            return None;
+            return Err(format!("{r} is never fetched: only qualified names outside special-use domains are"));
         }
 
         let remote = self
             .catalogs
             .iter()
-            .flat_map(|c| &c.remote)
-            .filter(|m| if m.prefix.ends_with('/') { r.name.starts_with(&m.prefix) } else { r.name == m.prefix })
-            .max_by_key(|m| m.prefix.len());
-        Some(match remote {
+            .enumerate()
+            .flat_map(|(i, c)| c.remote.iter().map(move |m| (i, m)))
+            .filter(|(_, m)| if m.prefix.ends_with('/') { r.name.starts_with(&m.prefix) } else { r.name == m.prefix })
+            .max_by_key(|(_, m)| m.prefix.len());
+        if let Some((i, m)) = remote
+            && Some(i) == self.project
+            && r.fingerprint.is_none()
+            && self.pin(&r.name, &r.version).is_none()
+        {
+            return Err(format!(
+                "{r}: the project catalog redirects it to {}; fetch it with a #fingerprint or pin its revision first",
+                m.url
+            ));
+        }
+
+        let remote = remote.map(|(_, m)| m);
+        Ok(match remote {
             Some(m) => m
                 .url
                 .replace("{name}", &r.name)
@@ -602,23 +637,50 @@ fn choose(place: Vec<Found>, r: &SchemaRef) -> Option<Found> {
         .max_by(|a, b| a.schema.version.as_ref().unwrap().precedence(b.schema.version.as_ref().unwrap()))
 }
 
-/// Collect `.novs` files below `dir`, without following symlinks, up to
-/// [`MAX_SOURCE_FILES`].
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Collect `.novs` files below `dir`, without following symlinks, visiting at
+/// most [`MAX_SOURCE_ENTRIES`] entries and [`MAX_SOURCE_DEPTH`] levels.
+fn walk(dir: &Path, depth: usize, visited: &mut usize, out: &mut Vec<PathBuf>) {
+    if depth > MAX_SOURCE_DEPTH {
+        return;
+    }
+
     let Ok(rd) = std::fs::read_dir(dir) else { return };
-    let mut entries: Vec<_> = rd.flatten().collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for e in entries {
-        if out.len() >= MAX_SOURCE_FILES {
-            return;
+    let mut entries = Vec::new();
+    for e in rd.flatten() {
+        *visited += 1;
+        if *visited >= MAX_SOURCE_ENTRIES {
+            break;
         }
 
+        entries.push(e);
+    }
+
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for e in entries {
         let Ok(ft) = e.file_type() else { continue };
         let p = e.path();
         if ft.is_dir() {
-            walk(&p, out);
+            walk(&p, depth + 1, visited, out);
         } else if ft.is_file() && p.extension().is_some_and(|x| x == "novs") {
             out.push(p);
         }
     }
+}
+
+/// Read a schema source of at most [`MAX_FETCH_BYTES`], so a catalog cannot
+/// point lookup at a huge or endless file (`/dev/zero`).
+fn read_bounded(p: &Path) -> Result<String, String> {
+    use std::io::Read as _;
+    let f = std::fs::File::open(p).map_err(|e| e.to_string())?;
+    if !f.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("not a regular file".into());
+    }
+
+    let mut text = String::new();
+    f.take(MAX_FETCH_BYTES + 1).read_to_string(&mut text).map_err(|e| e.to_string())?;
+    if text.len() as u64 > MAX_FETCH_BYTES {
+        return Err(format!("larger than {MAX_FETCH_BYTES} bytes"));
+    }
+
+    Ok(text)
 }
