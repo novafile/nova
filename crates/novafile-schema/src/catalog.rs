@@ -192,6 +192,14 @@ fn cache_dir() -> Option<PathBuf> {
     }
 }
 
+/// Whether any catalog applies to documents in `dir`: a project catalog above
+/// it, the user catalog, or one named by `NOVA_CATALOG`. Tools that otherwise
+/// guess from the workspace use catalog lookup in that case.
+#[must_use]
+pub fn any_catalog(dir: &Path) -> bool {
+    project_catalog(dir).is_some() || user_catalog().is_some() || std::env::var_os("NOVA_CATALOG").is_some_and(|v| !v.is_empty())
+}
+
 /// The user catalog, `nova/catalog.nova` in the configuration directory.
 #[must_use]
 pub fn user_catalog() -> Option<PathBuf> {
@@ -315,6 +323,8 @@ pub struct Options {
     /// Also use the user catalog and the fetch cache. Off for reproducible
     /// runs such as the conformance suite.
     pub user: bool,
+    /// The fetch cache to use instead of the user cache directory, e.g. for tests.
+    pub cache: Option<PathBuf>,
 }
 
 impl Options {
@@ -327,7 +337,12 @@ impl Options {
             catalogs.extend(std::env::split_paths(&v).filter(|p| !p.as_os_str().is_empty()));
         }
 
-        Options { catalogs, start, user: true }
+        Options {
+            catalogs,
+            start,
+            user: true,
+            cache: None,
+        }
     }
 }
 
@@ -402,7 +417,7 @@ impl Resolver {
             catalogs,
             project,
             user_fetch,
-            cache: if opts.user { user_cache() } else { None },
+            cache: opts.cache.clone().or_else(|| if opts.user { user_cache() } else { None }),
             builtin,
             sources: Vec::new(),
             problems: Vec::new(),

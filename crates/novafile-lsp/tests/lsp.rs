@@ -50,14 +50,22 @@ impl Client {
 /// `NVF_LSP_CMD="wasmtime run --dir {dir}::/workspace/0 nvf-lsp.wasm"`.
 /// The handle finishes once the server has exited.
 fn serve(dir: &std::path::Path) -> (Connection, std::thread::JoinHandle<()>) {
-    let (server, client) = Connection::memory();
     let Ok(cmd) = std::env::var("NVF_LSP_CMD") else {
+        let (server, client) = Connection::memory();
         return (client, std::thread::spawn(move || novafile_lsp::run(server).unwrap()));
     };
     let cmd = cmd.replace("{dir}", &dir.display().to_string());
     let mut args = cmd.split_whitespace();
-    let mut child = std::process::Command::new(args.next().expect("NVF_LSP_CMD is empty"))
-        .args(args)
+    let mut command = std::process::Command::new(args.next().expect("NVF_LSP_CMD is empty"));
+    command.args(args);
+    spawn(command)
+}
+
+/// The client end of a session with the server process `command`, which
+/// speaks LSP on stdin and stdout. The handle finishes once it has exited.
+fn spawn(mut command: std::process::Command) -> (Connection, std::thread::JoinHandle<()>) {
+    let (server, client) = Connection::memory();
+    let mut child = command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -546,6 +554,37 @@ fn project_catalog_decides_the_schema() {
     let d = c.diagnostics_for(&doc_a);
     assert_eq!(d[0]["code"], "nova::schema::reference", "{d}");
     assert!(d[0]["message"].as_str().unwrap().contains("conflict"), "{d}");
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    server.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Without a project catalog, a catalog named in `NOVA_CATALOG` still decides the
+/// schema, as it does for `nvf validate`.
+#[test]
+fn nova_catalog_is_used_without_a_project_catalog() {
+    let dir = std::env::temp_dir().join(format!("novafile-lsp-envcat-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("shared")).unwrap();
+    std::fs::create_dir_all(dir.join("work")).unwrap();
+    std::fs::write(dir.join("shared/cat.nova"), "schemas:\n  - path: s.novs\n").unwrap();
+    std::fs::write(dir.join("shared/s.novs"), "@schema acme.test/s@1.0.0\n@root R\nrecord R:\n  n: int\n").unwrap();
+
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_nvf-lsp"));
+    command.env("NOVA_CATALOG", dir.join("shared/cat.nova"));
+    let (client, server) = spawn(command);
+    let mut c = Client { conn: client, next: 0 };
+    let root = format!("file://{}", dir.join("work").display());
+    c.request(
+        "initialize",
+        json!({"capabilities": {}, "rootUri": root, "workspaceFolders": [{"uri": root, "name": "t"}]}),
+    );
+    c.notify("initialized", json!({}));
+    let doc = format!("{root}/d.nova");
+    open(&c, &doc, "@schema acme.test/s@1.0.0\nn: x\n");
+    assert_eq!(c.diagnostics_for(&doc)[0]["code"], "nova::invalid");
 
     c.request("shutdown", Value::Null);
     c.notify("exit", Value::Null);

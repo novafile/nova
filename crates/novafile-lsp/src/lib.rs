@@ -396,10 +396,13 @@ impl Server<'_> {
     fn find_schema(&self, reference: &str, doc: &Uri) -> Result<Option<Schema>, String> {
         let r = SchemaRef::parse(reference)?;
         let doc_dir = file_path(doc).and_then(|p| p.parent().map(std::path::Path::to_path_buf));
-        // With a project catalog, lookup follows it (spec §6.9) instead of guessing
-        // from the workspace; it never fetches.
-        if let Some(catalog) = doc_dir.as_deref().and_then(novafile_schema::catalog::project_catalog) {
+        // With any catalog (project, user, NOVA_CATALOG), lookup follows the catalogs
+        // (spec §6.9), as `nvf validate` does, instead of guessing from the
+        // workspace; it never fetches. Resolvers are cached by project catalog.
+        if let Some(dir) = doc_dir.as_deref().filter(|d| novafile_schema::catalog::any_catalog(d)) {
             use novafile_schema::catalog::{LookupError, Options, Resolver};
+            // Documents without a project catalog share the resolver under the empty key.
+            let catalog = novafile_schema::catalog::project_catalog(dir).unwrap_or_default();
             let cached = self.resolvers.borrow().get(&catalog).cloned();
             let resolver = if let Some(r) = cached {
                 r
