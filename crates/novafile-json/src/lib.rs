@@ -309,6 +309,11 @@ impl P<'_> {
     fn hex4(&mut self) -> Result<u32, String> {
         let h = self.s.get(self.i..self.i + 4).ok_or("JSON: bad \\u escape")?;
         self.i += 4;
+        // from_str_radix would also take a sign: `\u+041`.
+        if !h.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err("JSON: bad \\u escape".into());
+        }
+
         u32::from_str_radix(h, 16).map_err(|_| "JSON: bad \\u escape".into())
     }
 }
@@ -566,6 +571,13 @@ fn write(value: &Value, out: &mut String, path: &mut String, warnings: &mut Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_escapes_take_exactly_four_hex_digits() {
+        assert!(from_json_str(r#"{"a":"\u+041"}"#).is_err());
+        assert!(from_json_str(r#"{"a":"\u-041"}"#).is_err());
+        assert_eq!(from_json_str(r#""\u0041""#).unwrap(), Value::String("A".into()));
+    }
 
     #[test]
     fn round_trip_json_subset() {
