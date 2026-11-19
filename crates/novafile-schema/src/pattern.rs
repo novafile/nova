@@ -14,13 +14,16 @@ const MAX_LEN: usize = 4096;
 /// How deeply groups may nest, so hostile schemas cannot overflow the stack.
 const MAX_DEPTH: usize = 64;
 
-/// Upper bound on one compiled pattern, in bytes. Large enough for
-/// `\p{L}{1,63}`; a short pattern can still reach it, hence [`SCHEMA_BUDGET`].
+/// Upper bound on one compiled pattern's memory, in bytes. Large enough for
+/// `\p{L}{1,63}` (~1 MB); a short pattern can still reach it, hence [`SCHEMA_BUDGET`].
 const MAX_COMPILED: usize = 4 << 20;
 
 /// Upper bound on the compiled patterns of one schema together, in bytes, so
 /// many short patterns (`a{30000}` compiles to ~0.7 MB) cannot exhaust memory.
 pub const SCHEMA_BUDGET: usize = 32 << 20;
+
+/// Why a pattern over [`MAX_COMPILED`] is rejected, and what to do instead.
+const TOO_COMPLEX: &str = "pattern too complex to compile; bound the length with @len rather than a {n,m} repetition";
 
 /// The general categories I-Regexp allows in `\p{…}` (RFC 9485 §3).
 const CATEGORIES: &[&str] = &[
@@ -81,11 +84,17 @@ impl Pattern {
             .build(&format!(r"\A(?:{})\z", p.out))
             .map_err(|e| match e.size_limit() {
                 Some(_) if limit < MAX_COMPILED => format!("the patterns of this schema need more than {} MiB compiled", SCHEMA_BUDGET >> 20),
-                Some(_) => "pattern too complex to compile; bound the length with @len rather than a {n,m} repetition".to_owned(),
+                Some(_) => TOO_COMPLEX.to_owned(),
                 None => fail(e.to_string()),
             })?;
 
+        // The NFA limit leaves out engines that other crates in the build may
+        // enable through Cargo feature unification; count what was really built.
         let used = re.memory_usage();
+        if used > MAX_COMPILED {
+            return Err(TOO_COMPLEX.to_owned());
+        }
+
         if used > budget.get() {
             return Err(format!("the patterns of this schema need more than {} MiB compiled", SCHEMA_BUDGET >> 20));
         }

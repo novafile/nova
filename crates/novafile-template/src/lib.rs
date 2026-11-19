@@ -8,10 +8,11 @@
 //! every render terminates with bounded output. Templates substitute values,
 //! never text, so there is no indentation or escaping to get wrong.
 
-use novafile_schema::{Schema, parse_type};
+use novafile_schema::{SCHEMA_BUDGET, Schema, parse_type_within};
 use novafile_text::ast::{Cond, Entry, ForHead, Item, Key, Node, Part};
 use novafile_text::{Path, Segment, parse_document};
 use novafile_value::{Record, Value};
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Write as _;
@@ -144,12 +145,21 @@ impl Default for Options<'_> {
 /// `opts.schema`); an import fails, cycles, or nests too deeply; evaluation
 /// fails; or the output exceeds the node or byte budget in `opts.limits`.
 pub fn render(src: &str, args: &Record, opts: &Options) -> Result<Value, TemplateError> {
-    render_inner(src, None, args, opts, &mut Vec::new(), &mut Cost::default())
+    // Parameter patterns of the template and all its imports share one budget.
+    render_inner(src, None, args, opts, &mut Vec::new(), &mut Cost::default(), &Cell::new(SCHEMA_BUDGET))
 }
 
 /// Render `src`, identified by `id` when imported. `stack` holds the importing documents
 /// (for cycle detection) and `budget` the output produced so far, shared across imports.
-fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stack: &mut Vec<String>, budget: &mut Cost) -> Result<Value, TemplateError> {
+fn render_inner(
+    src: &str,
+    id: Option<&str>,
+    args: &Record,
+    opts: &Options,
+    stack: &mut Vec<String>,
+    budget: &mut Cost,
+    patterns: &Cell<usize>,
+) -> Result<Value, TemplateError> {
     let where_ = || id.map(|i| format!(" in {i}")).unwrap_or_default();
     let doc = parse_document(src).map_err(|e| TemplateError(format!("{e}{}", where_())))?;
     let Some(h) = &doc.template else {
@@ -176,7 +186,7 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stac
     }
 
     for p in &h.params {
-        let ty = parse_type(&p.ty).map_err(|m| TemplateError(format!("@param {}: {m}", p.name)))?;
+        let ty = parse_type_within(&p.ty, patterns).map_err(|m| TemplateError(format!("@param {}: {m}", p.name)))?;
         let v = match (args.get(&p.name), &p.default) {
             (Some(v), _) => v.clone(),
             (None, Some(d)) => ev.node(d)?,
@@ -212,7 +222,7 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, opts: &Options, stac
         }
 
         stack.push(id.unwrap_or("<root>").to_owned());
-        let v = render_inner(&isrc, Some(&iid), &Record::new(), opts, stack, ev.budget)?;
+        let v = render_inner(&isrc, Some(&iid), &Record::new(), opts, stack, ev.budget, patterns)?;
         stack.pop();
         ev.bind(&imp.alias, v)?;
     }

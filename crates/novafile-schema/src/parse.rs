@@ -323,11 +323,17 @@ impl<'a> TyParser<'a> {
 /// Fails if `s` is not a valid type expression, carries a field-only
 /// attribute, or has trailing input.
 pub fn parse_type(s: &str) -> Result<TypeRef, String> {
-    parse_type_in(s, &Cell::new(crate::pattern::SCHEMA_BUDGET))
+    parse_type_within(s, &Cell::new(crate::pattern::SCHEMA_BUDGET))
 }
 
-/// [`parse_type`], with patterns compiled within the schema's `budget`.
-fn parse_type_in(s: &str, budget: &Cell<usize>) -> Result<TypeRef, String> {
+/// [`parse_type`], with patterns compiled within `budget`, which several
+/// types share when they come from one source (a template's `@param`s).
+/// Start it at [`crate::SCHEMA_BUDGET`].
+///
+/// # Errors
+///
+/// As [`parse_type`], and if `budget` does not cover the type's patterns.
+pub fn parse_type_within(s: &str, budget: &Cell<usize>) -> Result<TypeRef, String> {
     let mut p = TyParser::new(s, budget);
     let (t, fa) = p.union()?;
     if let Some((n, _)) = fa.first() {
@@ -439,11 +445,11 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
             schema.extensions.push(format!("x-{ext}"));
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("@root ") {
-            schema.root = Some(parse_type_in(rest.trim(), &budget).map_err(|m| err(i, format!("@root: {m}")))?);
+            schema.root = Some(parse_type_within(rest.trim(), &budget).map_err(|m| err(i, format!("@root: {m}")))?);
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("type ") {
             let (name, ty) = rest.split_once('=').ok_or_else(|| err(i, "expected `type Name = T`".into()))?;
-            let t = parse_type_in(ty.trim(), &budget).map_err(|m| err(i, m))?;
+            let t = parse_type_within(ty.trim(), &budget).map_err(|m| err(i, m))?;
             push_def(&mut schema, name.trim(), Def::Alias(t)).map_err(|m| err(i, m))?;
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("enum ") {
@@ -559,7 +565,7 @@ fn parse_variant(s: &str, budget: &Cell<usize>) -> Result<VariantDef, String> {
             let inner = rest.strip_suffix(')').ok_or("expected `)` after variant payload")?;
             Ok(VariantDef {
                 name: check_name(n.trim())?,
-                payload: Some(parse_type_in(inner, budget)?),
+                payload: Some(parse_type_within(inner, budget)?),
                 id,
             })
         }

@@ -249,3 +249,16 @@ fn sandboxed_imports() {
     assert!(e.contains("cycle"), "{e}");
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// Parameter patterns share one budget, so many large ones cannot stall a render.
+#[test]
+fn parameter_patterns_share_a_budget() {
+    let mut src = String::from("@template\n");
+    for i in 0..100 {
+        let _ = writeln!(src, "@param p{i}?: string @pattern(\"a{{30000}}\")");
+    }
+
+    src.push_str("x: 1\n");
+    let e = render(&src, &Record::new(), &Options::default()).unwrap_err();
+    assert!(e.to_string().contains("MiB"), "{e}");
+}
