@@ -228,11 +228,15 @@ impl<'a> Loader<'a> {
 
     /// Store a completed node under `anchor` (0 means "no anchor") together with
     /// its node count and nesting height, so aliases can charge the full size
-    /// and depth when copied.
-    fn remember(&mut self, anchor: usize, v: &Value, size: usize, height: usize) {
+    /// and depth when copied. Storing copies the node, so the copy is charged
+    /// too: nested anchors would otherwise copy a subtree once per level.
+    fn remember(&mut self, anchor: usize, v: &Value, size: usize, height: usize, m: &Marker) -> Result<(), String> {
         if anchor != 0 {
+            self.charge(size, m)?;
             self.anchors.insert(anchor, (v.clone(), size, height));
         }
+
+        Ok(())
     }
 
     /// Build the node that starts with `ev`; returns it with its node count
@@ -256,7 +260,7 @@ impl<'a> Loader<'a> {
             Event::Scalar(text, style, anchor, tag) => {
                 self.charge(1, &m)?;
                 let v = scalar(text, style, Self::tag(tag, &m)?).map_err(|e| err_at(&m, e))?;
-                self.remember(anchor, &v, 1, 0);
+                self.remember(anchor, &v, 1, 0, &m)?;
                 Ok((v, 1, 0))
             }
             Event::SequenceStart(anchor, tag) => {
@@ -283,7 +287,7 @@ impl<'a> Loader<'a> {
 
                 self.depth -= 1;
                 let v = Value::List(items);
-                self.remember(anchor, &v, size, height);
+                self.remember(anchor, &v, size, height, &m)?;
                 Ok((v, size, height))
             }
             Event::MappingStart(anchor, tag) => {
@@ -332,7 +336,7 @@ impl<'a> Loader<'a> {
                     Value::map(entries.into_iter().map(|(k, v, _)| (k, v)).collect()).map_err(|e| err_at(&m, e))?
                 };
 
-                self.remember(anchor, &v, size, height);
+                self.remember(anchor, &v, size, height, &m)?;
                 Ok((v, size, height))
             }
             other => Err(err_at(&m, format!("unexpected event {other:?}"))),
