@@ -1331,6 +1331,7 @@ dependencies = [
  "novafile-formats",
  "novafile-json",
  "novafile-schema",
+ "novafile-template",
  "novafile-text",
  "novafile-value",
 ]
