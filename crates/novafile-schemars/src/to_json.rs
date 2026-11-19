@@ -250,6 +250,8 @@ fn kind(schema: &Schema, k: &TypeKind) -> Json {
         TypeKind::Duration => json!({"type": "string", "pattern": patterns::DURATION, "x-nova-kind": "duration"}),
         TypeKind::List(t) => json!({"type": "array", "items": ty(schema, t)}),
         TypeKind::Set(t) => json!({"type": "array", "items": ty(schema, t), "uniqueItems": true}),
+        // JSON Schema has no ordered choice; `anyOf` accepts the same values.
+        TypeKind::Union(ms) => json!({"anyOf": ms.iter().map(|t| ty(schema, t)).collect::<Vec<_>>()}),
         TypeKind::Tuple(ts) => {
             let items: Vec<Json> = ts.iter().map(|t| ty(schema, t)).collect();
             json!({"type": "array", "prefixItems": items, "items": false, "minItems": ts.len()})

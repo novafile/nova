@@ -163,6 +163,14 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
         }
     }
 
+    // invalid schemas: parsing must fail.
+    for f in files(&root.join("schema-invalid"), "novs") {
+        let e = novafile_schema::parse_schema(&read(&f))
+            .err()
+            .unwrap_or_else(|| panic!("{} should be rejected", f.display()));
+        out.push((expect_path(&f), json!({"error": true, "message": e.message})));
+    }
+
     // schema versions: change classification and bump check (§6.7).
     for d in dirs(&root.join("schema-versions")) {
         let old = novafile_schema::parse_schema(&read(&d.join("old.novs"))).unwrap();

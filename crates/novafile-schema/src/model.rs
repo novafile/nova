@@ -114,6 +114,10 @@ pub enum TypeKind {
     Tuple(Vec<TypeRef>),
     /// A reference to a record, enum or alias definition by name.
     Named(String),
+    /// `A | B | …`: two or more members, tried in order (spec §6.1, §6.3).
+    /// The union itself is never nullable and carries no constraints; its
+    /// members do.
+    Union(Vec<TypeRef>),
 }
 
 /// A numeric bound in `@range`, kept exactly as written: an `int`, a
@@ -420,6 +424,15 @@ impl fmt::Display for TypeRef {
                 f.write_str(")")?;
             }
             TypeKind::Named(n) => f.write_str(n)?,
+            TypeKind::Union(ms) => {
+                for (i, m) in ms.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(" | ")?;
+                    }
+
+                    write!(f, "{m}")?;
+                }
+            }
         }
 
         if self.nullable {
@@ -482,7 +495,7 @@ impl fmt::Display for Schema {
                 Def::Record(r) => {
                     writeln!(f, "record {name}{}:", if r.open { " @open" } else { "" })?;
                     for fd in &r.fields {
-                        write!(f, "  {}{}: {}", fd.name, if fd.optional { "?" } else { "" }, fd.ty)?;
+                        write!(f, "  {}{}: {}", novafile_text::key_text(&fd.name), if fd.optional { "?" } else { "" }, fd.ty)?;
                         if fd.key {
                             f.write_str(" @key")?;
                         }

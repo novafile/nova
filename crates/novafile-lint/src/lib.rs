@@ -9,7 +9,7 @@
 //! | `untyped-timestamp` | plain strings that are RFC 3339 timestamps (no `@schema`) | hint | wrap in `@timestamp(...)` |
 //! | `mixed-list` | lists mixing scalar kinds | hint | — |
 //! | `compat-loss` | values the `@compat` format cannot represent | warning | — |
-//! | `field-case` | schema field names | warning | — |
+//! | `field-case` | schema field names, except quoted ones | warning | — |
 //! | `variant-case` | schema enum variants | warning | — |
 //! | `partial-ids` | records where only some fields have `@id` (an enum where only some variants have `@id` is a schema error) | warning | — |
 //!
@@ -359,7 +359,8 @@ pub fn lint_schema(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_
         match def {
             novafile_schema::Def::Record(r) => {
                 if config.on("field-case") {
-                    for f in &r.fields {
+                    // Quoted names exist for external contracts and are exempt (spec Appendix E).
+                    for f in r.fields.iter().filter(|f| novafile_text::key_text(&f.name) == f.name) {
                         if !config.case.matches(&f.name) {
                             let (a, b) = line_of(&format!("  {}", f.name), def_at);
                             out.push(Finding {

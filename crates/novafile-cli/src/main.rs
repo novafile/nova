@@ -324,7 +324,7 @@ enum SchemaCmd {
         /// Schema descriptor (NOVA data).
         file: PathBuf,
     },
-    /// Print the meta-schema `nova-schema@0.3.0`, which describes schema descriptors.
+    /// Print the meta-schema `nova-schema@0.3.1`, which describes schema descriptors.
     Meta,
     /// Print a JSON Schema (2020-12) describing the JSON form of valid documents.
     JsonSchema {
@@ -421,7 +421,7 @@ fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
 }
 
 /// Schema reference of the meta-schema that describes schema descriptors.
-const META_REF: &str = "nova-schema@0.3.0";
+const META_REF: &str = "nova-schema@0.3.1";
 
 /// Loads a document in the given input format.
 ///

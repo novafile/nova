@@ -236,6 +236,7 @@ pub(crate) fn classify<'s>(schema: &'s Schema, ty: &'s TypeRef, at: &dyn Fn() ->
                 }
             }
             TypeKind::Tuple(_) => unsupported("a tuple"),
+            TypeKind::Union(_) => unsupported("a union"),
             TypeKind::Any => unsupported("`any`"),
             TypeKind::Null => unsupported("`null`"),
         };

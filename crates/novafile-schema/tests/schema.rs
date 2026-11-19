@@ -154,7 +154,7 @@ fn variant_ids() {
         // Canonical text and the descriptor keep the ids.
         let text = s.to_canonical_text();
         assert!(text.contains("  a @id(2)\n  b(int @range(1..)) @id(1)\n"), "{text}");
-        assert_eq!(parse_schema(&text).unwrap(), s);
+        assert_eq!(parse_schema(&text).unwrap().to_canonical_text(), text);
         let d = s.to_value();
         novafile_schema::meta_schema().validate(&d).unwrap();
         assert_eq!(novafile_schema::Schema::from_value(&d).unwrap(), s);
@@ -484,4 +484,130 @@ fn root_type_expressions() {
     let named = parse_schema(SCHEMA).unwrap();
     assert_eq!(named.root_name(), Some("Infrastructure"));
     assert!(named.to_canonical_text().contains("@root Infrastructure\n"));
+}
+
+const UNIONS: &str = r#"@schema unions@1.0.0
+@root R
+
+type Formula = list<string> | Not | AtStart
+type Ping = Pong | int
+type Pong = Ping
+
+record Not:
+  not: Formula
+
+record AtStart:
+  "at start": Formula
+
+enum Phase = pending | failed(string | int @range(1..)) @id(2)
+
+record R:
+  f: Formula
+  "a \"q\"?"?: string | timestamp
+"#;
+
+#[test]
+fn union_and_quoted_names_round_trip() {
+    // Alias cycles through unions only are invalid; through a container they are fine.
+    let err = parse_schema(UNIONS.replace("@id(2)", "").as_str()).unwrap_err();
+    assert!(err.message.contains("cycle"), "{err}");
+    parse_schema("type T = list<T> | string\n").unwrap();
+
+    let src = UNIONS.replace("type Ping = Pong | int\ntype Pong = Ping\n", "").replace(" @id(2)", "");
+    let s = parse_schema(&src).unwrap();
+    let text = s.to_canonical_text();
+    assert!(text.contains("  \"at start\": Formula\n"), "{text}");
+    assert!(text.contains("  \"a \\\"q\\\"?\"?: string | timestamp\n"), "{text}");
+    assert!(text.contains("failed(string | int @range(1..))"), "{text}");
+    assert_eq!(parse_schema(&text).unwrap().to_canonical_text(), text);
+
+    // The descriptor converts back without changing the fingerprint.
+    let back = novafile_schema::Schema::from_value(&s.to_value()).unwrap();
+    assert_eq!(back.fingerprint(), s.fingerprint());
+
+    // @key needs an identifier name.
+    assert!(parse_schema("record K:\n  \"a b\": string @key\n").is_err());
+}
+
+#[test]
+fn unions_resolve_in_member_order() {
+    let src = UNIONS.replace("type Ping = Pong | int\ntype Pong = Ping\n", "").replace(" @id(2)", "");
+    let s = parse_schema(&src).unwrap();
+    let doc = |t: &str| novafile_text::parse(t).unwrap();
+
+    let r = s
+        .resolve(&doc("f:\n  not:\n    \"at start\": [x]\n\"a \\\"q\\\"?\": 2026-01-01T00:00:00Z\n"))
+        .unwrap();
+    // `string` comes first, so the timestamp-shaped string stays a string.
+    assert!(matches!(r.as_record().unwrap().get("a \"q\"?"), Some(Value::String(_))));
+
+    let issues = s.resolve(&doc("f:\n  not: {\"at start\": [x], extra: 1}\n")).unwrap_err();
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(issues[0].path.to_string(), "f");
+    assert_eq!(
+        issues[0].message,
+        "matches no member of Formula: Not: not: matches no member of Formula: AtStart: extra: unknown field"
+    );
+    assert_eq!(s.resolve(&doc("f: 5\n")).unwrap_err()[0].message, "5 matches no member of Formula");
+}
+
+#[test]
+fn union_evolution() {
+    let check = |old: &str, new: &str| {
+        let p = |t: &str| parse_schema(&format!("type F = A | B\nrecord A:\n  a: int\nrecord B:\n  b: int\nrecord R:\n  v: {t}\n")).unwrap();
+        check_compatibility(&p(old), &p(new)).iter().any(|c| c.breaking)
+    };
+
+    assert!(!check("int", "int | string"));
+    assert!(check("string", "timestamp | string"));
+    assert!(check("int | string", "string | int"));
+    assert!(!check("int | string", "int? | string"));
+    assert!(!check("int | string", "null | int | string"));
+    assert!(check("int? | string", "int | string"));
+    assert!(!check("u8 | u8", "u8 | u16"));
+    assert!(check("u8 | decimal", "u16 | decimal"));
+    // Aliases to unions are flattened: appending after F is fine, inserting before B is not.
+    assert!(!check("F", "F | int"));
+    assert!(!check("F", "A | B | int"));
+    assert!(check("F | int", "A | int | B"));
+}
+
+#[test]
+fn recursive_union_aliases_terminate() {
+    for t in ["string | list<T>", "list<T> | string", "list<T> | null", "string | map<string, T>"] {
+        let s = parse_schema(&format!("@schema r@1.0.0\ntype T = {t}\nrecord R:\n  v: T\n")).unwrap();
+        assert!(check_compatibility(&s, &s).is_empty(), "{t}");
+        let v = novafile_text::parse("v: [[], [[]]]\n").unwrap();
+        let _ = s.resolve(&v);
+    }
+}
+
+#[test]
+fn code_built_union_cycle_is_an_issue() {
+    use novafile_schema::{Def, Schema, TypeKind, TypeRef};
+    let named = |n: &str| TypeRef::new(TypeKind::Named(n.into()));
+    let s = Schema {
+        root: Some(named("A")),
+        defs: vec![
+            (
+                "A".into(),
+                Def::Alias(TypeRef::new(TypeKind::Union(vec![
+                    named("B"),
+                    TypeRef::new(TypeKind::Int(novafile_schema::IntKind::Int)),
+                ]))),
+            ),
+            ("B".into(), Def::Alias(named("A"))),
+        ],
+        ..Schema::default()
+    };
+    let issues = s.resolve(&Value::Int(1)).unwrap_err();
+    assert!(issues[0].message.contains("cycle"), "{issues:?}");
+}
+
+#[test]
+fn key_duplicates_do_not_steer_union_members() {
+    let s = parse_schema("@root R\nrecord K:\n  id: string @key\nrecord R:\n  v: list<K> | string\n").unwrap();
+    let issues = s.resolve(&novafile_text::parse("v:\n  - id: a\n  - id: a\n").unwrap()).unwrap_err();
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(issues[0].to_string(), "v[1]: duplicate @key (id)");
 }
