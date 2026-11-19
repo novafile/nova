@@ -204,3 +204,18 @@ fn u128_is_non_negative() {
     assert!(s.resolve(&novafile_text::parse("n: -1\n").unwrap()).is_err());
     assert!(s.resolve(&novafile_text::parse("n: 1\n").unwrap()).is_ok());
 }
+
+/// A user type named `Root` keeps its name when the root needs an alias.
+#[test]
+fn root_alias_does_not_collide_with_a_type_named_root() {
+    #[derive(NovaSchema)]
+    #[allow(dead_code)]
+    struct Root {
+        a: u8,
+    }
+
+    let s = novafile_schema::schema_for::<Vec<Root>>();
+    assert_eq!(s.defs.iter().filter(|(n, _)| n == "Root").count(), 1, "{s}");
+    let doc = novafile_text::parse("- a: 1\n").unwrap();
+    assert!(s.resolve(&doc).is_ok(), "{s}");
+}
