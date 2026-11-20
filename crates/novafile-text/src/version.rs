@@ -13,8 +13,13 @@ pub struct LangVersion {
 
 /// The NOVA language version this implementation supports (data, patch, query and schema syntax).
 pub const NOVA_VERSION: LangVersion = LangVersion { major: 0, minor: 1 };
-/// The template language version this implementation supports (spec §9).
-pub const TEMPLATE_VERSION: LangVersion = LangVersion { major: 0, minor: 1 };
+/// The template language version this implementation supports (spec §9): 0.2, with
+/// expressions, `@def` and the standard library.
+pub const TEMPLATE_VERSION: LangVersion = LangVersion { major: 0, minor: 2 };
+/// Template language versions this implementation reads. 0.1 is still accepted: 0.2 only adds
+/// syntax, except an escaped quote inside an interpolation, which now fails to load, and it
+/// defines the iteration order that 0.1 left unspecified.
+pub const TEMPLATE_VERSIONS: [LangVersion; 2] = [LangVersion { major: 0, minor: 1 }, TEMPLATE_VERSION];
 
 impl LangVersion {
     /// Parse `MAJOR.MINOR` (decimal, no leading zeros).
@@ -67,6 +72,23 @@ impl LangVersion {
 
         Ok(v)
     }
+}
+
+/// Parse a `@template` version and check that this implementation reads it
+/// ([`TEMPLATE_VERSIONS`]).
+///
+/// # Errors
+///
+/// Returns a message if `text` is not a valid version or not one of [`TEMPLATE_VERSIONS`].
+pub fn check_template_version(text: &str) -> Result<LangVersion, String> {
+    let v = LangVersion::parse(text.trim())?;
+    if !TEMPLATE_VERSIONS.iter().any(|s| s.supports(v)) {
+        return Err(format!(
+            "this document requires the NOVA template language {v}, but this implementation supports the NOVA template language 0.1 and {TEMPLATE_VERSION}"
+        ));
+    }
+
+    Ok(v)
 }
 
 impl fmt::Display for LangVersion {

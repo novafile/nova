@@ -16,6 +16,7 @@ categories = ["development-tools", "config"]
 novafile-value.workspace = true
 novafile-text.workspace = true
 novafile-schema.workspace = true
+novafile-template.workspace = true
 novafile-json.workspace = true
 novafile-formats.workspace = true
 

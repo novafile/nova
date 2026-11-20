@@ -1,6 +1,6 @@
 //! Recursive-descent parser for NOVA text (spec §4) and templates (spec §9).
 
-use crate::ast::{Cond, Directive, Document, Entry, ForHead, Import, Item, Key, Let, Node, Param, Part, TemplateHeader};
+use crate::ast::{BinOp, Call, Comp, Decl, Def, DefParam, Directive, Document, Entry, ForHead, Import, Item, Key, Let, Node, Param, Part, TemplateHeader};
 use crate::path::{Path, Segment, is_ident_char, is_ident_start};
 use crate::spans::{Span, SpanKind};
 use base64::Engine;
@@ -162,7 +162,11 @@ pub(crate) fn number_kind(s: &str) -> Option<NumKind> {
 }
 
 /// Classify a bare token: keyword, number, or string (spec §4.4).
-pub(crate) fn classify(tok: &str) -> Result<Value, String> {
+///
+/// # Errors
+///
+/// Returns a message if `tok` looks like a number that is out of range or malformed.
+pub fn classify(tok: &str) -> Result<Value, String> {
     match tok {
         "true" => return Ok(Value::Bool(true)),
         "false" => return Ok(Value::Bool(false)),
@@ -245,6 +249,13 @@ pub struct Parser<'a> {
     cur: Vec<Segment>,
     /// End offset of the most recently parsed value, excluding trailing whitespace and comments.
     last_end: usize,
+    /// Whether the next expression atom has an implied `$` (the head of an interpolation).
+    implied: bool,
+    /// Whether the cursor is inside an interpolation `${…}`.
+    in_interp: bool,
+    /// Source offset to report for calls parsed from text that is not the source itself (the
+    /// content of a block string).
+    offset_base: Option<usize>,
 }
 
 impl<'a> Parser<'a> {
@@ -262,6 +273,9 @@ impl<'a> Parser<'a> {
             bracket_depth: 0,
             cur: Vec::new(),
             last_end: 0,
+            implied: false,
+            in_interp: false,
+            offset_base: None,
         }
     }
 
@@ -530,12 +544,11 @@ impl<'a> Parser<'a> {
                     self.pos += 3;
                 }
                 '$' if allow_interp && rest.starts_with("${") => {
-                    self.pos += 2;
                     if !buf.is_empty() {
                         parts.push(Part::Text(std::mem::take(&mut buf)));
                     }
 
-                    parts.push(Part::Ref(self.interp_ref()?));
+                    parts.push(Part::Expr(self.interp_in_place()?));
                 }
                 c => {
                     buf.push(c);
@@ -551,18 +564,39 @@ impl<'a> Parser<'a> {
         Ok(parts)
     }
 
-    /// Parse the path inside `${...}` (cursor after `${`) through the closing `}`.
-    fn interp_ref(&mut self) -> R<Path> {
+    /// Parse an interpolation in place (cursor at `${`) through its closing `}`. Its content
+    /// runs to the matching `}`, skipping nested braces and quoted strings, and is read as an
+    /// expression before the enclosing string's escapes apply.
+    fn interp_in_place(&mut self) -> R<Node> {
+        let start = self.pos;
+        let close = interp_close(&self.b[start + 2..], 0)
+            .map(|i| start + 2 + i)
+            .ok_or_else(|| self.error_at(start, "unterminated interpolation `${`"))?;
+        self.pos = start + 2;
+        let n = self.interp_expr()?;
         self.skip_inline_ws();
-        let (p, n) = Path::parse_prefix(&self.src[self.pos..]).map_err(|m| self.error_at(self.pos, m))?;
-        if p.is_root() {
-            return self.err("expected a reference inside ${...}");
+        if self.pos != close {
+            return self.err("unexpected text in interpolation; expected `}`");
         }
 
-        self.pos += n;
+        self.pos = close + 1;
+        Ok(n)
+    }
+
+    /// Parse the content of an interpolation: an expression in which a leading identifier
+    /// has an implied `$`.
+    fn interp_expr(&mut self) -> R<Node> {
         self.skip_inline_ws();
-        self.expect(b'}', "`}` to close interpolation")?;
-        Ok(p)
+        if matches!(self.peek(), None | Some(b'}')) {
+            return self.err("expected an expression inside ${...}");
+        }
+
+        self.implied = self.peek().is_some_and(is_ident_start);
+        let was = std::mem::replace(&mut self.in_interp, true);
+        let r = self.expr();
+        self.in_interp = was;
+        self.implied = false;
+        r
     }
 
     /// Parse the rest of a `\u` escape (cursor after `u`): `{hex}` with 1 to 6 digits, or four hex
@@ -682,6 +716,7 @@ impl<'a> Parser<'a> {
         match self.peek() {
             None => self.err("expected a value"),
             Some(b'"') => self.quoted_node(),
+            Some(b'[' | b'{') if self.comprehension_ahead() => self.comprehension(),
             Some(b'[') => self.bracketed(|p| {
                 p.pos += 1;
                 Ok(Node::List(p.flow_items(b']')?))
@@ -696,7 +731,7 @@ impl<'a> Parser<'a> {
             }),
             Some(b'@') => self.bracketed(Parser::typed),
             Some(b'!') => self.variant_flow(),
-            Some(b'$') => self.reference(),
+            Some(b'$') => self.expr(),
             _ => self.word(),
         }
     }
@@ -737,13 +772,203 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
-    /// Parse a `$path` reference (templates only).
-    fn reference(&mut self) -> R<Node> {
+    // ------------------------------------------------------------------
+    // Template expressions (template language 0.2)
+    // ------------------------------------------------------------------
+
+    /// Parse an expression: operators over references, calls, literals and comprehensions. It
+    /// ends before anything that is not an operator surrounded by whitespace.
+    fn expr(&mut self) -> R<Node> {
+        self.nested(Self::expr_or)
+    }
+
+    /// Whether `c` may surround an operator: a space or tab, and inside brackets also a line break.
+    fn is_op_ws(&self, c: u8) -> bool {
+        c == b' ' || c == b'\t' || (self.bracket_depth > 0 && matches!(c, b'\n' | b'\r'))
+    }
+
+    /// If one of `ops` follows the cursor, surrounded by whitespace, consume it with the
+    /// whitespace around it.
+    fn take_op(&mut self, ops: &[(&str, BinOp)]) -> Option<BinOp> {
+        let mut p = self.pos;
+        while self.b.get(p).is_some_and(|&c| self.is_op_ws(c)) {
+            p += 1;
+        }
+
+        if p == self.pos {
+            return None;
+        }
+
+        let &(text, op) = ops
+            .iter()
+            .find(|(t, _)| self.b[p..].starts_with(t.as_bytes()) && self.b.get(p + t.len()).is_some_and(|&c| self.is_op_ws(c)))?;
+        p += text.len();
+        while self.b.get(p).is_some_and(|&c| self.is_op_ws(c)) {
+            p += 1;
+        }
+
+        self.pos = p;
+        Some(op)
+    }
+
+    /// A left-associative chain of `next` operands joined by `ops`. Long chains are bounded
+    /// like nesting, since they evaluate recursively.
+    fn left_assoc(&mut self, ops: &[(&str, BinOp)], next: fn(&mut Self) -> R<Node>) -> R<Node> {
+        let mut l = next(self)?;
+        let mut n = self.depth;
+        while let Some(op) = self.take_op(ops) {
+            n += 1;
+            if n > MAX_DEPTH {
+                return self.err("too many operators in one expression; split it with @let");
+            }
+
+            let r = next(self)?;
+            l = Node::Binary(op, Box::new(l), Box::new(r));
+        }
+
+        Ok(l)
+    }
+
+    /// `a or b …`, the loosest level.
+    fn expr_or(&mut self) -> R<Node> {
+        self.left_assoc(&[("or", BinOp::Or)], Self::expr_and)
+    }
+
+    /// `a and b …`.
+    fn expr_and(&mut self) -> R<Node> {
+        self.left_assoc(&[("and", BinOp::And)], Self::expr_not)
+    }
+
+    /// `not a`, or a comparison.
+    fn expr_not(&mut self) -> R<Node> {
+        if !self.implied && self.starts_with("not") && self.peek_at(3).is_some_and(|c| self.is_op_ws(c)) {
+            self.pos += 3;
+            while self.peek().is_some_and(|c| self.is_op_ws(c)) {
+                self.pos += 1;
+            }
+
+            return Ok(Node::Not(Box::new(self.nested(Self::expr_not)?)));
+        }
+
+        self.expr_cmp()
+    }
+
+    /// `a OP b` with one comparison operator; comparisons do not chain.
+    fn expr_cmp(&mut self) -> R<Node> {
+        /// The comparison operators.
+        const CMP: &[(&str, BinOp)] = &[
+            ("==", BinOp::Eq),
+            ("!=", BinOp::Ne),
+            ("<=", BinOp::Le),
+            (">=", BinOp::Ge),
+            ("<", BinOp::Lt),
+            (">", BinOp::Gt),
+        ];
+        let l = self.expr_sum()?;
+        let Some(op) = self.take_op(CMP) else { return Ok(l) };
+        let r = self.expr_sum()?;
+        let at = self.pos;
+        if self.take_op(CMP).is_some() {
+            return Err(self.error_at(at, "comparison operators do not chain; write `$a < $b and $b < $c`"));
+        }
+
+        Ok(Node::Binary(op, Box::new(l), Box::new(r)))
+    }
+
+    /// `a + b - c …`.
+    fn expr_sum(&mut self) -> R<Node> {
+        self.left_assoc(&[("+", BinOp::Add), ("-", BinOp::Sub)], Self::expr_prod)
+    }
+
+    /// `a * b …`.
+    fn expr_prod(&mut self) -> R<Node> {
+        self.left_assoc(&[("*", BinOp::Mul)], Self::atom)
+    }
+
+    /// An operand: a reference or call, a grouping or tuple, or a flow value (which may contain
+    /// expressions and comprehensions).
+    fn atom(&mut self) -> R<Node> {
+        if std::mem::take(&mut self.implied) {
+            let start = self.pos;
+            return self.ref_or_call(start);
+        }
+
+        match self.peek() {
+            Some(b'$') => self.dollar(),
+            Some(b'(') => self.bracketed(Self::paren),
+            _ => self.parse_flow(),
+        }
+    }
+
+    /// `( expr )` grouping, or a tuple of expressions `()`, `(a,)`, `(a, b)` (cursor at `(`).
+    fn paren(&mut self) -> R<Node> {
+        self.pos += 1;
+        let mut items = Vec::new();
+        let mut comma = false;
+        loop {
+            self.skip_ws_multi();
+            if self.peek() == Some(b')') {
+                self.pos += 1;
+                break;
+            }
+
+            items.push(self.expr()?);
+            self.skip_ws_multi();
+            match self.peek() {
+                Some(b',') => {
+                    self.pos += 1;
+                    comma = true;
+                }
+                Some(b')') => {
+                    self.pos += 1;
+                    break;
+                }
+                _ => return self.err("expected `,` or `)`"),
+            }
+        }
+
+        if items.len() == 1 && !comma {
+            return Ok(items.pop().expect("one item"));
+        }
+
+        Ok(Node::Tuple(items))
+    }
+
+    /// Parse `$name`, `$name.path`, `$name(args)` or `$( expr )` (templates only).
+    fn dollar(&mut self) -> R<Node> {
         if !self.template {
             return self.err("`$` is reserved for template references; quote the string or add @template");
         }
 
+        let start = self.pos;
         self.pos += 1;
+        if self.peek() == Some(b'(') {
+            return self.bracketed(|p| {
+                p.pos += 1;
+                p.skip_ws_multi();
+                let e = p.expr()?;
+                p.skip_ws_multi();
+                p.expect(b')', "`)` to close `$(`")?;
+                Ok(e)
+            });
+        }
+
+        self.ref_or_call(start)
+    }
+
+    /// Parse a reference or call whose `$` (at `start`, or implied) is behind the cursor. A
+    /// name immediately followed by `(` is a call.
+    fn ref_or_call(&mut self, start: usize) -> R<Node> {
+        let save = self.pos;
+        if self.peek().is_some_and(is_ident_start) {
+            let name = self.ident()?;
+            if self.peek() == Some(b'(') {
+                return self.call(name, start);
+            }
+
+            self.pos = save;
+        }
+
         let (p, n) = Path::parse_prefix(&self.src[self.pos..]).map_err(|m| self.error_at(self.pos, m))?;
         if p.is_root() {
             return self.err("expected a name after `$`");
@@ -751,6 +976,117 @@ impl<'a> Parser<'a> {
 
         self.pos += n;
         Ok(Node::Ref(p))
+    }
+
+    /// Parse the arguments of a call of `name` written at `start` (cursor at `(`).
+    fn call(&mut self, name: String, start: usize) -> R<Node> {
+        let interp = self.in_interp;
+        let offset = self.offset_base.unwrap_or(start);
+        self.bracketed(|p| {
+            p.pos += 1;
+            let (mut args, mut bare) = (Vec::new(), Vec::new());
+            loop {
+                p.skip_ws_multi();
+                if p.peek() == Some(b')') {
+                    p.pos += 1;
+                    break;
+                }
+
+                let first = p.peek();
+                let a = p.expr()?;
+                bare.push(!matches!(first, Some(b'"' | b'$' | b'[' | b'{' | b'(' | b'@' | b'!')) && matches!(a, Node::Lit(Value::String(_))));
+                args.push(a);
+                p.skip_ws_multi();
+                match p.peek() {
+                    Some(b',') => p.pos += 1,
+                    Some(b')') => {
+                        p.pos += 1;
+                        break;
+                    }
+                    _ => return p.err("expected `,` or `)` in the arguments of a call"),
+                }
+            }
+
+            Ok(Node::Call(Call {
+                name,
+                args,
+                bare,
+                interp,
+                offset,
+            }))
+        })
+    }
+
+    /// Whether a comprehension `[for ` or `{for ` starts at the cursor (templates only).
+    fn comprehension_ahead(&self) -> bool {
+        self.template && (self.starts_with("[for") || self.starts_with("{for")) && self.peek_at(4).is_some_and(|c| c.is_ascii_whitespace())
+    }
+
+    /// Parse `[for [i,] x in SOURCE [if COND]: VALUE]` or `{for … : KEY: VALUE}` (cursor at the
+    /// bracket).
+    fn comprehension(&mut self) -> R<Node> {
+        let close = if self.peek() == Some(b'[') { b']' } else { b'}' };
+        self.bracketed(|p| {
+            p.pos += 4;
+            p.skip_ws_multi();
+            let first = p.ident()?;
+            p.skip_ws_multi();
+            let (index, var) = if p.peek() == Some(b',') {
+                p.pos += 1;
+                p.skip_ws_multi();
+                (Some(first), p.ident()?)
+            } else {
+                (None, first)
+            };
+
+            p.skip_ws_multi();
+            if !p.word_ahead("in") {
+                return p.err("expected `in` in comprehension");
+            }
+
+            p.pos += 2;
+            p.skip_ws_multi();
+            let iter = p.expr()?;
+            p.skip_ws_multi();
+            let filter = if p.word_ahead("if") {
+                p.pos += 2;
+                p.skip_ws_multi();
+                let f = p.expr()?;
+                p.skip_ws_multi();
+                Some(f)
+            } else {
+                None
+            };
+
+            p.expect(b':', "`:` after the head of the comprehension")?;
+            p.skip_ws_multi();
+            let key = if close == b'}' {
+                let k = p.expr()?;
+                p.skip_ws_multi();
+                p.expect(b':', "`:` after the key of a record comprehension")?;
+                p.skip_ws_multi();
+                Some(k)
+            } else {
+                None
+            };
+
+            let value = p.expr()?;
+            p.skip_ws_multi();
+            p.expect(
+                close,
+                if close == b']' {
+                    "`]` to close the comprehension"
+                } else {
+                    "`}` to close the comprehension"
+                },
+            )?;
+            Ok(Node::Comp(Box::new(Comp {
+                head: ForHead { index, var, iter },
+                filter,
+                key,
+                value,
+            })))
+        })
     }
 
     /// Parse comma-separated items up to `close` (cursor after the opening bracket); a trailing comma
@@ -1022,7 +1358,7 @@ impl<'a> Parser<'a> {
 
     /// Does the text at `pos` look like `key:` / `key[N]{..}:` followed by space or EOL?
     fn looks_like_key(&self) -> bool {
-        let b = self.b;
+        let (b, template) = (self.b, self.template);
         // Offset just past the quoted string opening at `p`, or `None` if it does not close on this line.
         let skip_quoted = |mut p: usize| {
             p += 1;
@@ -1031,6 +1367,8 @@ impl<'a> Parser<'a> {
                     None | Some(b'\n') => return None,
                     Some(b'\\') => p += 2,
                     Some(b'"') => return Some(p + 1),
+                    Some(b'$') if template && b.get(p + 1) == Some(&b'$') => p += 2,
+                    Some(b'$') if template && b.get(p + 1) == Some(&b'{') => p += 3 + interp_close(&b[p + 2..], 0)?,
                     _ => p += 1,
                 }
             }
@@ -1382,6 +1720,7 @@ impl<'a> Parser<'a> {
     /// Parse a `|` (keep the final newline) or `|-` (strip it) block string whose lines are indented
     /// `parent + 2`. Trailing blank lines are dropped.
     fn block_string(&mut self, parent: usize) -> R<Node> {
+        let at = self.pos;
         self.pos += 1;
         let strip = self.peek() == Some(b'-');
         if strip {
@@ -1423,15 +1762,15 @@ impl<'a> Parser<'a> {
 
         if self.template {
             // Re-parse for ${...} interpolation.
-            return self.interpolate_block(&s);
+            return self.interpolate_block(&s, at);
         }
 
         Ok(Node::Lit(Value::String(s)))
     }
 
-    /// Split a block string's text into literal and `${path}` parts (templates only); `$${` stands for a
-    /// literal `${`.
-    fn interpolate_block(&self, s: &str) -> R<Node> {
+    /// Split a block string's text into literal and `${expr}` parts (templates only); `$${` stands
+    /// for a literal `${`. Errors and calls are reported at `at`, the start of the block string.
+    fn interpolate_block(&self, s: &str, at: usize) -> R<Node> {
         let mut parts = Vec::new();
         let mut buf = String::new();
         let mut rest = s;
@@ -1442,13 +1781,28 @@ impl<'a> Parser<'a> {
                 buf.push_str("${");
                 rest = &rest[3..];
             } else if let Some(r) = rest.strip_prefix("${") {
-                let close = r.find('}').ok_or_else(|| self.error_at(self.pos, "unterminated ${ in block string"))?;
-                let p = Path::parse(&r[..close]).map_err(|m| self.error_at(self.pos, m))?;
+                let close = interp_close(r.as_bytes(), 0).ok_or_else(|| self.error_at(at, "unterminated ${ in block string"))?;
+                let off = s.len() - r.len();
+                let mut p = Parser::new(s, true);
+                p.pos = off;
+                p.depth = self.depth;
+                p.offset_base = Some(at);
+                let n = p
+                    .interp_expr()
+                    .and_then(|n| {
+                        p.skip_inline_ws();
+                        if p.pos == off + close {
+                            Ok(n)
+                        } else {
+                            p.err("unexpected text in interpolation; expected `}`")
+                        }
+                    })
+                    .map_err(|e| self.error_at(at, e.message))?;
                 if !buf.is_empty() {
                     parts.push(Part::Text(std::mem::take(&mut buf)));
                 }
 
-                parts.push(Part::Ref(p));
+                parts.push(Part::Expr(n));
                 rest = &r[close + 1..];
             } else {
                 buf.push('$');
@@ -1737,7 +2091,7 @@ impl<'a> Parser<'a> {
         let mut arms = Vec::new();
         let mut els = None;
         loop {
-            let cond = self.cond()?;
+            let cond = self.expr()?;
             self.skip_inline_ws();
             self.expect(b':', "`:` after @if condition")?;
             self.end_line()?;
@@ -1794,7 +2148,7 @@ impl<'a> Parser<'a> {
 
         self.pos += 3;
         self.skip_inline_ws();
-        let iter = self.parse_flow()?;
+        let iter = self.expr()?;
         self.skip_inline_ws();
         self.expect(b':', "`:` after @for header")?;
         self.end_line()?;
@@ -1810,75 +2164,128 @@ impl<'a> Parser<'a> {
         self.starts_with(w) && !self.peek_at(w.len()).is_some_and(is_ident_char)
     }
 
-    /// Parse a condition: `or`-joined `and` terms (lowest precedence).
-    fn cond(&mut self) -> R<Cond> {
-        let mut l = self.cond_and()?;
-        loop {
-            self.skip_inline_ws();
-            if self.word_ahead("or") {
-                self.pos += 2;
-                let r = self.cond_and()?;
-                l = Cond::Or(Box::new(l), Box::new(r));
-            } else {
-                return Ok(l);
-            }
-        }
-    }
-
-    /// Parse `and`-joined unary conditions.
-    fn cond_and(&mut self) -> R<Cond> {
-        let mut l = self.cond_unary()?;
-        loop {
-            self.skip_inline_ws();
-            if self.word_ahead("and") {
-                self.pos += 3;
-                let r = self.cond_unary()?;
-                l = Cond::And(Box::new(l), Box::new(r));
-            } else {
-                return Ok(l);
-            }
-        }
-    }
-
-    /// Parse `not c`, a parenthesized condition, or an operand optionally compared with `==` / `!=`.
-    fn cond_unary(&mut self) -> R<Cond> {
-        self.skip_inline_ws();
-        if self.word_ahead("not") {
-            self.pos += 3;
-            return Ok(Cond::Not(Box::new(self.nested(Self::cond_unary)?)));
-        }
-
-        if self.peek() == Some(b'(') {
-            // Grouping, unless it is a tuple literal operand.
-            let save = self.pos;
-            self.pos += 1;
-            if let Ok(c) = self.nested(Self::cond) {
-                self.skip_inline_ws();
-                if self.peek() == Some(b')') {
-                    self.pos += 1;
-                    return Ok(c);
-                }
-            }
-
-            self.pos = save;
-        }
-
-        let l = self.parse_flow()?;
-        self.skip_inline_ws();
-        if self.starts_with("==") || self.starts_with("!=") {
-            let eq = self.starts_with("==");
-            self.pos += 2;
-            self.skip_inline_ws();
-            let r = self.parse_flow()?;
-            return Ok(if eq { Cond::Eq(l, r) } else { Cond::Ne(l, r) });
-        }
-
-        Ok(Cond::Test(l))
-    }
-
     // ------------------------------------------------------------------
     // Documents
     // ------------------------------------------------------------------
+
+    /// Parse the rest of a `@def` directive at `dpos` (cursor at the name): the flow form
+    /// `NAME(PARAMS)[: RESULT] = EXPR`, or the block form whose body follows on lines indented
+    /// two spaces (`NAME(PARAMS)[: RESULT]`, optionally ending in `:`).
+    fn def(&mut self, dpos: usize) -> R<Def> {
+        let name = self.ident()?;
+        self.expect(b'(', "`(` after the @def name")?;
+        let params = self.def_params()?;
+        self.skip_inline_ws();
+        let mut result = None;
+        if self.peek() == Some(b':') {
+            self.pos += 1;
+            self.skip_inline_ws();
+            if !self.at_eol_or_comment() {
+                let ty = self.type_text(b"=");
+                result = Some(ty.strip_suffix(':').map_or(ty.as_str(), str::trim_end).to_owned());
+            }
+        }
+
+        self.skip_inline_ws();
+        let body = if self.peek() == Some(b'=') {
+            self.pos += 1;
+            self.skip_inline_ws();
+            let n = self.expr()?;
+            self.end_line()?;
+            n
+        } else {
+            self.end_line()?;
+            self.nested_block(2, "the @def body")?
+        };
+
+        Ok(Def {
+            name,
+            params,
+            result,
+            body,
+            offset: dpos,
+        })
+    }
+
+    /// Parse the parameters `name: TYPE [= DEFAULT], …` of a `@def` (cursor after `(`) through
+    /// the `)`. There is at least one, and those with defaults come last.
+    fn def_params(&mut self) -> R<Vec<DefParam>> {
+        let mut params: Vec<DefParam> = Vec::new();
+        loop {
+            self.skip_inline_ws();
+            if params.is_empty() && self.peek() == Some(b')') {
+                return self.err("a @def needs at least one parameter; use @let for a value without parameters");
+            }
+
+            let name = self.ident()?;
+            self.skip_inline_ws();
+            self.expect(b':', "`:` after the parameter name")?;
+            self.skip_inline_ws();
+            let ty = self.type_text(b",)=");
+            if ty.is_empty() {
+                return self.err("expected a type after `:`");
+            }
+
+            let default = if self.peek() == Some(b'=') {
+                self.pos += 1;
+                self.skip_inline_ws();
+                let d = self.expr()?;
+                self.skip_inline_ws();
+                Some(d)
+            } else if params.last().is_some_and(|p| p.default.is_some()) {
+                return self.err("parameters with defaults must come last");
+            } else {
+                None
+            };
+
+            params.push(DefParam { name, ty, default });
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(b')') => {
+                    self.pos += 1;
+                    return Ok(params);
+                }
+                _ => return self.err("expected `,` or `)` in the @def parameters"),
+            }
+        }
+    }
+
+    /// Read a schema type up to one of `stops` outside brackets and quoted strings, a ` #`
+    /// comment or the end of the line. Returns it trimmed, with the cursor at the stop.
+    fn type_text(&mut self, stops: &[u8]) -> String {
+        let start = self.pos;
+        let mut depth = 0usize;
+        while let Some(c) = self.peek() {
+            match c {
+                b'\n' | b'\r' => break,
+                b'#' if self.pos > start && matches!(self.b[self.pos - 1], b' ' | b'\t') => break,
+                b'"' => {
+                    self.pos += 1;
+                    while let Some(c) = self.peek() {
+                        if c == b'\n' {
+                            break;
+                        }
+
+                        self.pos += if c == b'\\' { 2 } else { 1 };
+                        if c == b'"' {
+                            break;
+                        }
+                    }
+
+                    self.pos = self.pos.min(self.b.len());
+                    continue;
+                }
+                b'<' | b'(' | b'[' | b'{' => depth += 1,
+                b'>' | b')' | b']' | b'}' if depth > 0 => depth -= 1,
+                c if depth == 0 && stops.contains(&c) => break,
+                _ => {}
+            }
+
+            self.pos += 1;
+        }
+
+        self.src[start..self.pos].trim().to_owned()
+    }
 
     /// Whether a header directive `@name` starts at the cursor (in templates, not `@if`, `@for` or `@else`).
     fn directive_ahead(&self) -> bool {
@@ -1964,16 +2371,19 @@ impl<'a> Parser<'a> {
                     }
 
                     let arg = self.rest_of_line_arg();
-                    if !arg.is_empty() {
-                        crate::version::TEMPLATE_VERSION
-                            .check(&arg, "the NOVA template language")
-                            .map_err(|m| self.error_at(dpos, m))?;
-                    }
+                    let version = if arg.is_empty() {
+                        None
+                    } else {
+                        Some(crate::version::check_template_version(&arg).map_err(|m| self.error_at(dpos, m))?)
+                    };
 
                     self.template = true;
-                    tpl = Some(TemplateHeader::default());
+                    tpl = Some(TemplateHeader {
+                        version,
+                        ..TemplateHeader::default()
+                    });
                 }
-                "param" | "let" | "import" => {
+                "param" | "let" | "def" | "import" => {
                     let Some(h) = tpl.as_mut() else {
                         return Err(self.error_at(dpos, format!("@{name} requires @template")));
                     };
@@ -2001,7 +2411,7 @@ impl<'a> Parser<'a> {
                             let default = if self.peek() == Some(b'=') {
                                 self.pos += 1;
                                 self.skip_inline_ws();
-                                Some(self.parse_flow()?)
+                                Some(self.expr()?)
                             } else {
                                 None
                             };
@@ -2021,7 +2431,7 @@ impl<'a> Parser<'a> {
                                 Some(b'=') => {
                                     self.pos += 1;
                                     self.skip_inline_ws();
-                                    let n = self.parse_flow()?;
+                                    let n = self.expr()?;
                                     self.end_line()?;
                                     n
                                 }
@@ -2032,7 +2442,11 @@ impl<'a> Parser<'a> {
                                 _ => return self.err("expected `=` or `:` after @let name"),
                             };
 
-                            h.lets.push(Let { name: lname, value });
+                            h.decls.push(Decl::Let(Let { name: lname, value }));
+                        }
+                        "def" => {
+                            let def = self.def(dpos)?;
+                            h.decls.push(Decl::Def(def));
                         }
                         _ => {
                             let path = self.parse_quoted_literal()?;
@@ -2110,6 +2524,39 @@ impl<'a> Parser<'a> {
         }
 
         Ok(body)
+    }
+}
+
+/// Index of the `}` that closes an interpolation whose content starts at `b[0]`, skipping
+/// nested braces and quoted strings (with their escapes and interpolations); `None` if a line
+/// or the input ends first, or interpolations nest deeper than [`MAX_DEPTH`].
+fn interp_close(b: &[u8], depth: usize) -> Option<usize> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+
+    let (mut braces, mut i) = (0usize, 0);
+    loop {
+        match *b.get(i)? {
+            b'{' => braces += 1,
+            b'}' if braces == 0 => return Some(i),
+            b'}' => braces -= 1,
+            b'"' => loop {
+                i += 1;
+                match *b.get(i)? {
+                    b'"' => break,
+                    b'\\' => i += 1,
+                    b'\n' => return None,
+                    b'$' if b.get(i + 1) == Some(&b'$') => i += 1,
+                    b'$' if b.get(i + 1) == Some(&b'{') => i += 2 + interp_close(&b[i + 2..], depth + 1)?,
+                    _ => {}
+                }
+            },
+            b'\n' => return None,
+            _ => {}
+        }
+
+        i += 1;
     }
 }
 
