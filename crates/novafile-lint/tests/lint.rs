@@ -152,6 +152,6 @@ fn template_rules() {
     assert_eq!(&src[f[0].start..f[0].end], "@def lower");
     assert_eq!(&src[f[2].start..f[2].end], "upper");
     assert_eq!(&src[f[3].start..f[3].end], "$matches");
-    let f = lint_document(&src.replacen("\n", "\n@x-lint allow=unused-def,bare-argument\n", 1), &Config::default()).unwrap();
+    let f = lint_document(&src.replacen('\n', "\n@x-lint allow=unused-def,bare-argument\n", 1), &Config::default()).unwrap();
     assert_eq!(f.len(), 2, "{f:#?}");
 }
