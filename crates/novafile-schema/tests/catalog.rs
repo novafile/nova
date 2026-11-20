@@ -198,3 +198,30 @@ fn cached_versions_are_listed_by_name_and_version() {
     got.sort();
     assert_eq!(got, ["acme.dev/billing/invoice@2.1.0", "acme.dev/billing/invoice@2.2.0"]);
 }
+
+/// A fetched schema is stored in the cache, found there by later lookups, and a
+/// different file for the same version is refused (versions are immutable).
+#[test]
+fn cache_round_trip_and_immutable_versions() {
+    let d = scratch("store");
+    let cache = d.join("cache");
+    let r = Resolver::new(&Options {
+        start: Some(d.clone()),
+        cache: Some(cache.clone()),
+        ..Options::default()
+    })
+    .unwrap();
+    let want = SchemaRef::parse("acme.dev/a@1.0.0").unwrap();
+    let text = schema("acme.dev/a@1.0.0", "int");
+    let s = r.accept_fetched(&want, &text).unwrap();
+    let path = r.store(&s, &text).unwrap();
+    assert_eq!(path, cache.join("acme.dev/a/1.0.0.novs"));
+
+    let found = r.resolve("acme.dev/a@1.0.0").unwrap();
+    assert_eq!(found.origin, Origin::Cache(path.clone()));
+    // Storing the same content again is fine; other content for the version is not.
+    r.store(&s, &text).unwrap();
+    let other = parse_schema(&schema("acme.dev/a@1.0.0", "string")).unwrap();
+    assert_eq!(r.store(&other, &schema("acme.dev/a@1.0.0", "string")).unwrap_err().kind(), "conflict");
+    assert!(std::fs::read_to_string(&path).unwrap().contains("a: int"));
+}
