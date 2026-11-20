@@ -548,3 +548,53 @@ fn readme_example_renders() {
         "services:\n  - {enabled: true, replicas: 3, id: auth, image: \"ghcr.io/example/auth:v2\"}\n  - id: metrics\n    ports: [{port: 9090, name: m-9090}, {port: 9091, name: m-9091}]\n",
     );
 }
+
+#[test]
+fn deep_def_chains_fail_instead_of_overflowing() {
+    // 250 functions, each nesting its call 100 brackets deep: within the parser's nesting limit
+    // per body, but far deeper than the native stack allows in total.
+    let mut src = String::from("@template\n@def f0(x: int) = $x\n");
+    for i in 1..250 {
+        let _ = writeln!(src, "@def f{i}(x: int) = {}$f{p}($x){}", "[".repeat(100), "]".repeat(100), p = i - 1);
+    }
+
+    src.push_str("x: $f249(1)\n");
+    fails(&src, "", "nests deeper than");
+}
+
+#[test]
+fn long_def_chains_render() {
+    // Each call nests two levels of evaluation, so 95 calls stay within the limit of 200.
+    let mut src = String::from("@template\n@def f0(x: int) = $x\n");
+    for i in 1..95 {
+        let _ = writeln!(src, "@def f{i}(x: int) = $f{p}($x) + 1", p = i - 1);
+    }
+
+    src.push_str("x: $f94(1)\n");
+    ok(&src, "", "x: 95\n");
+    // Data nested as deep as the parser allows renders too.
+    let deep = format!("@template\n@param v: int\nx: {}$v{}\n", "[".repeat(120), "]".repeat(120));
+    let v = render(&deep, &args("v: 1\n"), &Options::default()).unwrap();
+    assert!(matches!(v, Value::Record(_)));
+}
+
+#[test]
+fn to_json_and_to_nova_edges() {
+    fails("@template\nx: $to_json(-170141183460469231731687303715884105728)\n", "", "beyond");
+    ok(
+        "@template\na: $to_nova({a: 1})\nb: $to_nova({a: 1, b: 2})\nc: $to_nova([1])\nd: $to_nova({})\ne: $to_nova(x)\n",
+        "",
+        "a: \"a: 1\\n\"\nb: \"a: 1\\nb: 2\\n\"\nc: \"- 1\\n\"\nd: \"{}\"\ne: x\n",
+    );
+}
+
+#[test]
+fn spellings_without_operator_whitespace_fail_to_load() {
+    for src in [
+        "@template\n@let a = 1\nx:\n  @if $a==1:\n    y: 1\n",
+        "@template\n@let a = 1\nx:\n  @if $a ==1:\n    y: 1\n",
+        "@template\n@let a = true\nx:\n  @if not($a):\n    y: 1\n",
+    ] {
+        assert!(render(src, &Record::new(), &Options::default()).is_err(), "{src}");
+    }
+}

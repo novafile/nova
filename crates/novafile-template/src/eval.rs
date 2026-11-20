@@ -10,9 +10,10 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-/// Maximum nesting of `@def` calls. The call graph is acyclic, so this only matters for very
-/// long chains of definitions, which would otherwise exhaust the native stack.
-const MAX_CALL_DEPTH: usize = 256;
+/// Maximum nesting of evaluation, across `@def` calls. Each body is bounded by the parser's
+/// nesting limit, but a chain of definitions multiplies it, which would otherwise exhaust the
+/// native stack.
+const MAX_EVAL_DEPTH: usize = 200;
 
 /// A `@def` ready to be called: its declaration, parsed types and lexical scope.
 pub(crate) struct Func<'a> {
@@ -64,8 +65,8 @@ pub(crate) struct Eval<'a> {
     patterns: &'a Cell<usize>,
     /// Compiled `matches` patterns by text.
     regexes: HashMap<String, Pattern>,
-    /// Current nesting of `@def` calls.
-    calls: usize,
+    /// Current nesting of [`Self::eval_owned`], across `@def` calls.
+    depth: usize,
 }
 
 /// Whether `v` is a bool, or an error naming `what` needs one.
@@ -90,7 +91,7 @@ impl<'a> Eval<'a> {
             schema,
             patterns,
             regexes: HashMap::new(),
-            calls: 0,
+            depth: 0,
         }
     }
 
@@ -234,50 +235,21 @@ impl<'a> Eval<'a> {
 
     /// Evaluate `n`; the flag says whether the value's nodes were already charged as built.
     fn eval_owned(&mut self, n: &Node) -> Result<(Value, bool), TemplateError> {
+        if self.depth >= MAX_EVAL_DEPTH {
+            return err(format!("template evaluation nests deeper than {MAX_EVAL_DEPTH} levels"));
+        }
+
+        self.depth += 1;
+        let r = self.eval_node(n);
+        self.depth -= 1;
+        r
+    }
+
+    /// [`Self::eval_owned`] below the depth guard. Constructors are evaluated by
+    /// [`Self::build`], which keeps this frame, on every level of recursion, small.
+    fn eval_node(&mut self, n: &Node) -> Result<(Value, bool), TemplateError> {
         Ok(match n {
-            Node::Lit(v) => {
-                let c = Cost::of(v);
-                self.charge(c.nodes, c.bytes)?;
-                (v.clone(), true)
-            }
-            Node::List(items) => {
-                self.charge(1, 0)?;
-                let mut out = Vec::new();
-                self.items(items, &mut out)?;
-                (Value::List(out), true)
-            }
-            Node::Tuple(items) => {
-                self.charge(1, 0)?;
-                (Value::Tuple(items.iter().map(|n| self.place(n)).collect::<Result<_, _>>()?), true)
-            }
-            Node::Set(items) => {
-                self.charge(1, 0)?;
-                let items = items.iter().map(|n| self.place(n)).collect::<Result<_, _>>()?;
-                (Value::set(items).map_err(TemplateError)?, true)
-            }
-            Node::Map(entries) => {
-                self.charge(1, 0)?;
-                let entries = entries
-                    .iter()
-                    .map(|(k, v)| Ok((self.place(k)?, self.place(v)?)))
-                    .collect::<Result<_, TemplateError>>()?;
-                (Value::map(entries).map_err(TemplateError)?, true)
-            }
-            Node::Record(entries) => {
-                self.charge(1, 0)?;
-                let mut r = Record::new();
-                self.entries(entries, &mut r, &mut HashSet::new())?;
-                (Value::Record(r), true)
-            }
-            Node::Variant(t, p) => {
-                self.charge(1, 0)?;
-                (Value::Variant(t.clone(), p.as_ref().map(|p| self.place(p).map(Box::new)).transpose()?), true)
-            }
             Node::Ref(p) => (self.lookup(p)?, false),
-            Node::Interp(parts) => {
-                self.charge(1, 0)?;
-                (Value::String(self.text(parts)?), true)
-            }
             Node::Call(c) => self.call(c)?,
             Node::Binary(op, a, b) => (self.binary(*op, a, b)?, false),
             Node::Not(a) => {
@@ -285,7 +257,58 @@ impl<'a> Eval<'a> {
                 let v = self.eval(a)?;
                 (Value::Bool(!want_bool(&v, "the operand of `not`")?), false)
             }
-            Node::Comp(c) => (self.comp(c)?, true),
+            _ => (self.build(n)?, true),
+        })
+    }
+
+    /// Evaluate a literal, collection, interpolation or comprehension, charging what it builds.
+    #[inline(never)]
+    fn build(&mut self, n: &Node) -> Result<Value, TemplateError> {
+        Ok(match n {
+            Node::Lit(v) => {
+                let c = Cost::of(v);
+                self.charge(c.nodes, c.bytes)?;
+                v.clone()
+            }
+            Node::List(items) => {
+                self.charge(1, 0)?;
+                let mut out = Vec::new();
+                self.items(items, &mut out)?;
+                Value::List(out)
+            }
+            Node::Tuple(items) => {
+                self.charge(1, 0)?;
+                Value::Tuple(items.iter().map(|n| self.place(n)).collect::<Result<_, _>>()?)
+            }
+            Node::Set(items) => {
+                self.charge(1, 0)?;
+                let items = items.iter().map(|n| self.place(n)).collect::<Result<_, _>>()?;
+                Value::set(items).map_err(TemplateError)?
+            }
+            Node::Map(entries) => {
+                self.charge(1, 0)?;
+                let entries = entries
+                    .iter()
+                    .map(|(k, v)| Ok((self.place(k)?, self.place(v)?)))
+                    .collect::<Result<_, TemplateError>>()?;
+                Value::map(entries).map_err(TemplateError)?
+            }
+            Node::Record(entries) => {
+                self.charge(1, 0)?;
+                let mut r = Record::new();
+                self.entries(entries, &mut r, &mut HashSet::new())?;
+                Value::Record(r)
+            }
+            Node::Variant(t, p) => {
+                self.charge(1, 0)?;
+                Value::Variant(t.clone(), p.as_ref().map(|p| self.place(p).map(Box::new)).transpose()?)
+            }
+            Node::Interp(parts) => {
+                self.charge(1, 0)?;
+                Value::String(self.text(parts)?)
+            }
+            Node::Comp(c) => self.comp(c)?,
+            Node::Ref(_) | Node::Call(_) | Node::Binary(..) | Node::Not(_) => unreachable!("evaluated by eval_node"),
         })
     }
 
@@ -344,16 +367,10 @@ impl<'a> Eval<'a> {
             return err(format!("{name} takes {n} argument(s), but {} were given", args.len()));
         }
 
-        if self.calls >= MAX_CALL_DEPTH {
-            return err(format!("@def calls nest deeper than {MAX_CALL_DEPTH}"));
-        }
-
         let saved = (std::mem::replace(&mut self.locals, vec![Vec::new()]), self.visible, self.visible_funcs);
         self.visible = f.globals;
         self.visible_funcs = f.funcs;
-        self.calls += 1;
         let r = self.run_def(f, args);
-        self.calls -= 1;
         (self.locals, self.visible, self.visible_funcs) = saved;
         r
     }

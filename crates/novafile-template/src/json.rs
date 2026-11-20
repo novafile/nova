@@ -22,7 +22,7 @@ fn write(o: &mut String, v: &Value) -> Result<(), String> {
     match v {
         Value::Null => o.push_str("null"),
         Value::Bool(b) => o.push_str(if *b { "true" } else { "false" }),
-        Value::Int(i) if i.abs() > SAFE => return Err(format!("{i} is beyond ±2^53 and has no exact JSON number")),
+        Value::Int(i) if i.unsigned_abs() > SAFE.unsigned_abs() => return Err(format!("{i} is beyond ±2^53 and has no exact JSON number")),
         Value::Int(i) => {
             let _ = write!(o, "{i}");
         }

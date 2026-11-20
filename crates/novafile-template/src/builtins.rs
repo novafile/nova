@@ -498,10 +498,15 @@ fn apply(ev: &mut Eval<'_>, name: &str, mut a: Vec<Value>) -> Result<Value, Stri
         }
         "to_nova" => {
             arity(1, 1)?;
-            let t = to_text(&a[0], Profile::Canonical);
-            // A flow value is one line; drop its line break. Block text keeps its last one.
-            let one_line = t.strip_suffix('\n').filter(|b| !b.contains('\n'));
-            str_(one_line.map_or(t.clone(), str::to_owned))
+            let mut t = to_text(&a[0], Profile::Canonical);
+            // Non-empty records and lists are written as blocks, which end in a line break;
+            // everything else is one flow value, written without one.
+            let block = matches!(&a[0], Value::Record(r) if !r.is_empty()) || matches!(&a[0], Value::List(l) if !l.is_empty());
+            if !block {
+                t.pop();
+            }
+
+            str_(t)
         }
         _ => Err("unknown function".into()),
     }
