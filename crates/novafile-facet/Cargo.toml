@@ -3,7 +3,8 @@ name = "novafile-facet"
 description = "facet integration for NOVA: reflection-based (de)serialization to text, binary and values"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# facet-reflect needs smallvec 2.0.0-beta.5, which needs Rust 1.100.
+rust-version = "1.100"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
