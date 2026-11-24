@@ -1,7 +1,8 @@
 //! Schema evolution checks (spec §6.5). "Compatible" means every value valid
 //! under the old schema resolves under the new one (new readers, old data).
 
-use crate::model::{Constraints, Def, IntKind, Num, Schema, TypeKind, TypeRef, VariantDef};
+use crate::model::{Class, Constraints, Def, IntKind, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
+use std::collections::BTreeSet;
 
 /// One difference between two schema versions, as found by [`check_compatibility`].
 #[derive(Clone, Debug, PartialEq)]
@@ -94,7 +95,7 @@ fn widens_in(s: (&Schema, &Schema), old: &TypeRef, new: &TypeRef, depth: usize) 
     // An alias stands for its target. Same names were compared by name above.
     if !same_name {
         let expand = |sc: &Schema, t: &TypeRef| match &t.kind {
-            TypeKind::Named(n) if t.constraints == Constraints::default() => match sc.def(n) {
+            TypeKind::Named(n) if t.constraints.without_class() == Constraints::default() => match sc.def(n) {
                 Some(Def::Alias(a)) => Some(TypeRef {
                     nullable: t.nullable || a.nullable,
                     ..a.clone()
@@ -220,73 +221,14 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
             continue;
         };
 
-        match (od, nd) {
-            (Def::Alias(a), Def::Alias(b)) => {
-                if !widens_in((old, new), a, b, 0) {
-                    push(true, name, format!("type {a} narrowed or changed to {b}"));
-                }
-            }
-            (Def::Enum(a), Def::Enum(b)) => enum_changes((old, new), name, a, b, &mut push),
-            (Def::Record(a), Def::Record(b)) => {
-                if a.open && !b.open {
-                    push(true, name, "record closed (@open removed)".into());
-                }
+        def_changes((old, new), name, od, nd, &mut push);
+    }
 
-                for f in &a.fields {
-                    let at = format!("{name}.{}", f.name);
-                    let g = b.fields.iter().find(|g| f.id.is_some() && g.id == f.id).or_else(|| b.field(&f.name));
-                    let Some(g) = g else {
-                        if b.open {
-                            push(false, &at, "field removed (record is @open, old data still accepted)".into());
-                        } else {
-                            push(true, &at, "field removed; old data containing it is rejected".into());
-                        }
-
-                        continue;
-                    };
-
-                    if g.name != f.name {
-                        push(
-                            true,
-                            &at,
-                            format!("renamed to {} (same @id; compatible for positional/binary encodings only)", g.name),
-                        );
-                    }
-
-                    if !widens_in((old, new), &f.ty, &g.ty, 0) {
-                        push(true, &at, format!("type {} changed incompatibly to {}", f.ty, g.ty));
-                    }
-
-                    if f.id.is_some() && g.id != f.id {
-                        let id = g.id.map_or_else(|| "removed".into(), |n| format!("changed to {n}"));
-                        push(true, &at, format!("@id {id} (Protobuf uses it as the field number)"));
-                    }
-
-                    if (f.optional || f.default.is_some()) && !g.optional && g.default.is_none() {
-                        push(true, &at, "field may no longer be absent (optional or default removed)".into());
-                    }
-
-                    if f.key != g.key {
-                        push(g.key, &at, if g.key { "@key added".into() } else { "@key removed".into() });
-                    }
-                }
-
-                for g in &b.fields {
-                    let existed = a.fields.iter().any(|f| f.name == g.name || (g.id.is_some() && f.id == g.id));
-                    if !existed {
-                        let at = format!("{name}.{}", g.name);
-                        if g.key {
-                            // Old elements all get the same default key value (§6.5: add @key is breaking).
-                            push(true, &at, "@key field added; existing list elements may now collide".into());
-                        } else if g.optional || g.default.is_some() {
-                            push(false, &at, "field added".into());
-                        } else {
-                            push(true, &at, "required field added without a default".into());
-                        }
-                    }
-                }
-            }
-            _ => push(true, name, "definition kind changed".into()),
+    // Imported definitions count where this schema uses them (proposal 0008):
+    // a new import version is breaking only through the types in use.
+    for name in used_imports(old) {
+        if let (Some(od), Some(nd)) = (old.def(&name), new.def(&name)) {
+            def_changes((old, new), &name, od, nd, &mut push);
         }
     }
 
@@ -297,6 +239,159 @@ pub fn check_compatibility(old: &Schema, new: &Schema) -> Vec<Change> {
     }
 
     out
+}
+
+/// Changes between two versions of the definition `name`, the pair `od`
+/// and `nd`, including changes of class (proposal 0009).
+fn def_changes(schemas: (&Schema, &Schema), name: &str, od: &Def, nd: &Def, push: &mut impl FnMut(bool, &str, String)) {
+    let (old, new) = schemas;
+    class_change(push, name, old.def_class(name), new.def_class(name));
+    match (od, nd) {
+        (Def::Alias(a), Def::Alias(b)) => {
+            if !widens_in(schemas, a, b, 0) {
+                push(true, name, format!("type {a} narrowed or changed to {b}"));
+            }
+
+            type_class_changes(schemas, name, a, b, push);
+        }
+        (Def::Enum(a), Def::Enum(b)) => enum_changes(schemas, name, a, b, push),
+        (Def::Record(a), Def::Record(b)) => record_changes(schemas, name, a, b, push),
+        _ => push(true, name, "definition kind changed".into()),
+    }
+}
+
+/// Changes between two versions of the record `name`: `a` in the old
+/// schema and `b` in the new one. Fields are matched by `@id`, then by name.
+fn record_changes(schemas: (&Schema, &Schema), name: &str, a: &RecordDef, b: &RecordDef, push: &mut impl FnMut(bool, &str, String)) {
+    if a.open && !b.open {
+        push(true, name, "record closed (@open removed)".into());
+    }
+
+    for f in &a.fields {
+        let at = format!("{name}.{}", f.name);
+        let g = b.fields.iter().find(|g| f.id.is_some() && g.id == f.id).or_else(|| b.field(&f.name));
+        let Some(g) = g else {
+            if b.open {
+                push(false, &at, "field removed (record is @open, old data still accepted)".into());
+            } else {
+                push(true, &at, "field removed; old data containing it is rejected".into());
+            }
+
+            continue;
+        };
+
+        field_changes(schemas, &at, f, g, push);
+    }
+
+    for g in &b.fields {
+        let existed = a.fields.iter().any(|f| f.name == g.name || (g.id.is_some() && f.id == g.id));
+        if !existed {
+            let at = format!("{name}.{}", g.name);
+            if g.key {
+                // Old elements all get the same default key value (§6.5: add @key is breaking).
+                push(true, &at, "@key field added; existing list elements may now collide".into());
+            } else if g.optional || g.default.is_some() {
+                push(false, &at, "field added".into());
+            } else {
+                push(true, &at, "required field added without a default".into());
+            }
+        }
+    }
+}
+
+/// Changes between the old field `f` and the new field `g` it matches.
+fn field_changes(schemas: (&Schema, &Schema), at: &str, f: &crate::FieldDef, g: &crate::FieldDef, push: &mut impl FnMut(bool, &str, String)) {
+    if g.name != f.name {
+        push(
+            true,
+            at,
+            format!("renamed to {} (same @id; compatible for positional/binary encodings only)", g.name),
+        );
+    }
+
+    if !widens_in(schemas, &f.ty, &g.ty, 0) {
+        push(true, at, format!("type {} changed incompatibly to {}", f.ty, g.ty));
+    }
+
+    type_class_changes(schemas, at, &f.ty, &g.ty, push);
+    if f.id.is_some() && g.id != f.id {
+        let id = g.id.map_or_else(|| "removed".into(), |n| format!("changed to {n}"));
+        push(true, at, format!("@id {id} (Protobuf uses it as the field number)"));
+    }
+
+    if (f.optional || f.default.is_some()) && !g.optional && g.default.is_none() {
+        push(true, at, "field may no longer be absent (optional or default removed)".into());
+    }
+
+    if f.key != g.key {
+        push(g.key, at, if g.key { "@key added".into() } else { "@key removed".into() });
+    }
+}
+
+/// Report a change of class at `at` (proposal 0009). Adding or raising a
+/// class is compatible. Removing or lowering one is breaking, since readers
+/// pinned to the old version rely on the value staying redacted.
+fn class_change(push: &mut impl FnMut(bool, &str, String), at: &str, old: Option<Class>, new: Option<Class>) {
+    let name = |c: Option<Class>| c.map_or_else(|| "no class".to_owned(), |c| format!("@{c}"));
+    match old.cmp(&new) {
+        std::cmp::Ordering::Equal => {}
+        std::cmp::Ordering::Less => push(false, at, format!("class raised from {} to {}", name(old), name(new))),
+        std::cmp::Ordering::Greater => push(true, at, format!("declassified from {} to {}", name(old), name(new))),
+    }
+}
+
+/// Report class changes between the types `a` (in the old schema) and `b`
+/// (in the new one), at the top level and in matching type arguments.
+fn type_class_changes(schemas: (&Schema, &Schema), at: &str, a: &TypeRef, b: &TypeRef, push: &mut impl FnMut(bool, &str, String)) {
+    class_change(push, at, schemas.0.type_class(a), schemas.1.type_class(b));
+    let pairs: Vec<(&TypeRef, &TypeRef)> = match (&a.kind, &b.kind) {
+        (TypeKind::List(x) | TypeKind::Set(x), TypeKind::List(y) | TypeKind::Set(y)) => vec![(x, y)],
+        (TypeKind::Map(xk, xv), TypeKind::Map(yk, yv)) => vec![(xk, yk), (xv, yv)],
+        (TypeKind::Tuple(xs), TypeKind::Tuple(ys)) | (TypeKind::Union(xs), TypeKind::Union(ys)) => xs.iter().zip(ys).collect(),
+        _ => Vec::new(),
+    };
+
+    for (x, y) in pairs {
+        type_class_changes(schemas, &format!("{at} (in {a})"), x, y, push);
+    }
+}
+
+/// The imported definitions that `s` uses, directly or through other
+/// definitions, sorted by name.
+fn used_imports(s: &Schema) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut todo: Vec<&TypeRef> = s.root.iter().collect();
+    for (_, d) in &s.defs {
+        def_types(d, &mut todo);
+    }
+
+    while let Some(t) = todo.pop() {
+        match &t.kind {
+            TypeKind::Named(n) => {
+                if seen.insert(n.clone())
+                    && let Some(d) = s.def(n)
+                {
+                    def_types(d, &mut todo);
+                }
+            }
+            TypeKind::List(e) | TypeKind::Set(e) => todo.push(e),
+            TypeKind::Map(k, v) => todo.extend([&**k, &**v]),
+            TypeKind::Tuple(ts) | TypeKind::Union(ts) => todo.extend(ts),
+            _ => {}
+        }
+    }
+
+    seen.retain(|n| n.contains('.'));
+    seen
+}
+
+/// Push the type expressions that the definition `d` contains.
+fn def_types<'a>(d: &'a Def, out: &mut Vec<&'a TypeRef>) {
+    match d {
+        Def::Alias(t) => out.push(t),
+        Def::Enum(vs) => out.extend(vs.iter().filter_map(|v| v.payload.as_ref())),
+        Def::Record(r) => out.extend(r.fields.iter().map(|f| &f.ty)),
+    }
 }
 
 /// Changes between two versions of enum `name`.
@@ -346,7 +441,7 @@ fn enum_changes(schemas: (&Schema, &Schema), name: &str, a: &[VariantDef], b: &[
 
         match (&v.payload, &b[j].payload) {
             (None, None) => {}
-            (Some(old_p), Some(new_p)) if widens_in(schemas, old_p, new_p, 0) => {}
+            (Some(old_p), Some(new_p)) if widens_in(schemas, old_p, new_p, 0) => type_class_changes(schemas, &at, old_p, new_p, push),
             _ => push(true, &at, "variant payload changed incompatibly".into()),
         }
     }

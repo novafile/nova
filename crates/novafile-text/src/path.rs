@@ -137,6 +137,9 @@ pub enum PathError {
     },
     /// A singular path was required, but this one uses `[*]`, a filter or a projection.
     NotSingular(Path),
+    /// A filter at this path compares a classified value, or looks inside one
+    /// (proposal 0009). In a redacted view that would reveal the value.
+    Classified(Path),
 }
 
 impl fmt::Display for PathError {
@@ -146,6 +149,7 @@ impl fmt::Display for PathError {
             PathError::Ambiguous(p, n) => write!(f, "selector {p} matches {n} elements; expected exactly one"),
             PathError::Type { at, expected, found } => write!(f, "at {at}: expected {expected}, found {found}"),
             PathError::NotSingular(p) => write!(f, "path {p} uses `[*]` or a projection, which is not allowed here"),
+            PathError::Classified(p) => write!(f, "filter on classified value at {p}"),
         }
     }
 }

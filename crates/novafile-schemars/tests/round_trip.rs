@@ -83,3 +83,109 @@ fn patterns_and_literals_round_trip_exactly() {
     let new = assert_round_trip(&old);
     assert_eq!(new.fingerprint(), old.fingerprint());
 }
+
+#[test]
+fn classes_round_trip_exactly() {
+    let old = parse_schema(
+        "\
+@schema classes@1.0.0
+@root User
+
+type Token = string @secret
+
+record Address @personal:
+  street: string
+
+enum Role @secret:
+  admin
+  user
+
+record User:
+  name: string @personal
+  nick: string? @personal
+  password: Token
+  blob: any @secret
+  address: Address?
+  role: Role
+",
+    )
+    .unwrap();
+    let new = assert_round_trip(&old);
+    assert_eq!(new.to_string(), old.to_string());
+
+    let json = to_json_schema(&old);
+    let defs = &json["$defs"];
+    assert_eq!(
+        defs["Token"],
+        serde_json::json!({"type": "string", "writeOnly": true, "x-nova-class": "secret"})
+    );
+    assert_eq!(defs["Address"]["x-nova-class"], "personal");
+    assert_eq!(defs["Address"].get("writeOnly"), None);
+    assert_eq!(defs["Role"]["x-nova-class"], "secret");
+    assert_eq!(defs["Role"]["writeOnly"], true);
+    let user = &defs["User"]["properties"];
+    assert_eq!(user["name"], serde_json::json!({"type": "string", "x-nova-class": "personal"}));
+    assert_eq!(user["nick"], serde_json::json!({"type": ["string", "null"], "x-nova-class": "personal"}));
+    assert_eq!(user["blob"], serde_json::json!({"writeOnly": true, "x-nova-class": "secret"}));
+}
+
+/// The standard library schema as `parse_schema` links it, for its fingerprint.
+fn std_import() -> String {
+    let std = novafile_schema::std_schemas().last().unwrap();
+    format!("@import {}#{} as std", std.reference().unwrap(), std.fingerprint_hex())
+}
+
+#[test]
+fn std_references_round_trip_exactly() {
+    let old = parse_schema(&format!(
+        "\
+@schema people@1.0.0
+{}
+@root Person
+
+record Person:
+  id: std.Uuid
+  email: std.Email @personal
+  home?: std.Uri?
+  port: std.Port
+",
+        std_import()
+    ))
+    .unwrap();
+    let new = assert_round_trip(&old);
+    assert_eq!(new.to_string(), old.to_string());
+    assert_eq!(new.fingerprint(), old.fingerprint());
+
+    let json = to_json_schema(&old);
+    let defs = json["$defs"].as_object().unwrap();
+    // Only the imported definitions in use are written.
+    let mut names: Vec<&str> = defs.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["Person", "std.Email", "std.Port", "std.Uri", "std.Uuid"]);
+    let uuid = &defs["std.Uuid"];
+    assert_eq!(uuid["format"], "uuid");
+    assert_eq!(uuid["x-nova-type"], "novafile.dev/std.Uuid");
+    assert_eq!(uuid["pattern"], "^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$");
+    assert_eq!(defs["std.Email"]["format"], "email");
+    assert_eq!(defs["std.Uri"]["format"], "uri");
+    assert_eq!(defs["std.Port"]["x-nova-type"], "novafile.dev/std.Port");
+    assert_eq!(defs["std.Port"].get("format"), None);
+    let person = &defs["Person"]["properties"];
+    assert_eq!(person["id"], serde_json::json!({"$ref": "#/$defs/std.Uuid"}));
+    assert_eq!(person["email"], serde_json::json!({"$ref": "#/$defs/std.Email", "x-nova-class": "personal"}));
+}
+
+#[test]
+fn imported_definitions_are_written_transitively() {
+    let common = parse_schema("@schema acme/common@1.0.0\n\ntype Id = string @len(1..10)\n\nrecord Ref:\n  id: Id\n\nrecord Unused:\n  x: int\n").unwrap();
+    let mut main =
+        novafile_schema::parse_schema_unlinked("@schema acme/main@1.0.0\n@import acme/common@1.0.0 as c\n@root Main\n\nrecord Main:\n  r: c.Ref\n").unwrap();
+    main.link(&|_| Ok(common.clone())).unwrap();
+    let json = to_json_schema(&main);
+    let defs = json["$defs"].as_object().unwrap();
+    let mut names: Vec<&str> = defs.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["Main", "c.Id", "c.Ref"]);
+    assert_eq!(defs["c.Ref"]["properties"]["id"], serde_json::json!({"$ref": "#/$defs/c.Id"}));
+    assert_eq!(defs["c.Id"].get("x-nova-type"), None);
+}

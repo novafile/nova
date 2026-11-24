@@ -204,7 +204,7 @@ fn warnings_for_approximated_constructs() {
         "type": "object",
         "properties": {
             "c": {"const": "fixed"},
-            "pat": {"type": "string", "pattern": "^[a-z]+$", "format": "email"},
+            "pat": {"type": "string", "pattern": "^[a-z]+$", "format": "hostname"},
             "digits": {"type": "string", "pattern": "\\d+"},
             "search": {"type": "string", "pattern": "a.c"},
             "lits": {"enum": ["#t", "a b"]},
@@ -265,7 +265,7 @@ record Root @open:
             "#/properties/never: `false` schema (matches nothing) mapped to any",
             "#/properties/not: not is not supported and was dropped",
             "#/properties/nums: enum whose values are not all valid variant names was mapped to its base type; the enum constraint is dropped",
-            "#/properties/pat: format \"email\" is not enforced",
+            "#/properties/pat: format \"hostname\" is not enforced",
             "#/properties/short: prefixItems allows arrays shorter than 2; the NOVA tuple requires all 2 elements",
             "#/properties/untagged: anyOf that is not a serde externally tagged enum (e.g. an untagged enum) mapped to any",
             "Root.bad_default: default \"seven\" dropped: .: expected int, found string",
@@ -369,7 +369,7 @@ record Root:
         c.warnings,
         [
             "#/properties/bad: x-nova-id 1 dropped (not a unique u32)",
-            "#/properties/bad: x-nova-key dropped: key fields must be required and non-null"
+            "#/properties/bad: x-nova-key dropped: key fields must be required, non-null and not @personal or @secret"
         ]
     );
 }
@@ -426,4 +426,93 @@ fn repeated_inline_refs_are_converted_once() {
     let c = convert(&json!({"x": x, "$ref": "#/x/a0"}));
     assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
     assert!(c.schema.defs.len() <= 40, "{} definitions", c.schema.defs.len());
+}
+
+#[test]
+fn classes_come_from_x_nova_class_only() {
+    let c = convert(&json!({
+        "type": "object",
+        "properties": {
+            "token": {"type": "string", "writeOnly": true},
+            "name": {"type": "string", "x-nova-class": "personal", "writeOnly": true},
+            "key": {"type": "string", "x-nova-class": "secret"},
+            "odd": {"type": "string", "x-nova-class": "confidential"},
+            "tags": {"type": "array", "uniqueItems": true, "items": {"type": "string", "x-nova-class": "personal"}},
+            "who": {"$ref": "#/$defs/Who"}
+        },
+        "required": ["token", "name", "key", "odd", "tags", "who"],
+        "$defs": {"Who": {"type": "object", "properties": {"n": {"type": "string"}}, "required": ["n"], "x-nova-class": "personal"}}
+    }));
+    assert_eq!(
+        body(&c),
+        "\
+@root Root
+
+record Root:
+  token: string
+  name: string @personal
+  key: string @secret
+  odd: string
+  tags: set<string>
+  who: Who
+
+record Who @personal:
+  n: string
+"
+    );
+    assert_eq!(
+        c.warnings,
+        [
+            "#/properties/odd: unknown x-nova-class \"confidential\" ignored",
+            "#/properties/tags/items: set elements cannot be @personal or @secret, since they appear in paths; the class is dropped",
+        ]
+    );
+}
+
+#[test]
+fn std_types_from_x_nova_type_and_format() {
+    let c = convert(&json!({
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f-]+$", "x-nova-type": "novafile.dev/std.Uuid"},
+            "port": {"type": "integer", "x-nova-type": "novafile.dev/std.Port"},
+            "mail": {"type": "string", "format": "email", "maxLength": 100},
+            "link": {"type": "string", "format": "uri-reference"},
+            "host": {"type": "string", "format": "hostname"},
+            "bad": {"type": "string", "x-nova-type": "novafile.dev/std.Nope"},
+            "ref": {"$ref": "#/$defs/Id"}
+        },
+        "required": ["id", "port", "mail", "link", "host", "bad", "ref"],
+        "$defs": {"Id": {"type": "string", "x-nova-type": "novafile.dev/std.Uuid"}}
+    }));
+    let std = novafile_schema::std_schemas().last().unwrap();
+    assert_eq!(
+        body(&c),
+        format!(
+            "\
+@import {}#{} as std
+@root Root
+
+record Root:
+  id: std.Uuid
+  port: std.Port
+  mail: std.Email @len(..100)
+  link: std.UriReference
+  host: string
+  bad: string
+  ref: std.Uuid
+",
+            std.reference().unwrap(),
+            std.fingerprint_hex()
+        )
+    );
+    assert_eq!(
+        c.warnings,
+        [
+            "#/properties/mail: format \"email\" mapped to std.Email, which is narrower than the JSON Schema format",
+            "#/properties/link: format \"uri-reference\" mapped to std.UriReference, which is narrower than the JSON Schema format",
+            "#/properties/host: format \"hostname\" is not enforced",
+            "#/properties/bad: x-nova-type \"novafile.dev/std.Nope\" is not a type of novafile.dev/std and is ignored",
+        ]
+    );
 }

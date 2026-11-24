@@ -1,7 +1,7 @@
 //! Rendering a [`Plan`] as proto3 source text.
 
-use crate::shape::{Plan, Shape, Single, classify_field, classify_payload, enum_value_name, field_number, ident};
-use novafile_schema::{Def, RecordDef, Schema, VariantDef};
+use crate::shape::{Plan, Shape, Single, classify_field, classify_payload, enum_value_name, field_number, ident, type_ident};
+use novafile_schema::{Class, Def, RecordDef, STD_NAME, Schema, TypeKind, TypeRef, VariantDef};
 use std::fmt::Write;
 
 /// The `package` of the generated file, plus `.v<MAJOR>` (spec §11.2). A local
@@ -91,7 +91,7 @@ pub(crate) fn render(schema: &Schema, plan: &Plan<'_>) -> Result<String, String>
 /// (`optional`) whenever absence, `null` or a default must stay
 /// distinguishable from the zero value.
 fn record(w: &mut String, schema: &Schema, name: &str, r: &RecordDef) -> Result<(), String> {
-    let _ = writeln!(w, "message {} {{", ident(name));
+    let _ = writeln!(w, "message {} {{", type_ident(name));
     for f in &r.fields {
         let number = field_number(name, f)?;
         let c = classify_field(schema, name, f)?;
@@ -104,8 +104,23 @@ fn record(w: &mut String, schema: &Schema, name: &str, r: &RecordDef) -> Result<
             Shape::Map { key, value } => format!("map<{}, {}>", Single::Scalar(key).proto_name(), value.proto_name()),
         };
 
-        let deprecated = if f.deprecated { " [deprecated = true]" } else { "" };
+        let at = || format!("{name}.{}", f.name);
+        let mut options = Vec::new();
+        if f.deprecated {
+            options.push("deprecated = true");
+        }
+
+        if field_class(schema, &f.ty, &at)?.is_some() {
+            options.push("debug_redact = true");
+        }
+
+        let options = if options.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", options.join(", "))
+        };
         let mut notes = vec![f.ty.to_string()];
+        notes.extend(std_type(schema, &f.ty));
         if f.optional {
             notes.push("optional field".into());
         }
@@ -114,7 +129,7 @@ fn record(w: &mut String, schema: &Schema, name: &str, r: &RecordDef) -> Result<
             notes.push(format!("default {}", novafile_text::flow_string(d)));
         }
 
-        let _ = writeln!(w, "  {ty} {} = {number}{deprecated}; // {}", ident(&f.name), notes.join("; "));
+        let _ = writeln!(w, "  {ty} {} = {number}{options}; // {}", ident(&f.name), notes.join("; "));
     }
 
     w.push_str("}\n");
@@ -125,7 +140,7 @@ fn record(w: &mut String, schema: &Schema, name: &str, r: &RecordDef) -> Result<
 /// `…_UNSPECIFIED` placeholder; a variant's number is its `@id`, or its
 /// 1-based position without one.
 fn unit_enum(w: &mut String, name: &str, vs: &[VariantDef]) {
-    let _ = writeln!(w, "enum {} {{", ident(name));
+    let _ = writeln!(w, "enum {} {{", type_ident(name));
     let _ = writeln!(w, "  {} = 0;", enum_value_name(name, "unspecified"));
     for (i, v) in vs.iter().enumerate() {
         let _ = writeln!(w, "  {} = {}; // {}", enum_value_name(name, &v.name), v.number(i), v.name);
@@ -139,18 +154,74 @@ fn unit_enum(w: &mut String, name: &str, vs: &[VariantDef]) {
 /// one; unit variants carry
 /// `google.protobuf.Empty`.
 fn union(w: &mut String, schema: &Schema, name: &str, vs: &[VariantDef]) -> Result<(), String> {
-    let _ = writeln!(w, "message {} {{", ident(name));
+    let _ = writeln!(w, "message {} {{", type_ident(name));
     let _ = writeln!(w, "  oneof {} {{", oneof_name(vs));
     for (i, v) in vs.iter().enumerate() {
         let single = classify_payload(schema, name, v)?;
-        let note = match &v.payload {
-            Some(t) => format!("{}({t})", v.name),
-            None => format!("{} (unit variant)", v.name),
+        let (note, redact) = match &v.payload {
+            Some(t) => {
+                let std = std_type(schema, t).map(|s| format!("; {s}")).unwrap_or_default();
+                // A payload is never a collection, so the class of the type is all there is.
+                let redact = if schema.type_class(t).is_some() { " [debug_redact = true]" } else { "" };
+                (format!("{}({t}){std}", v.name), redact)
+            }
+            None => (format!("{} (unit variant)", v.name), ""),
         };
 
-        let _ = writeln!(w, "    {} {} = {}; // {note}", single.proto_name(), ident(&v.name), v.number(i));
+        let _ = writeln!(w, "    {} {} = {}{redact}; // {note}", single.proto_name(), ident(&v.name), v.number(i));
     }
 
     w.push_str("  }\n}\n");
     Ok(())
+}
+
+/// The class that the values of a field of type `ty` get (proposal 0009):
+/// the class of the type itself, or of the elements of a list or set. A
+/// classified list element is the value of a `repeated` field, so the class
+/// of the elements becomes `[debug_redact = true]` on the field.
+///
+/// # Errors
+///
+/// Fails for a classified map value: `debug_redact` applies to a whole field,
+/// so it cannot mark the values of a `map` without its keys.
+fn field_class(schema: &Schema, ty: &TypeRef, at: &dyn Fn() -> String) -> Result<Option<Class>, String> {
+    let class = schema.type_class(ty);
+    match schema.base_kind(ty) {
+        TypeKind::List(e) | TypeKind::Set(e) => Ok(class.max(schema.type_class(e))),
+        TypeKind::Map(_, v) => match schema.type_class(v) {
+            Some(c) => Err(format!(
+                "{}: a @{c} map value has no Protobuf mapping (debug_redact marks the whole field, keys included)",
+                at()
+            )),
+            None => Ok(class),
+        },
+        _ => Ok(class),
+    }
+}
+
+/// The standard library type that `ty` stands for, as `novafile.dev/std.Name`
+/// (proposal 0008): the first name of a direct `std` import met on the alias
+/// chain of `ty` or of its element or map value type. A std type imported
+/// through another imported schema is not found.
+fn std_type(schema: &Schema, ty: &TypeRef) -> Option<String> {
+    let mut t = ty;
+    // Alias cycles are rejected when the schema is linked; the bound only keeps an unchecked schema finite.
+    for _ in 0..64 {
+        match &t.kind {
+            TypeKind::Named(n) => {
+                if let Some((alias, rest)) = n.split_once('.')
+                    && schema.imports.iter().any(|i| i.alias == alias && i.reference.name == STD_NAME)
+                {
+                    return Some(format!("{STD_NAME}.{rest}"));
+                }
+
+                let Some(Def::Alias(a)) = schema.def(n) else { return None };
+                t = a;
+            }
+            TypeKind::List(e) | TypeKind::Set(e) | TypeKind::Map(_, e) => t = e,
+            _ => return None,
+        }
+    }
+
+    None
 }

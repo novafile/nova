@@ -283,3 +283,51 @@ fn long_patch_on_source_rerenders() {
     assert!(!e.surgical);
     assert!(e.text.contains("# keep") && e.text.contains("f99: 99"), "{}", e.text);
 }
+
+/// A redaction placeholder (proposal 0009), as a redacted view holds it.
+fn placeholder() -> Value {
+    Value::Variant(novafile_value::REDACTED_TAG.into(), None)
+}
+
+#[test]
+fn placeholders_are_never_written() {
+    let doc = parse("a: 1\nb: [1]\n").unwrap();
+    let mut patch = parse_patch("@patch\n= a: 2\n").unwrap();
+    for kind in [
+        novafile_patch::OpKind::Set(placeholder()),
+        novafile_patch::OpKind::Add(Value::List(vec![placeholder()])),
+        novafile_patch::OpKind::Replace {
+            old: placeholder(),
+            new: Value::Int(3),
+        },
+        novafile_patch::OpKind::Test(Some(placeholder())),
+    ] {
+        patch.ops[0].kind = kind;
+        let e = apply_unchecked(&doc, &patch).unwrap_err();
+        assert!(e.to_string().contains("redacted placeholder cannot be written"), "{e}");
+    }
+}
+
+#[test]
+fn filters_on_redacted_values_fail() {
+    let mut view = parse("items:\n  - {id: a, pin: 1, admin: {user: root}}\n  - {id: b}\n").unwrap();
+    let items = novafile_text::Path::parse("items[0]").unwrap();
+    let rec = novafile_patch::get_mut(&mut view, &items).unwrap();
+    let Value::Record(r) = rec else { panic!() };
+    r.set("pin".to_owned(), placeholder());
+    r.set("admin".to_owned(), placeholder());
+    for q in [
+        "items[?pin=1]",
+        "items[?pin<5000]",
+        "items[?admin.user=root]",
+        "items[?admin.user]",
+        "items[?!admin.user]",
+    ] {
+        let e = get(&view, q).unwrap_err();
+        assert!(e.contains("filter on classified value"), "{q}: {e}");
+    }
+
+    // Existence of the classified value itself stays visible; projections show placeholders.
+    assert_eq!(get(&view, "items[?pin].id").unwrap().value, Value::List(vec![Value::String("a".into())]));
+    assert_eq!(get(&view, "items[?id=a].pin").unwrap().value, Value::List(vec![placeholder()]));
+}

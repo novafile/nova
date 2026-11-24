@@ -1,10 +1,11 @@
 //! Evaluation of template bodies and expressions: scopes, `@def` calls, control flow, the
 //! output budget and the step budget.
 
-use crate::{Cost, Limits, TemplateError, builtins, err, ops};
-use novafile_schema::{Pattern, Schema, TypeRef};
+use crate::{Cost, Limits, TemplateError, builtins, err, ops, taint};
+use novafile_schema::{Class, Pattern, Schema, TypeRef};
 use novafile_text::ast::{BinOp, Call, Comp, Def, Entry, ForHead, Item, Key, Node, Part};
-use novafile_text::{Path, Segment};
+use novafile_text::path::step;
+use novafile_text::{Path, PathError, Segment};
 use novafile_value::{Record, Value};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -14,6 +15,54 @@ use std::rc::Rc;
 /// nesting limit, but a chain of definitions multiplies it, which would otherwise exhaust the
 /// native stack.
 const MAX_EVAL_DEPTH: usize = 200;
+
+/// Built-in functions that only move values around: they never compare, order or read the
+/// values inside their arguments. Classified values inside an argument pass through them with
+/// their class; every other built-in, and these with a classified argument at the top, works on
+/// the clear values and classifies its whole result (proposal 0009.7).
+const PASS_THROUGH: [&str; 7] = ["get", "default", "keys", "values", "concat", "merge", "len"];
+
+/// Where a path walk ends (see [`walk`]).
+enum Walked<'v> {
+    /// The value, and the strongest class of the classified values on the way to it (its own
+    /// wrapper, if any, stays on the value).
+    Found(&'v Value, Option<Class>),
+    /// The path names nothing inside a classified value of this class. A missing value there
+    /// must look like a present one, so this is not an error.
+    MissingInside(Class),
+}
+
+/// Follow `rest` from `base`, for the reference `p`. Classified values on the way are looked
+/// through and their class is kept. Inside a classified container, a selector that compares
+/// values (or map keys) is an error: a hit and a miss would differ.
+fn walk<'v>(base: &'v Value, rest: &[Segment], p: &Path) -> Result<Walked<'v>, TemplateError> {
+    let mut cur = base;
+    let mut class = None;
+    for (i, seg) in rest.iter().enumerate() {
+        if let Some((c, inner)) = taint::tainted(cur) {
+            class = class.max(Some(c));
+            cur = inner;
+        }
+
+        let compares = matches!(seg, Segment::Match(..) | Segment::Key(_)) || matches!(cur, Value::Map(_));
+        if (class.is_some() && compares) || taint::selects_classified(cur, seg) {
+            return taint::branches(&format!("the selector in ${p}"));
+        }
+
+        let here = || Path(rest[..i].to_vec());
+        let upto = || Path(rest[..=i].to_vec());
+        cur = match seg {
+            Segment::All | Segment::Filter(..) | Segment::Project(_) => return err(format!("${p}: {}", PathError::NotSingular(Path(rest.to_vec())))),
+            _ => match (step(cur, seg, &here, &upto), class) {
+                (Ok(next), _) => next,
+                (Err(PathError::NotFound(_)), Some(c)) => return Ok(Walked::MissingInside(c)),
+                (Err(e), _) => return err(format!("${p}: {e}")),
+            },
+        };
+    }
+
+    Ok(Walked::Found(cur, class))
+}
 
 /// A `@def` ready to be called: its declaration, parsed types and lexical scope.
 pub(crate) struct Func<'a> {
@@ -196,8 +245,18 @@ impl<'a> Eval<'a> {
         Ok(v)
     }
 
-    /// [`Self::lookup`] without the step charge.
+    /// [`Self::lookup`] without the step charge. A value reached through a classified value
+    /// gets its class; a missing one inside it is a classified `null`.
     fn find(&self, p: &Path) -> Result<Value, TemplateError> {
+        let (base, rest) = self.base(p)?;
+        Ok(match walk(base, rest, p)? {
+            Walked::Found(v, class) => taint::taint_opt(v.clone(), class),
+            Walked::MissingInside(c) => taint::taint(Value::Null, c),
+        })
+    }
+
+    /// The binding that the reference `p` starts at, and the rest of its path.
+    fn base<'p>(&self, p: &'p Path) -> Result<(&Value, &'p [Segment]), TemplateError> {
         let Some((Segment::Field(name), rest)) = p.0.split_first() else {
             return err(format!("invalid reference ${p}"));
         };
@@ -212,7 +271,46 @@ impl<'a> Eval<'a> {
             .find(|(n, _)| n == name)
             .map(|(_, v)| v)
             .ok_or_else(|| TemplateError(format!("undefined reference ${name}")))?;
-        Ok(Path(rest.to_vec()).get(base).map_err(|e| TemplateError(format!("${p}: {e}")))?.clone())
+        Ok((base, rest))
+    }
+
+    /// For `$p == null` or `$p != null` (in either order), whether `$p` is present, when the
+    /// plain comparison would not do: a field missing from a record is absent, not an error,
+    /// and a classified value may be tested, since presence is not classified (proposal
+    /// 0009.6.1). A presence test inside a classified container is an error, since which
+    /// values a classified container holds is classified. `None` means: compare as usual.
+    fn presence(&mut self, a: &Node, b: &Node) -> Result<Option<bool>, TemplateError> {
+        let ((Node::Lit(Value::Null), Node::Ref(p)) | (Node::Ref(p), Node::Lit(Value::Null))) = (a, b) else {
+            return Ok(None);
+        };
+
+        let (base, rest) = self.base(p)?;
+        let present = |v: &Value| taint::tainted(v).map(|(_, inner)| *inner != Value::Null);
+        let Some((last, parent)) = rest.split_last() else {
+            return Ok(present(base));
+        };
+
+        match walk(base, parent, p)? {
+            Walked::Found(v, None) if taint::tainted(v).is_none() => {
+                if let (Value::Record(r), Segment::Field(f)) = (v, last)
+                    && !r.contains_key(f)
+                {
+                    self.step(1)?;
+                    return Ok(Some(false));
+                }
+            }
+            _ => return taint::branches(&format!("a presence test on ${p}, inside a classified value,")),
+        }
+
+        let found = match walk(base, rest, p)? {
+            Walked::Found(v, None) => present(v),
+            _ => unreachable!("the parent holds no classified value"),
+        };
+        if found.is_some() {
+            self.step(1)?;
+        }
+
+        Ok(found)
     }
 
     /// Evaluate an expression.
@@ -254,8 +352,8 @@ impl<'a> Eval<'a> {
             Node::Binary(op, a, b) => (self.binary(*op, a, b)?, false),
             Node::Not(a) => {
                 self.step(1)?;
-                let v = self.eval(a)?;
-                (Value::Bool(!want_bool(&v, "the operand of `not`")?), false)
+                let (v, class) = taint::untaint(self.eval(a)?);
+                (taint::taint_opt(Value::Bool(!want_bool(&v, "the operand of `not`")?), class), false)
             }
             _ => (self.build(n)?, true),
         })
@@ -282,7 +380,12 @@ impl<'a> Eval<'a> {
             }
             Node::Set(items) => {
                 self.charge(1, 0)?;
-                let items = items.iter().map(|n| self.place(n)).collect::<Result<_, _>>()?;
+                let items: Vec<Value> = items.iter().map(|n| self.place(n)).collect::<Result<_, _>>()?;
+                // Building a set compares its elements, so equal classified values would show.
+                if items.iter().any(|v| taint::class_in(v).is_some()) {
+                    return taint::branches("a set element");
+                }
+
                 Value::set(items).map_err(TemplateError)?
             }
             Node::Map(entries) => {
@@ -290,7 +393,11 @@ impl<'a> Eval<'a> {
                 let entries = entries
                     .iter()
                     .map(|(k, v)| Ok((self.place(k)?, self.place(v)?)))
-                    .collect::<Result<_, TemplateError>>()?;
+                    .collect::<Result<Vec<_>, TemplateError>>()?;
+                if entries.iter().any(|(k, _)| taint::class_in(k).is_some()) {
+                    return taint::branches("a map key");
+                }
+
                 Value::map(entries).map_err(TemplateError)?
             }
             Node::Record(entries) => {
@@ -305,7 +412,8 @@ impl<'a> Eval<'a> {
             }
             Node::Interp(parts) => {
                 self.charge(1, 0)?;
-                Value::String(self.text(parts)?)
+                let (s, class) = self.text(parts)?;
+                taint::taint_opt(Value::String(s), class)
             }
             Node::Comp(c) => self.comp(c)?,
             Node::Ref(_) | Node::Call(_) | Node::Binary(..) | Node::Not(_) => unreachable!("evaluated by eval_node"),
@@ -313,16 +421,30 @@ impl<'a> Eval<'a> {
     }
 
     /// Apply a binary operator; `and` and `or` short-circuit.
+    /// A classified operand gives the result its class (proposal 0009.7); a classified left
+    /// operand of `and` or `or` is an error, since it decides whether the right one runs.
     fn binary(&mut self, op: BinOp, a: &Node, b: &Node) -> Result<Value, TemplateError> {
         if matches!(op, BinOp::And | BinOp::Or) {
             self.step(1)?;
             let what = format!("the operands of `{}`", op.as_str());
-            let l = want_bool(&self.eval(a)?, &what)?;
+            let l = self.eval(a)?;
+            if taint::tainted(&l).is_some() {
+                return taint::branches(&format!("the left operand of `{}`", op.as_str()));
+            }
+
+            let l = want_bool(&l, &what)?;
             if l == (op == BinOp::Or) {
                 return Ok(Value::Bool(l));
             }
 
-            return Ok(Value::Bool(want_bool(&self.eval(b)?, &what)?));
+            let (r, class) = taint::untaint(self.eval(b)?);
+            return Ok(taint::taint_opt(Value::Bool(want_bool(&r, &what)?), class));
+        }
+
+        if matches!(op, BinOp::Eq | BinOp::Ne)
+            && let Some(present) = self.presence(a, b)?
+        {
+            return Ok(Value::Bool(present == (op == BinOp::Ne)));
         }
 
         let (lhs, rhs) = (self.eval(a)?, self.eval(b)?);
@@ -333,7 +455,13 @@ impl<'a> Eval<'a> {
             weight(&lhs) + weight(&rhs)
         };
         self.step(1 + w)?;
-        ops::binary(op, &lhs, &rhs).map_err(TemplateError)
+        let ((lhs, lc), (rhs, rc)) = (taint::clear(lhs)?, taint::clear(rhs)?);
+        let Some(class) = lc.max(rc) else {
+            return ops::binary(op, &lhs, &rhs).map_err(TemplateError);
+        };
+
+        // Failure must look like success: whether it fails tells something about the operand.
+        Ok(taint::taint(ops::binary(op, &lhs, &rhs).unwrap_or(Value::Null), class))
     }
 
     /// Call a `@def` visible here, or else a built-in.
@@ -344,12 +472,57 @@ impl<'a> Eval<'a> {
             return self.call_def(&f, args);
         }
 
-        let v = builtins::call(self, &c.name, args)?;
+        let v = self.builtin(&c.name, args)?;
+        let inner = taint::tainted(&v).map_or(&v, |(_, inner)| inner);
         let owned = matches!(
-            v,
+            inner,
             Value::String(_) | Value::Bytes(_) | Value::List(_) | Value::Tuple(_) | Value::Set(_) | Value::Record(_) | Value::Map(_)
         );
         Ok((v, owned))
+    }
+
+    /// Call built-in `name`. With a classified argument, it works on the clear values and its
+    /// result gets the strongest class among them, unless it only moves values around
+    /// ([`PASS_THROUGH`]) and no argument is classified as a whole.
+    fn builtin(&mut self, name: &str, args: Vec<Value>) -> Result<Value, TemplateError> {
+        let Some(class) = args.iter().filter_map(taint::class_in).max() else {
+            return builtins::call(self, name, args);
+        };
+
+        if PASS_THROUGH.contains(&name) && args.iter().all(|a| taint::tainted(a).is_none()) {
+            return builtins::call(self, name, args);
+        }
+
+        let args = args.into_iter().map(|a| taint::clear(a).map(|(v, _)| v)).collect::<Result<Vec<_>, _>>()?;
+        // Failure must look like success: whether `int` or `base64_decode` fails, say, tells
+        // something about the argument. Only a budget overrun, which needs no look at the
+        // value, stays an error.
+        match builtins::call(self, name, args) {
+            Ok(v) => Ok(taint::taint(v, class)),
+            Err(e) if self.over_budget() => Err(e),
+            Err(_) => Ok(taint::taint(Value::Null, class)),
+        }
+    }
+
+    /// Whether the output or step budget is used up.
+    fn over_budget(&self) -> bool {
+        self.budget.nodes > self.limits.max_nodes || self.budget.bytes > self.limits.max_bytes || self.budget.steps > self.limits.max_steps
+    }
+
+    /// Check `v` against `ty` (a `@def` parameter or result type) as [`Schema::check_as`]
+    /// does. A classified value is checked in clear; if it does not match, the result is its
+    /// class instead of an error, since a failure would tell something about the value.
+    fn check_typed(&self, v: &Value, ty: &TypeRef, what: impl FnOnce() -> String) -> Result<Option<Class>, TemplateError> {
+        if taint::class_in(v).is_none() {
+            return self
+                .schema
+                .check_as(v, ty)
+                .map(|()| None)
+                .map_err(|is| TemplateError(format!("{}: {}", what(), issues(&is))));
+        }
+
+        let (clear, class) = taint::clear(v.clone())?;
+        Ok(self.schema.check_as(&clear, ty).err().and(class))
     }
 
     /// Call `f`: check the arguments against the parameter types (without converting them),
@@ -385,30 +558,35 @@ impl<'a> Eval<'a> {
                 None => self.eval(p.default.as_ref().expect("checked arity"))?,
             };
 
-            self.schema
-                .check_as(&v, ty)
-                .map_err(|is| TemplateError(format!("argument {:?} of {name} does not match `{}`: {}", p.name, p.ty, issues(&is))))?;
+            // A classified argument that does not match makes the call a classified null.
+            if let Some(c) = self.check_typed(&v, ty, || format!("argument {:?} of {name} does not match `{}`", p.name, p.ty))? {
+                return Ok((taint::taint(Value::Null, c), false));
+            }
+
             self.bind_local(&p.name, v)?;
         }
 
         let (v, owned) = self.eval_owned(&f.def.body)?;
-        if let (Some(t), Some(text)) = (&f.result, &f.def.result) {
-            self.schema
-                .check_as(&v, t)
-                .map_err(|is| TemplateError(format!("the result of {name} does not match `{text}`: {}", issues(&is))))?;
+        if let (Some(t), Some(text)) = (&f.result, &f.def.result)
+            && let Some(c) = self.check_typed(&v, t, || format!("the result of {name} does not match `{text}`"))?
+        {
+            return Ok((taint::taint(Value::Null, c), false));
         }
 
         Ok((v, owned))
     }
 
-    /// Interpolate a string: expressions must be scalars and are inserted as their text.
-    fn text(&mut self, parts: &[Part]) -> Result<String, TemplateError> {
+    /// Interpolate a string: expressions must be scalars and are inserted as their text. Also
+    /// returns the strongest class of the inserted values.
+    fn text(&mut self, parts: &[Part]) -> Result<(String, Option<Class>), TemplateError> {
         let mut s = String::new();
+        let mut class = None;
         for p in parts {
             let t = match p {
                 Part::Text(t) => t.clone(),
                 Part::Expr(n) => {
-                    let v = self.eval(n)?;
+                    let (v, c) = taint::untaint(self.eval(n)?);
+                    class = class.max(c);
                     ops::scalar_text(&v).ok_or_else(|| {
                         let at = if let Node::Ref(r) = n { format!(" (${r})") } else { String::new() };
                         TemplateError(format!("cannot interpolate a {}{at}; only scalars can appear in strings", v.kind()))
@@ -420,13 +598,24 @@ impl<'a> Eval<'a> {
             s.push_str(&t);
         }
 
-        Ok(s)
+        Ok((s, class))
     }
 
     /// Evaluate an `@if` or `@else if` condition, which must be a bool.
     fn cond(&mut self, c: &Node) -> Result<bool, TemplateError> {
         self.step(1)?;
-        want_bool(&self.eval(c)?, "conditions")
+        self.test(c, "conditions", "a condition")
+    }
+
+    /// Evaluate the condition or filter `n` (`what`, `construct` in errors), which must be a bool
+    /// and not classified: a branch on a classified value would show it.
+    fn test(&mut self, n: &Node, what: &str, construct: &str) -> Result<bool, TemplateError> {
+        let v = self.eval(n)?;
+        if taint::tainted(&v).is_some() {
+            return taint::branches(construct);
+        }
+
+        want_bool(&v, what)
     }
 
     /// The body of the first `@if` / `@else if` arm whose condition holds, else `els`.
@@ -444,6 +633,10 @@ impl<'a> Eval<'a> {
     /// variables in a new scope; `None` results are skipped.
     fn each<T>(&mut self, head: &ForHead, what: &str, mut body: impl FnMut(&mut Self) -> Result<Option<T>, TemplateError>) -> Result<Vec<T>, TemplateError> {
         let src = self.eval(&head.iter)?;
+        if taint::tainted(&src).is_some() {
+            return taint::branches(what);
+        }
+
         let kind = src.kind();
         let pairs = ops::iterate(src).ok_or_else(|| TemplateError(format!("{what} needs a list, set, tuple, record or map, found {kind}")))?;
         let mut out = Vec::with_capacity(pairs.len());
@@ -473,7 +666,7 @@ impl<'a> Eval<'a> {
         let fields = self.each(&c.head, "a comprehension", |ev| {
             if let Some(f) = &c.filter {
                 ev.step(1)?;
-                if !want_bool(&ev.eval(f)?, "the comprehension filter")? {
+                if !ev.test(f, "the comprehension filter", "a comprehension filter")? {
                     return Ok(None);
                 }
             }
@@ -481,6 +674,7 @@ impl<'a> Eval<'a> {
             let key = match &c.key {
                 None => None,
                 Some(k) => match ev.eval(k)? {
+                    v if taint::tainted(&v).is_some() => return taint::branches("the key of a record comprehension"),
                     Value::String(s) => Some(s),
                     other => return err(format!("the key of a record comprehension must be a string, found {}", other.kind())),
                 },
@@ -512,6 +706,7 @@ impl<'a> Eval<'a> {
             match it {
                 Item::Node(n) => out.push(self.place(n)?),
                 Item::Spread(n) => match self.place(n)? {
+                    v if taint::tainted(&v).is_some() => return taint::branches("a spread"),
                     v @ (Value::List(_) | Value::Tuple(_) | Value::Set(_)) => {
                         out.extend(ops::iterate(v).into_iter().flatten().map(|(_, v)| v));
                     }
@@ -543,7 +738,10 @@ impl<'a> Eval<'a> {
                 Entry::Field(k, n) => {
                     let key = match k {
                         Key::Lit(s) => s.clone(),
-                        Key::Interp(parts) => self.text(parts)?,
+                        Key::Interp(parts) => match self.text(parts)? {
+                            (_, Some(_)) => return taint::branches("a record key"),
+                            (s, None) => s,
+                        },
                     };
 
                     if explicit.contains(&key) {
@@ -555,6 +753,7 @@ impl<'a> Eval<'a> {
                     explicit.insert(key);
                 }
                 Entry::Spread(n) => match self.place(n)? {
+                    v if taint::tainted(&v).is_some() => return taint::branches("a spread"),
                     Value::Record(r) => {
                         for (k, v) in r.into_entries() {
                             explicit.remove(&k);

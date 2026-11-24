@@ -5,7 +5,10 @@
 //!   schema validation of documents whose `@schema name@version` matches a
 //!   `.novs` file in the workspace (spec §6.7);
 //! - document outline (symbols), with list items named by their `id`/`name`/`key`;
-//! - hover: path, kind, value and declared schema type;
+//! - hover: path, kind, value, declared schema type and class in documents;
+//!   the definition of a type name in schemas, imported ones included;
+//! - redaction (proposal 0009): hovers and outlines show `@redacted` for
+//!   classified values, and no values for a document whose schema is not found;
 //! - completion: missing record fields and enum variants / booleans from the schema;
 //! - document-preserving formatting (human profile): comments, blank lines
 //!   and spellings are kept (spec §3).
@@ -21,10 +24,10 @@ use lsp_types::{
     SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Uri, WorkspaceEdit,
 };
 
-use novafile_schema::{Def, Schema, SchemaRef, TypeKind};
+use novafile_schema::{Class, ClassMark, Def, Reveal, Schema, SchemaError, SchemaRef, TypeKind};
 use novafile_text::spans::{SpanMap, offset_of_utf16};
 use novafile_text::{Path, Segment};
-use novafile_value::Value;
+use novafile_value::{REDACTED_TAG, Value};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -337,7 +340,7 @@ impl Server<'_> {
         walk(root, 0, max_depth, &mut files);
         files.retain(|f| !self.disk_schemas.iter().any(|(p, _)| p == f));
         for f in files {
-            if let Some(s) = std::fs::read_to_string(&f).ok().and_then(|t| novafile_schema::parse_schema(&t).ok()) {
+            if let Some(s) = std::fs::read_to_string(&f).ok().and_then(|t| self.load_schema(Some(&f), &t).ok()) {
                 self.disk_schemas.push((f, s));
             }
         }
@@ -363,11 +366,36 @@ impl Server<'_> {
         };
 
         self.disk_schemas.retain(|(p, _)| *p != path);
-        if let Some(s) = std::fs::read_to_string(&path).ok().and_then(|t| novafile_schema::parse_schema(&t).ok()) {
+        if let Some(s) = std::fs::read_to_string(&path).ok().and_then(|t| self.load_schema(Some(&path), &t).ok()) {
             self.disk_schemas.push((path, s));
         }
 
         true
+    }
+
+    /// The catalog resolver for files in `dir`, built on first use and cached by
+    /// project catalog. Files without a project catalog, or without a directory,
+    /// share the resolver under the empty key.
+    fn resolver(&self, dir: Option<&std::path::Path>) -> Result<std::rc::Rc<novafile_schema::catalog::Resolver>, String> {
+        use novafile_schema::catalog::{Options, Resolver};
+        let catalog = dir.and_then(novafile_schema::catalog::project_catalog).unwrap_or_default();
+        if let Some(r) = self.resolvers.borrow().get(&catalog) {
+            return Ok(r.clone());
+        }
+
+        let made = std::rc::Rc::new(Resolver::new(&Options::from_env(Vec::new(), dir.map(std::path::Path::to_path_buf)))?);
+        self.resolvers.borrow_mut().insert(catalog, made.clone());
+        Ok(made)
+    }
+
+    /// Parse the schema text of the file `file` and link its imports (proposal 0008)
+    /// through the catalogs of the file's directory, as `nvf` does. The bundled
+    /// standard library links without a catalog.
+    fn load_schema(&self, file: Option<&std::path::Path>, text: &str) -> Result<Schema, SchemaError> {
+        let resolver = self
+            .resolver(file.and_then(std::path::Path::parent))
+            .map_err(|message| SchemaError { line: 0, message })?;
+        resolver.load_text(text)
     }
 
     /// All known schemas with their files; open editors take precedence over disk contents.
@@ -376,7 +404,11 @@ impl Server<'_> {
             .docs
             .iter()
             .filter(|(u, _)| has_ext(u, "novs"))
-            .filter_map(|(u, t)| Some((file_path(u)?, novafile_schema::parse_schema(t).ok()?)))
+            .filter_map(|(u, t)| {
+                let path = file_path(u)?;
+                let schema = self.load_schema(Some(&path), t).ok()?;
+                Some((path, schema))
+            })
             .collect();
         let mut all = open.clone();
         for (p, s) in &self.disk_schemas {
@@ -399,22 +431,10 @@ impl Server<'_> {
         // With any catalog (project, user, NOVA_CATALOG), lookup follows the catalogs
         // (spec §6.9), as `nvf validate` does, instead of guessing from the
         // workspace; it never fetches. Resolvers are cached by project catalog.
-        if let Some(dir) = doc_dir.as_deref().filter(|d| novafile_schema::catalog::any_catalog(d)) {
-            use novafile_schema::catalog::{LookupError, Options, Resolver};
-            // Documents without a project catalog share the resolver under the empty key.
-            let catalog = novafile_schema::catalog::project_catalog(dir).unwrap_or_default();
-            let cached = self.resolvers.borrow().get(&catalog).cloned();
-            let resolver = if let Some(r) = cached {
-                r
-            } else {
-                let made = std::rc::Rc::new(Resolver::new(&Options::from_env(Vec::new(), doc_dir.clone()))?);
-                self.resolvers.borrow_mut().insert(catalog, made.clone());
-                made
-            };
-
-            return match resolver.resolve(reference) {
+        if doc_dir.as_deref().is_some_and(novafile_schema::catalog::any_catalog) {
+            return match self.resolver(doc_dir.as_deref())?.resolve(reference) {
                 Ok(found) => Ok(Some(found.schema)),
-                Err(LookupError::NotFound(_)) => Ok(None),
+                Err(novafile_schema::catalog::LookupError::NotFound(_)) => Ok(None),
                 Err(e) => Err(format!("{e} ({})", e.kind())),
             };
         }
@@ -447,7 +467,7 @@ impl Server<'_> {
         let mut out = Vec::new();
         match kind_of(uri, text) {
             Kind::Schema => {
-                if let Err(e) = novafile_schema::parse_schema(text) {
+                if let Err(e) = self.load_schema(file_path(uri).as_deref(), text) {
                     let r = if e.line == 0 { line_range(text, 1) } else { line_range(text, e.line) };
                     out.push(diag(r, DiagnosticSeverity::ERROR, "nova::schema", e.message));
                 }
@@ -502,11 +522,16 @@ impl Server<'_> {
     }
 
     /// Convention findings from `novafile-lint` (spec Appendix E).
-    fn lints(uri: &Uri, text: &str) -> Vec<Diagnostic> {
+    fn lints(&self, uri: &Uri, text: &str) -> Vec<Diagnostic> {
         let text = &Src::new(text);
         let config = novafile_lint::Config::default();
         let findings = match kind_of(uri, text) {
-            Kind::Schema => novafile_lint::lint_schema(text, &config).unwrap_or_default(),
+            // Linked through the catalogs, so imports of catalog schemas work.
+            Kind::Schema => self
+                .load_schema(file_path(uri).as_deref(), text)
+                .ok()
+                .and_then(|s| novafile_lint::lint_parsed_schema(text, &s, &config).ok())
+                .unwrap_or_default(),
             Kind::Document => novafile_lint::lint_document(text, &config).unwrap_or_default(),
             Kind::Patch => vec![],
         };
@@ -514,10 +539,10 @@ impl Server<'_> {
         findings
             .into_iter()
             .map(|f| {
-                let sev = if f.level == novafile_lint::Level::Warning {
-                    DiagnosticSeverity::WARNING
-                } else {
-                    DiagnosticSeverity::HINT
+                let sev = match f.level {
+                    novafile_lint::Level::Error => DiagnosticSeverity::ERROR,
+                    novafile_lint::Level::Warning => DiagnosticSeverity::WARNING,
+                    novafile_lint::Level::Hint => DiagnosticSeverity::HINT,
                 };
 
                 diag(range(text, f.start, f.end), sev, &format!("nova::lint::{}", f.rule), f.message)
@@ -529,7 +554,7 @@ impl Server<'_> {
     fn publish(&mut self, uri: &Uri) -> Result<(), Error> {
         let Some(text) = self.docs.get(uri) else { return Ok(()) };
         let mut diagnostics = self.diagnostics(uri, text);
-        diagnostics.extend(Self::lints(uri, text));
+        diagnostics.extend(self.lints(uri, text));
         let params = PublishDiagnosticsParams {
             uri: uri.clone(),
             diagnostics,
@@ -687,26 +712,49 @@ impl Server<'_> {
         Some((text.as_str(), parse_data(text).ok()??))
     }
 
-    /// Hover: the path, kind and value under the cursor, with its schema type and field notes.
+    /// Hover: the path, kind and value under the cursor, with its schema type, class
+    /// and field notes. In a schema file: the definition of the type name under the cursor.
     fn hover(&self, uri: &Uri, pos: Position) -> Option<Hover> {
+        if self.docs.get(uri).is_some_and(|t| kind_of(uri, t) == Kind::Schema) {
+            return self.schema_hover(uri, pos);
+        }
+
         let (text, p) = self.parsed(uri)?;
         let text = &Src::new(text);
         let off = offset_of_utf16(text, pos.line, pos.character);
         let span = p.spans.at(off)?;
         let v = span.path.get(&p.value).ok()?;
-        let mut shown = novafile_text::flow_string(v);
-        if shown.chars().count() > 80 {
-            shown = shown.chars().take(77).collect::<String>() + "…";
+        let schema = self.schema_for(&p, uri);
+        let mut md = format!("**`{}`** · {}", span.path, v.kind());
+        match visible(&p, schema.as_ref()) {
+            Some(visible) => {
+                // The path fails only below a container that became a placeholder.
+                let mut shown = span.path.get(&visible).map_or_else(|_| REDACTED_TAG.to_owned(), novafile_text::flow_string);
+                if shown.chars().count() > 80 {
+                    shown = shown.chars().take(77).collect::<String>() + "…";
+                }
+
+                let _ = write!(md, "\n\n```nova\n{shown}\n```");
+            }
+            None => md.push_str("\n\nvalue not shown: the schema is not found, so the classified values are not known"),
         }
 
-        let mut md = format!("**`{}`** · {}\n\n```nova\n{shown}\n```", span.path, v.kind());
-        if let Some(s) = self.schema_for(&p, uri)
+        if let Some(s) = &schema
             && let Some((ty, field)) = s.type_at(&span.path)
         {
             let _ = write!(md, "\n\nschema `{}`: `{ty}`", s.reference().map(|r| r.to_string()).unwrap_or_default());
             let (under, _) = s.deref(&ty);
             if *under != ty {
                 let _ = write!(md, " = `{under}`");
+            }
+
+            // The strongest class that the types on the way to the value give it.
+            let class = (0..=span.path.0.len())
+                .filter_map(|n| s.type_at(&Path(span.path.0[..n].to_vec())))
+                .filter_map(|(t, _)| s.type_class(&t))
+                .max();
+            if let Some(c) = class {
+                let _ = write!(md, " · `@{c}`");
             }
 
             if let Some(f) = field {
@@ -716,7 +764,12 @@ impl Server<'_> {
                 }
 
                 if let Some(d) = &f.default {
-                    notes.push(format!("default `{}`", novafile_text::flow_string(d)));
+                    let d = if class.is_some() {
+                        REDACTED_TAG.to_owned()
+                    } else {
+                        novafile_text::flow_string(d)
+                    };
+                    notes.push(format!("default `{d}`"));
                 }
 
                 if f.key {
@@ -746,10 +799,47 @@ impl Server<'_> {
         })
     }
 
+    /// The definition of the type name under the cursor in a schema file, as
+    /// canonical text. Names of imported definitions (`std.Uuid`) work too. There is
+    /// no go-to-definition: a bundled schema, such as the standard library, has no
+    /// file to go to.
+    fn schema_hover(&self, uri: &Uri, pos: Position) -> Option<Hover> {
+        let text = &Src::new(self.docs.get(uri)?);
+        let schema = self.load_schema(file_path(uri).as_deref(), text).ok()?;
+        let off = offset_of_utf16(text, pos.line, pos.character);
+        let word = |c: char| c.is_alphanumeric() || c == '_' || c == '.';
+        let start = text[..off].char_indices().rev().find(|&(_, c)| !word(c)).map_or(0, |(i, c)| i + c.len_utf8());
+        let end = text[off..].find(|c| !word(c)).map_or(text.len(), |i| off + i);
+        let name = text[start..end].trim_matches('.');
+        let def = schema.def(name)?;
+        // Print the one definition through the schema writer.
+        let one = Schema {
+            defs: vec![(name.to_owned(), def.clone())],
+            def_classes: schema.def_classes.iter().filter(|(n, _)| n == name).cloned().collect(),
+            ..Schema::default()
+        };
+        let mut md = format!("```novs\n{}\n```", one.to_string().trim());
+        if let Some((alias, _)) = name.split_once('.')
+            && let Some(i) = schema.imports.iter().find(|i| i.alias == alias)
+        {
+            let _ = write!(md, "\n\nimported from `{}`", i.reference);
+        }
+
+        Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: md,
+            }),
+            range: Some(range(text, start, end)),
+        })
+    }
+
     /// Document outline of an open data document.
     fn symbols(&self, uri: &Uri) -> Option<Vec<DocumentSymbol>> {
         let (text, p) = self.parsed(uri)?;
-        Some(children_of(&Src::new(text), &p, &children(&p), &Path::root()))
+        let schema = self.schema_for(&p, uri);
+        let visible = visible(&p, schema.as_ref());
+        Some(children_of(&Src::new(text), &p, visible.as_ref(), &children(&p), &Path::root()))
     }
 
     /// Quick fixes for the syntax error on the requested lines, such as a table's row count.
@@ -892,6 +982,39 @@ impl Server<'_> {
     }
 }
 
+/// The value of `p` as an editor may show it (proposal 0009): every classified
+/// value replaced by `@redacted`. `None` if no value may be shown: the document
+/// names a schema that is not found, so its classified values are not known, and
+/// redaction fails closed (0009.5.3).
+fn visible(p: &Parsed, schema: Option<&Schema>) -> Option<Value> {
+    let Some(s) = schema else {
+        // A document without `@schema` has no classified values.
+        return p.schema_ref.is_none().then(|| p.value.clone());
+    };
+
+    let marks = s.classify_source(&p.value).unwrap_or_else(|_| type_marks(p, s));
+    // The marks are source paths, so redact the source value, not the resolved one.
+    Some(novafile_schema::redact(&p.value, &marks, &Reveal::Redact, None).for_output().clone())
+}
+
+/// Classified paths of a document that does not resolve against `s`, found from
+/// the declared types alone. It errs towards hiding: a value whose type is not
+/// known, or is a union (whose member is not known), counts as secret.
+fn type_marks(p: &Parsed, s: &Schema) -> Vec<ClassMark> {
+    p.spans
+        .iter()
+        .filter_map(|sp| {
+            let class = match s.type_at(&sp.path) {
+                Some((ty, _)) if matches!(s.deref(&ty).0.kind, TypeKind::Union(_)) => Some(Class::Secret),
+                Some((ty, _)) => s.type_class(&ty),
+                None => Some(Class::Secret),
+            };
+
+            Some((sp.path.clone(), class?))
+        })
+        .collect()
+}
+
 /// Find the record whose fields live at `indent` around line `line`.
 fn enclosing_record(text: &str, spans: &SpanMap, line: usize, indent: usize) -> Option<Path> {
     let lines: Vec<&str> = text.split('\n').collect();
@@ -961,9 +1084,11 @@ fn children(p: &Parsed) -> Children<'_> {
 }
 
 /// Outline symbols for the children of `parent`, recursively; list items holding a
-/// record are named after its `id`, `name` or `key` field.
+/// record are named after its `id`, `name` or `key` field. Names and details take
+/// values from `visible`, the redacted document value (see [`visible`]), and show no
+/// value if it is `None`.
 #[allow(deprecated)]
-fn children_of(text: &Src<'_>, p: &Parsed, kids: &Children<'_>, parent: &Path) -> Vec<DocumentSymbol> {
+fn children_of(text: &Src<'_>, p: &Parsed, visible: Option<&Value>, kids: &Children<'_>, parent: &Path) -> Vec<DocumentSymbol> {
     kids.get(&format!("{:?}", parent.0))
         .into_iter()
         .flatten()
@@ -975,7 +1100,9 @@ fn children_of(text: &Src<'_>, p: &Parsed, kids: &Children<'_>, parent: &Path) -
                 other => format!("{other:?}"),
             };
 
-            if let Value::Record(r) = v
+            // The path fails only below a container that became a placeholder.
+            let shown = visible.map(|vis| s.path.get(vis).ok());
+            if let Some(Some(Value::Record(r))) = shown
                 && let Some(id) = ["id", "name", "key"].iter().find_map(|k| r.get(k))
                 && !id.is_container()
             {
@@ -984,13 +1111,19 @@ fn children_of(text: &Src<'_>, p: &Parsed, kids: &Children<'_>, parent: &Path) -
 
             let full = range(text, s.start, s.end);
             let sel = s.key.map_or(full, |(a, b)| range(text, a, b));
-            let detail = if v.is_container() {
-                Some(v.kind().to_owned())
-            } else {
-                Some(novafile_text::flow_string(v).chars().take(40).collect())
+            let detail = match shown {
+                _ if v.is_container() => Some(v.kind().to_owned()),
+                Some(Some(sv)) => Some(novafile_text::flow_string(sv).chars().take(40).collect()),
+                Some(None) => Some(REDACTED_TAG.to_owned()),
+                None => None,
             };
 
-            let children = children_of(text, p, kids, &s.path);
+            // The shape of a classified container is classified too (0009.5.2).
+            let children = if matches!(shown, Some(Some(sv)) if sv.is_redacted()) {
+                Vec::new()
+            } else {
+                children_of(text, p, visible, kids, &s.path)
+            };
             Some(DocumentSymbol {
                 name,
                 detail,

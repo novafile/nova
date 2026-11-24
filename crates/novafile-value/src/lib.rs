@@ -85,7 +85,33 @@ pub enum Value {
     Variant(String, Option<Box<Value>>),
 }
 
+/// The tag of a redaction placeholder (proposal 0009): `@redacted`, or
+/// `@redacted("p:…")` with a pseudonym as its string payload. Tags in data are
+/// identifiers, so no parsed document holds this tag. Only redacting readers
+/// create it, and writers of stored data must reject it.
+pub const REDACTED_TAG: &str = "@redacted";
+
 impl Value {
+    /// Whether this is a redaction placeholder (see [`REDACTED_TAG`]).
+    #[must_use]
+    pub fn is_redacted(&self) -> bool {
+        matches!(self, Value::Variant(t, _) if t == REDACTED_TAG)
+    }
+
+    /// Whether this value or any value inside it is a redaction placeholder.
+    /// The work is linear in the size of the value; the depth is bounded by
+    /// the nesting limit of the decoders that build values.
+    #[must_use]
+    pub fn contains_redacted(&self) -> bool {
+        match self {
+            Value::Variant(t, p) => t == REDACTED_TAG || p.as_ref().is_some_and(|p| p.contains_redacted()),
+            Value::List(l) | Value::Set(l) | Value::Tuple(l) => l.iter().any(Value::contains_redacted),
+            Value::Map(m) => m.iter().any(|(k, v)| k.contains_redacted() || v.contains_redacted()),
+            Value::Record(r) => r.iter().any(|(_, v)| v.contains_redacted()),
+            _ => false,
+        }
+    }
+
     /// The lowercase kind name (`"int"`, `"record"`, ...), as used in messages.
     #[must_use]
     pub fn kind(&self) -> &'static str {

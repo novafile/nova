@@ -1,6 +1,6 @@
 //! Schema language parser (spec §6.1).
 
-use crate::model::{Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
+use crate::model::{Class, Def, FieldDef, Import, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
 use novafile_text::Parser;
 use std::cell::Cell;
 
@@ -219,11 +219,23 @@ impl<'a> TyParser<'a> {
             }
             other => match IntKind::from_name(other) {
                 Some(k) => TypeKind::Int(k),
-                None => TypeKind::Named(other.to_owned()),
+                None => TypeKind::Named(self.qualified(other)?),
             },
         };
 
         Ok(TypeRef::new(kind))
+    }
+
+    /// A type name, with the `.Name` of a qualified reference (`std.Uuid`,
+    /// proposal 0008) if `alias` is followed by a dot.
+    fn qualified(&mut self, alias: &str) -> Result<String, String> {
+        if self.peek() != Some(b'.') {
+            return Ok(alias.to_owned());
+        }
+
+        self.i += 1;
+        let name = self.ident()?;
+        Ok(format!("{alias}.{name}"))
     }
 
     /// One side of a `@range`; empty means unbounded.
@@ -262,7 +274,8 @@ impl<'a> TyParser<'a> {
 
             match name.as_str() {
                 "pattern" => {
-                    if ty.kind != TypeKind::String {
+                    // A reference may name an alias of `string`; `check_refs` checks that once it is defined.
+                    if !matches!(ty.kind, TypeKind::String | TypeKind::Named(_)) {
                         return Err(format!("@pattern applies to string, not {}", TypeRef::new(ty.kind.clone())));
                     }
 
@@ -309,11 +322,27 @@ impl<'a> TyParser<'a> {
                         ty.constraints.len = Some((p(lo)?, p(hi)?));
                     }
                 }
+                "personal" | "secret" => set_class(ty, &name, &arg)?,
                 "key" | "id" | "deprecated" | "open" => field_attrs.push((name, arg)),
                 other => return Err(format!("unknown attribute @{other}")),
             }
         }
     }
+}
+
+/// Set the class of `ty` from the attribute `@name(arg)`. Fails if the
+/// attribute has an argument or `ty` already has a class.
+fn set_class(ty: &mut TypeRef, name: &str, arg: &str) -> Result<(), String> {
+    if !arg.is_empty() {
+        return Err(format!("@{name} takes no argument"));
+    }
+
+    if let Some(c) = ty.constraints.class {
+        return Err(format!("@{name}: the type already has @{c}; a type has at most one class"));
+    }
+
+    ty.constraints.class = Class::from_name(name);
+    Ok(())
 }
 
 /// Parse a standalone type expression such as `list<int> @len(..8)`.
@@ -394,15 +423,30 @@ fn close_paren(s: &str) -> Option<usize> {
     None
 }
 
-/// Parse NOVA schema text (spec §6).
+/// Parse NOVA schema text (spec §6) and link its imports. Only the bundled
+/// standard library (`novafile.dev/std`) can be imported: use
+/// [`parse_schema_unlinked`] and [`Schema::link`] to resolve other imports.
 ///
 /// # Errors
 ///
 /// Fails, with the offending line, on any syntax error, duplicate or invalid
-/// name, duplicate field id, unknown reference, alias cycle or invalid
-/// default.
-#[expect(clippy::too_many_lines, reason = "one linear pass over the schema's line-oriented grammar")]
+/// name, duplicate field id, unknown reference, alias cycle, invalid
+/// default or import that does not resolve.
 pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
+    let mut schema = parse_schema_unlinked(src)?;
+    schema.link(&|r| Err(format!("cannot import {r}: only the bundled {} is available here", crate::STD_NAME)))?;
+    Ok(schema)
+}
+
+/// Parse NOVA schema text (spec §6) without linking its imports or checking
+/// its references. Call [`Schema::link`] before the schema is used.
+///
+/// # Errors
+///
+/// Fails, with the offending line, on any syntax error, duplicate or invalid
+/// name, duplicate field id or invalid `@import`.
+#[expect(clippy::too_many_lines, reason = "one linear pass over the schema's line-oriented grammar")]
+pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
     let mut schema = Schema::default();
     let budget = Cell::new(crate::pattern::SCHEMA_BUDGET);
     let lines: Vec<&str> = src.lines().collect();
@@ -421,7 +465,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
         }
 
         if let Some(rest) = raw.strip_prefix("@nova ") {
-            if schema.name.is_some() || schema.root.is_some() || !schema.defs.is_empty() || !schema.extensions.is_empty() {
+            if schema.name.is_some() || schema.root.is_some() || !schema.defs.is_empty() || !schema.extensions.is_empty() || !schema.imports.is_empty() {
                 return Err(err(i, "@nova must be the first directive".into()));
             }
 
@@ -444,6 +488,14 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
 
             schema.extensions.push(format!("x-{ext}"));
             i += 1;
+        } else if let Some(rest) = raw.strip_prefix("@import ") {
+            if !schema.defs.is_empty() || schema.root.is_some() {
+                return Err(err(i, "@import comes before @root and the first definition".into()));
+            }
+
+            let import = parse_import(rest, &schema).map_err(|m| err(i, m))?;
+            schema.imports.push(import);
+            i += 1;
         } else if let Some(rest) = raw.strip_prefix("@root ") {
             schema.root = Some(parse_type_within(rest.trim(), &budget).map_err(|m| err(i, format!("@root: {m}")))?);
             i += 1;
@@ -453,19 +505,29 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
             push_def(&mut schema, name.trim(), Def::Alias(t)).map_err(|m| err(i, m))?;
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("enum ") {
-            if let Some((name, alts)) = rest.split_once('=') {
+            if let Some((head, alts)) = rest.split_once('=') {
+                let (name, open, class) = def_head(head).map_err(|m| err(i, m))?;
+                if open {
+                    return Err(err(i, "@open applies to records, not enums".into()));
+                }
+
                 let mut vs = Vec::new();
                 for alt in split_top(alts, b'|') {
                     push_variant(&mut vs, parse_variant(alt.trim(), &budget).map_err(|m| err(i, m))?).map_err(|m| err(i, m))?;
                 }
 
-                push_def(&mut schema, name.trim(), Def::Enum(vs)).map_err(|m| err(i, m))?;
+                push_def(&mut schema, name, Def::Enum(vs)).map_err(|m| err(i, m))?;
+                push_class(&mut schema, name, class);
                 i += 1;
             } else {
-                let name = rest
+                let head = rest
                     .strip_suffix(':')
-                    .ok_or_else(|| err(i, "expected `enum Name:` or `enum Name = a | b`".into()))?
-                    .trim();
+                    .ok_or_else(|| err(i, "expected `enum Name:` or `enum Name = a | b`".into()))?;
+                let (name, open, class) = def_head(head).map_err(|m| err(i, m))?;
+                if open {
+                    return Err(err(i, "@open applies to records, not enums".into()));
+                }
+
                 i += 1;
                 let mut vs = Vec::new();
                 while i < lines.len() {
@@ -485,13 +547,11 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
                 }
 
                 push_def(&mut schema, name, Def::Enum(vs)).map_err(|m| err(i, m))?;
+                push_class(&mut schema, name, class);
             }
         } else if let Some(rest) = raw.strip_prefix("record ") {
-            let head = rest.strip_suffix(':').ok_or_else(|| err(i, "expected `record Name:`".into()))?.trim();
-            let (name, open) = match head.strip_suffix("@open") {
-                Some(n) => (n.trim(), true),
-                None => (head, false),
-            };
+            let head = rest.strip_suffix(':').ok_or_else(|| err(i, "expected `record Name:`".into()))?;
+            let (name, open, class) = def_head(head).map_err(|m| err(i, m))?;
 
             let start = i;
             i += 1;
@@ -524,6 +584,7 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
             }
 
             push_def(&mut schema, name, Def::Record(RecordDef { fields, open })).map_err(|m| err(start, m))?;
+            push_class(&mut schema, name, class);
         } else if let Some(d) = raw.strip_prefix('@') {
             return Err(err(i, format!("unknown directive @{}", d.split(' ').next().unwrap_or(d))));
         } else {
@@ -531,8 +592,54 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {
         }
     }
 
-    check_refs(&schema).map_err(|m| SchemaError { line: 0, message: m })?;
     Ok(schema)
+}
+
+/// Parse the argument of `@import`: `name@version[#fingerprint] as alias`.
+/// Fails if it is malformed, or the alias is not an identifier or is taken.
+fn parse_import(rest: &str, schema: &Schema) -> Result<Import, String> {
+    let (reference, alias) = rest.trim().split_once(" as ").ok_or("expected `@import name@version as alias`")?;
+    let reference = crate::SchemaRef::parse(reference.trim())?;
+    let alias = alias.trim();
+    let ok = alias.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !ok {
+        return Err(format!("import alias {alias:?} is not an identifier of letters, digits and `_`"));
+    }
+
+    if schema.imports.iter().any(|i| i.alias == alias) {
+        return Err(format!("duplicate import alias {alias}"));
+    }
+
+    Ok(Import {
+        alias: alias.to_owned(),
+        reference,
+    })
+}
+
+/// Split a definition head such as `Name @open @secret` into the name,
+/// whether it has `@open`, and its class. Fails on any other attribute,
+/// a repeated attribute, or two classes.
+fn def_head(head: &str) -> Result<(&str, bool, Option<Class>), String> {
+    let mut words = head.split_whitespace();
+    let name = words.next().ok_or("expected a definition name")?;
+    let (mut open, mut class) = (false, None);
+    for w in words {
+        match (w, Class::from_name(w.trim_start_matches('@'))) {
+            ("@open", _) if !open => open = true,
+            (_, Some(c)) if w.starts_with('@') && class.is_none() => class = Some(c),
+            (_, Some(_)) if w.starts_with('@') => return Err("a definition has at most one class".into()),
+            _ => return Err(format!("unexpected {w:?} after definition name {name}")),
+        }
+    }
+
+    Ok((name, open, class))
+}
+
+/// Record the class written on the definition `name`, if any.
+fn push_class(s: &mut Schema, name: &str, class: Option<Class>) {
+    if let Some(c) = class {
+        s.def_classes.push((name.to_owned(), c));
+    }
 }
 
 /// Add a definition. Fails if the name does not start with an uppercase
@@ -746,7 +853,7 @@ fn keyed_members_agree(s: &Schema, t: &TypeRef) -> Result<(), String> {
 
 /// Check that every named type and the `@root` refer to a definition and
 /// that no alias reaches itself through only aliases and unions.
-fn check_refs(s: &Schema) -> Result<(), String> {
+pub(crate) fn check_refs(s: &Schema) -> Result<(), String> {
     /// Checks that every named type reachable from `t` refers to a definition in `s`.
     fn walk(s: &Schema, t: &TypeRef) -> Result<(), String> {
         match &t.kind {
@@ -778,6 +885,8 @@ fn check_refs(s: &Schema) -> Result<(), String> {
     if let Some(r) = &s.root {
         walk(s, r).map_err(|m| format!("@root: {m}"))?;
     }
+
+    crate::class::check_positions(s)?;
 
     // Defaults must resolve against their field, or old data silently fails the
     // new schema once the default is filled in (spec §6.4 rule 2).

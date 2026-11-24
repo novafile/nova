@@ -59,6 +59,10 @@
 //! | `type: string`, `format: date-time` | `timestamp` |
 //! | `type: string`, `format: duration` | `duration` (NOVA reads ISO 8601 durations) |
 //! | `type: string`, `contentEncoding: base64` | `bytes` |
+//! | `x-nova-type: novafile.dev/std.X` (on a definition or inline) | `std.X`; the schema gains `@import novafile.dev/std@… as std` (the newest bundled version) |
+//! | `type: string`, `format` `uuid`, `uri`, `uri-reference`, `email` | `std.Uuid`, `std.Uri`, `std.UriReference`, `std.Email` and the std import; **warning**, since std is narrower |
+//! | `x-nova-class: personal` / `secret` | `@personal` / `@secret` (on a record or enum definition: the definition's class) |
+//! | `writeOnly: true` | ignored: it marks request-only fields, not secret ones; only `x-nova-class` gives a class |
 //! | `x-nova-kind` (`timestamp`, `duration`, `decimal`, `rational`, `bytes`, `float`, `map`) | that kind |
 //! | `x-nova-kind: literal` with `const` or `enum` | a string literal type, or a union of them |
 //! | `type: string`, `const: "s"` | the literal type `"s"` |
@@ -77,7 +81,7 @@
 //! | `x-nova-id: n`, `x-nova-key: true` | `@id(n)`, `@key` |
 //! | `true`, `{}` | `any` |
 //! | `type: null`, `type: boolean`, `type: string` | `null`, `bool`, `string` |
-//! | `description`, `title`, `examples`, `$comment`, `readOnly`, `writeOnly`, `$schema`, `$id` | dropped silently |
+//! | `description`, `title`, `examples`, `$comment`, `readOnly`, `$schema`, `$id` | dropped silently |
 //!
 //! Every other construct is dropped with a warning: non-string `const`s,
 //! `pattern`s outside I-Regexp (`\d`, lookaround, flags, anchors inside),
@@ -86,7 +90,8 @@
 //! on records, non-string `enum`s (the base type is kept), types like `[integer, string]`, external
 //! `$ref`s (become `any`), `false` schemas, field names that are not NOVA
 //! names (the field is dropped and the record becomes `@open`), invalid or
-//! duplicate `x-nova-id`/`x-nova-key`, and defaults that do not resolve
+//! duplicate `x-nova-id`/`x-nova-key`, a class on set elements or map keys
+//! (dropped; on an `x-nova-key` field the key is dropped), and defaults that do not resolve
 //! against their type. Each warning starts with the JSON pointer of the
 //! construct.
 //!
@@ -140,6 +145,10 @@
 //! | other `map<K, V>` | array of `[k, v]` pairs (`prefixItems: [K, V]`), `x-nova-kind: map` |
 //! | `T?` | `type: [T, "null"]`, or `anyOf: [T, {"type": "null"}]` |
 //! | `Name` | `$ref: "#/$defs/Name"` |
+//! | imported `alias.Name` | `$ref: "#/$defs/alias.Name"`; the imported definitions in use are written to `$defs` under that name |
+//! | a standard library type (`std.Uuid`) | its `$defs` entry also has `x-nova-type: novafile.dev/std.Uuid`, and for `Uuid`, `Uri`, `UriReference`, `Email` a `format` (`uuid`, `uri`, `uri-reference`, `email`) |
+//! | `@personal` | `x-nova-class: personal` (on a type, or on the `$defs` entry of a record or enum) |
+//! | `@secret` | `writeOnly: true`, `x-nova-class: secret` |
 //! | `record` | `type: object`, `properties`, `required` (fields that are neither optional nor defaulted); closed: `additionalProperties: false`, `@open`: `additionalProperties: true`; `x-nova-order` when the declared field order is not alphabetical |
 //! | `enum` | `oneOf` of `{"type":"string","enum":[unit tags]}` and `{"type":"object","properties":{"Tag":P},"required":["Tag"],"additionalProperties":false}` (only the former if all variants are units) |
 //! | `@range` on `int`/`float` | `minimum`/`maximum` |

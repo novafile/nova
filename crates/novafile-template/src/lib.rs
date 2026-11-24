@@ -23,16 +23,23 @@
 //! library this crate is compiled with ([`char::UNICODE_VERSION`]). Template
 //! language 0.2 pins Unicode 17.0.0; results differ only for code points whose
 //! case mapping or `White_Space` property changed between the versions.
+//!
+//! [`render_redacted`] also knows classified values (proposal 0009.7). A
+//! value that comes from an imported document through a `@personal` or
+//! `@secret` type is classified, and so is every value derived from it. The
+//! output then holds placeholders in place of these values, unless the mode
+//! reveals them. The `taint` module tells how.
 
 mod builtins;
 mod eval;
 mod json;
 mod ops;
+mod taint;
 
 pub use builtins::BUILTINS;
 
 use eval::{Eval, Func};
-use novafile_schema::{SCHEMA_BUDGET, Schema, parse_type_within};
+use novafile_schema::{RedactKey, Redacted, Reveal, SCHEMA_BUDGET, Schema, parse_type_within, redact};
 use novafile_text::ast::{Decl, Node, TemplateHeader};
 use novafile_text::parse_document;
 use novafile_value::{Record, Value};
@@ -69,6 +76,23 @@ pub trait Loader {
     ///
     /// Returns a message if `path` is not reachable from `from` or cannot be read.
     fn load(&self, path: &str, from: Option<&str>) -> Result<(String, String), String>;
+
+    /// The schema that the `@schema` directive `reference` names, for the
+    /// document identified by `from` (as [`Loader::load`] returned it, or
+    /// `None` for the template itself). Only [`render_redacted`] asks for it.
+    ///
+    /// The default knows no schemas and returns `Ok(None)`. Then
+    /// [`render_redacted`] refuses a document that declares `@schema`, unless
+    /// the mode reveals everything: without the schema, nothing in that
+    /// document would be redacted (0009.5.3, fail closed).
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if `reference` names a schema that cannot be read.
+    fn schema(&self, reference: &str, from: Option<&str>) -> Result<Option<Schema>, String> {
+        let _ = (reference, from);
+        Ok(None)
+    }
 }
 
 /// Imports are disabled.
@@ -174,6 +198,11 @@ impl Default for Options<'_> {
 
 /// Render template source with the given arguments.
 ///
+/// This function does not know classified values: it does not ask the
+/// loader for schemas, and it shows every value in clear. It is the
+/// rendering for deployment, which 0009.7 says must reveal anyway. Use
+/// [`render_redacted`] for output that a person or agent reads.
+///
 /// # Errors
 ///
 /// Returns a [`TemplateError`] if `src` is not a valid template (including a `@def` that
@@ -182,21 +211,74 @@ impl Default for Options<'_> {
 /// too deeply; evaluation fails; or the render exceeds the node, byte or step budget in
 /// `opts.limits`.
 pub fn render(src: &str, args: &Record, opts: &Options) -> Result<Value, TemplateError> {
-    // Parameter patterns of the template and all its imports share one budget.
-    render_inner(src, None, args, opts, &mut Vec::new(), &mut Cost::default(), &Cell::new(SCHEMA_BUDGET))
+    let run = Run {
+        opts,
+        reveal: None,
+        patterns: Cell::new(SCHEMA_BUDGET),
+    };
+
+    render_inner(src, None, args, &run, &mut Vec::new(), &mut Cost::default())
+}
+
+/// How [`render_redacted`] shows classified values (proposal 0009.5.1).
+/// The default redacts all of them.
+#[derive(Clone, Debug, Default)]
+pub struct Redaction<'a> {
+    /// Which classified values to show in clear. `Reveal::Paths` names
+    /// paths in the rendered output.
+    pub reveal: Reveal,
+    /// Makes pseudonyms for personal values; without it they become a bare
+    /// `@redacted`.
+    pub key: Option<&'a RedactKey>,
+}
+
+/// Render like [`render`], and replace classified values by placeholders
+/// as `mode` says (proposal 0009.7).
+///
+/// An imported data document that declares `@schema` is resolved against
+/// the schema that [`Loader::schema`] gives. Its `@personal` and `@secret`
+/// values are classified, and so is every value that the template derives
+/// from them: a reference into them, and the result of an operator, a
+/// built-in function or an interpolation with a classified operand, which
+/// gets the strongest class among its operands. The template itself and its
+/// arguments classify nothing.
+///
+/// # Errors
+///
+/// As [`render`]. Also fails if an imported document declares a `@schema`
+/// that the loader cannot give (except when `mode` reveals everything), or
+/// does not match it; and, unless `mode` shows the class, if the template
+/// branches on a classified value: a condition or filter, a loop, a spread
+/// or an `and`/`or` over a classified value, a selector that compares a
+/// classified value, a presence test inside a classified container, or a
+/// classified record key, comprehension key, set element or map key.
+pub fn render_redacted(src: &str, args: &Record, opts: &Options, mode: &Redaction) -> Result<Redacted, TemplateError> {
+    let run = Run {
+        opts,
+        reveal: Some(&mode.reveal),
+        patterns: Cell::new(SCHEMA_BUDGET),
+    };
+
+    let v = render_inner(src, None, args, &run, &mut Vec::new(), &mut Cost::default())?;
+    let mut marks = Vec::new();
+    let clear = taint::strip(v, &mut marks)?;
+    Ok(redact(&clear, &marks, &mode.reveal, mode.key))
+}
+
+/// Settings shared by a template and all its imports.
+struct Run<'r, 'o> {
+    /// The caller's settings.
+    opts: &'r Options<'o>,
+    /// The reader mode, or `None` if classification is off ([`render`]).
+    reveal: Option<&'r Reveal>,
+    /// Budget for the parameter patterns of the template and all its imports.
+    patterns: Cell<usize>,
 }
 
 /// Render `src`, identified by `id` when imported. `stack` holds the importing documents
 /// (for cycle detection) and `budget` the output and steps so far, shared across imports.
-fn render_inner(
-    src: &str,
-    id: Option<&str>,
-    args: &Record,
-    opts: &Options,
-    stack: &mut Vec<String>,
-    budget: &mut Cost,
-    patterns: &Cell<usize>,
-) -> Result<Value, TemplateError> {
+fn render_inner(src: &str, id: Option<&str>, args: &Record, run: &Run, stack: &mut Vec<String>, budget: &mut Cost) -> Result<Value, TemplateError> {
+    let (opts, patterns) = (run.opts, &run.patterns);
     let where_ = || id.map(|i| format!(" in {i}")).unwrap_or_default();
     let doc = parse_document(src).map_err(|e| TemplateError(format!("{e}{}", where_())))?;
     let Some(h) = &doc.template else {
@@ -204,7 +286,11 @@ fn render_inner(
             return err("arguments were given but the document is not a @template");
         }
 
-        return doc.body.to_value().map_err(TemplateError);
+        let v = doc.body.to_value().map_err(TemplateError)?;
+        return match (run.reveal, doc.directive("schema")) {
+            (Some(reveal), Some(reference)) => classified(v, reference, id, opts.loader, reveal),
+            _ => Ok(v),
+        };
     };
 
     // Load-time checks, before any argument is bound.
@@ -268,7 +354,7 @@ fn render_inner(
         }
 
         stack.push(id.unwrap_or("<root>").to_owned());
-        let v = ev.with_budget(|budget| render_inner(&isrc, Some(&iid), &Record::new(), opts, stack, budget, patterns))?;
+        let v = ev.with_budget(|budget| render_inner(&isrc, Some(&iid), &Record::new(), run, stack, budget))?;
         stack.pop();
         ev.bind_global(&imp.alias, v)?;
     }
@@ -289,6 +375,39 @@ fn render_inner(
     }
 
     ev.place(&doc.body)
+}
+
+/// The data document `v`, identified by `id`, resolved against the schema
+/// that its `@schema reference` names. Its classified values that `reveal`
+/// does not show everywhere get a taint wrapper.
+fn classified(mut v: Value, reference: &str, id: Option<&str>, loader: &dyn Loader, reveal: &Reveal) -> Result<Value, TemplateError> {
+    let name = id.unwrap_or("the template");
+    let schema = match loader.schema(reference, id) {
+        Ok(Some(s)) => s,
+        _ if *reveal == Reveal::All => return Ok(v),
+        Ok(None) => {
+            return err(format!(
+                "{name} declares @schema {reference}, which cannot be resolved here; nothing in it would be redacted"
+            ));
+        }
+        Err(m) => return err(format!("{name}: @schema {reference}: {m}")),
+    };
+
+    let marks;
+    (v, marks) = schema.classify(&v).map_err(|issues| {
+        TemplateError(format!(
+            "{name} does not match @schema {reference}: {}",
+            issues.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; ")
+        ))
+    })?;
+
+    let mut marks: Vec<_> = marks.into_iter().filter(|(_, c)| !taint::shows(reveal, *c)).collect();
+    marks.sort_by_key(|(p, _)| std::cmp::Reverse(p.0.len()));
+    for (p, c) in marks {
+        taint::wrap_at(&mut v, &p.0, c);
+    }
+
+    Ok(v)
 }
 
 /// Check every call in the header and body: a `@def` may call only built-ins and functions

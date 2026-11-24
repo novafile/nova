@@ -181,6 +181,13 @@ fn write_flow(o: &mut String, v: &Value, sep: &str) {
 
             o.push('}');
         }
+        Value::Variant(t, None) if t == novafile_value::REDACTED_TAG => o.push_str(t),
+        Value::Variant(t, Some(p)) if t == novafile_value::REDACTED_TAG => {
+            o.push_str(t);
+            o.push('(');
+            o.push_str(&quote(p.as_str().unwrap_or_default()));
+            o.push(')');
+        }
         Value::Variant(t, None) => {
             o.push('!');
             o.push_str(t);

@@ -1,7 +1,7 @@
 //! JSON Schema → NOVA schema. See the crate documentation for the mapping.
 
 use crate::{Conversion, Error};
-use novafile_schema::{Constraints, Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef, Version};
+use novafile_schema::{Class, Constraints, Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef, Version};
 use novafile_value::{Decimal, Value};
 use serde_json::{Map, Value as Json};
 use std::collections::{HashMap, HashSet};
@@ -32,6 +32,8 @@ const ANNOTATIONS: &[&str] = &[
     "x-nova-id",
     "x-nova-key",
     "x-nova-order",
+    "x-nova-class",
+    "x-nova-type",
 ];
 
 /// Keywords this converter understands (in the positions where they apply).
@@ -96,6 +98,8 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
         depth: 0,
         patterns: std::cell::Cell::new(novafile_schema::SCHEMA_BUDGET),
         inlined: HashMap::new(),
+        def_classes: Vec::new(),
+        uses_std: false,
     };
 
     let mut schema = Schema::default();
@@ -109,6 +113,12 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
         if let Some(Json::Object(defs)) = root_obj.get(key) {
             for (k, s) in defs {
                 let pointer = format!("#/{key}/{}", escape_pointer(k));
+                // A standard library type stands for itself, not for a local copy.
+                if let Some(std) = s.as_object().and_then(|o| c.std_type(o, &pointer)) {
+                    c.names.insert(pointer, std);
+                    continue;
+                }
+
                 let nova = c.fresh(&sanitize_def_name(k));
                 c.names.insert(pointer.clone(), nova.clone());
                 def_list.push((pointer, nova, s));
@@ -145,9 +155,14 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
     }
 
     schema.defs = std::mem::take(&mut c.defs);
+    schema.def_classes = std::mem::take(&mut c.def_classes);
     // Canonical order (spec §6.6), so the result does not depend on traversal order.
     schema.defs.sort_by(|a, b| a.0.cmp(&b.0));
     break_alias_cycles(&mut schema, &mut c.warnings);
+    if c.uses_std {
+        import_std(&mut schema);
+    }
+
     resolve_defaults(&mut schema, &mut c.warnings);
     Ok(Conversion { schema, warnings: c.warnings })
 }
@@ -235,6 +250,10 @@ struct Conv<'a> {
     /// Types already converted for `$ref`s that point outside the definitions,
     /// so a pointer used twice per level is not converted 2^depth times.
     inlined: HashMap<String, TypeRef>,
+    /// `@personal` or `@secret` on the record and enum definitions created so far.
+    def_classes: Vec<(String, Class)>,
+    /// Whether a type refers to the standard library, so that the schema needs its import.
+    uses_std: bool,
 }
 
 /// What a (non-nullable) schema maps to at definition level.
@@ -271,11 +290,18 @@ impl Conv<'_> {
         if let Json::Object(o) = s {
             let (o, nullable) = strip_null(o);
             if !nullable {
-                match shape(&o) {
-                    Shape::Record => return Def::Record(self.record(&o, at, name)),
-                    Shape::Enum => return Def::Enum(self.enum_variants(&o, at, name)),
-                    Shape::Other => {}
+                let d = match shape(&o) {
+                    Shape::Record => Def::Record(self.record(&o, at, name)),
+                    Shape::Enum => Def::Enum(self.enum_variants(&o, at, name)),
+                    Shape::Other => return Def::Alias(self.ty(s, at, &format!("{name}Inner"))),
+                };
+
+                // An alias gets its class from `ty`, on the aliased type.
+                if let Some(c) = self.class(&o, at) {
+                    self.def_classes.push((name.to_owned(), c));
                 }
+
+                return d;
             }
         }
 
@@ -425,8 +451,8 @@ impl Conv<'_> {
             }
 
             if meta("x-nova-key") == Some(&Json::Bool(true)) {
-                if f.optional || f.ty.nullable {
-                    self.warn(&fat, "x-nova-key dropped: key fields must be required and non-null");
+                if f.optional || f.ty.nullable || f.ty.constraints.class.is_some() {
+                    self.warn(&fat, "x-nova-key dropped: key fields must be required, non-null and not @personal or @secret");
                 } else {
                     f.key = true;
                 }
@@ -562,6 +588,10 @@ impl Conv<'_> {
                     let (o, nullable) = strip_null(o);
                     let mut t = self.ty_object(&o, at, hint);
                     t.nullable |= nullable;
+                    if let Some(c) = self.class(&o, at) {
+                        t.constraints.class = Some(c);
+                    }
+
                     t
                 }
                 other => {
@@ -578,6 +608,13 @@ impl Conv<'_> {
     /// `o` has had its `null` alternatives removed.
     fn ty_object(&mut self, o: &Obj, at: &str, hint: &str) -> TypeRef {
         let only = |keys: &[&str]| !o.keys().any(|k| is_structural(k) && !keys.contains(&k.as_str()));
+        // `x-nova-type` wins over the `pattern`, `format` and `type` that restate it.
+        if let Some(n) = self.std_type(o, at) {
+            let mut t = TypeRef::new(TypeKind::Named(n));
+            self.constraints(&mut t, o, at);
+            return t;
+        }
+
         // References, with sibling constraints (2020-12).
         if let Some(r) = o.get("$ref").and_then(Json::as_str) {
             let mut t = self.reference(r, at, hint);
@@ -780,7 +817,10 @@ impl Conv<'_> {
                     };
 
                     let kt = match obj.get("propertyNames") {
-                        Some(k) => self.nested(k, &format!("{at}/propertyNames"), &format!("{hint}Key")),
+                        Some(k) => {
+                            let k = self.unclassified(k, &format!("{at}/propertyNames"), "map keys");
+                            self.nested(&k, &format!("{at}/propertyNames"), &format!("{hint}Key"))
+                        }
                         None => TypeRef::new(TypeKind::String),
                     };
 
@@ -791,7 +831,8 @@ impl Conv<'_> {
                         return None;
                     };
 
-                    let kt = self.nested(k, &format!("{at}/items/prefixItems/0"), &format!("{hint}Key"));
+                    let k = self.unclassified(k, &format!("{at}/items/prefixItems/0"), "map keys");
+                    let kt = self.nested(&k, &format!("{at}/items/prefixItems/0"), &format!("{hint}Key"));
                     let vt = self.nested(v, &format!("{at}/items/prefixItems/1"), &format!("{hint}Value"));
                     TypeRef::new(TypeKind::Map(Box::new(kt), Box::new(vt)))
                 };
@@ -899,16 +940,29 @@ impl Conv<'_> {
             self.warn(at, format!("contentEncoding {e:?} is not supported; using string"));
         }
 
-        if let Some(f) = format.filter(|f| !matches!(*f, "date-time" | "duration")) {
-            self.warn(at, format!("format {f:?} is not enforced"));
-        }
-
         if let (TypeKind::String, Some(Json::String(c))) = (&kind, o.get("const")) {
             return TypeRef::new(TypeKind::Literal(c.clone()));
         }
 
+        let std = format.and_then(std_of_format).filter(|_| kind == TypeKind::String);
+        if let Some(f) = format.filter(|f| !matches!(*f, "date-time" | "duration") && std.is_none()) {
+            self.warn(at, format!("format {f:?} is not enforced"));
+        }
+
         let mut t = TypeRef::new(kind);
-        if t.kind == TypeKind::String
+        if let Some(n) = std {
+            self.warn(
+                at,
+                format!(
+                    "format {:?} mapped to std.{n}, which is narrower than the JSON Schema format",
+                    format.unwrap_or_default()
+                ),
+            );
+            self.uses_std = true;
+            t.kind = TypeKind::Named(format!("std.{n}"));
+        }
+
+        if matches!(t.kind, TypeKind::String | TypeKind::Named(_))
             && let Some(p) = read_pattern(o)
         {
             match novafile_schema::Pattern::new_within(&p, &self.patterns) {
@@ -957,12 +1011,17 @@ impl Conv<'_> {
             return TypeRef::new(TypeKind::List(Box::new(any())));
         }
 
+        let set = o.get("uniqueItems") == Some(&Json::Bool(true));
         let item = match o.get("items") {
+            Some(s) if set => {
+                let s = self.unclassified(s, &format!("{at}/items"), "set elements");
+                self.nested(&s, &format!("{at}/items"), &format!("{hint}Item"))
+            }
             Some(s) => self.nested(s, &format!("{at}/items"), &format!("{hint}Item")),
             None => any(),
         };
 
-        let mut t = if o.get("uniqueItems") == Some(&Json::Bool(true)) {
+        let mut t = if set {
             TypeRef::new(TypeKind::Set(Box::new(item)))
         } else {
             TypeRef::new(TypeKind::List(Box::new(item)))
@@ -994,7 +1053,7 @@ impl Conv<'_> {
         }
 
         if let Some(pn) = o.get("propertyNames") {
-            let mut pn = pn.clone();
+            let mut pn = self.unclassified(pn, &format!("{at}/propertyNames"), "map keys");
             if let Some(p) = pn.as_object_mut() {
                 p.entry("type").or_insert_with(|| "string".into());
             }
@@ -1047,6 +1106,54 @@ impl Conv<'_> {
                 Err(e) => self.warn(at, format!("x-nova-len {l:?} ignored: {e}")),
             }
         }
+    }
+
+    /// The class of a type or definition (proposal 0009), from `x-nova-class`
+    /// only. `writeOnly` states the direction of data flow, not sensitivity, and
+    /// a wrong `@secret` cannot be removed without a breaking change.
+    fn class(&mut self, o: &Obj, at: &str) -> Option<Class> {
+        if let Some(c) = o.get("x-nova-class") {
+            match c.as_str().and_then(Class::from_name) {
+                Some(c) => return Some(c),
+                None => self.warn(at, format!("unknown x-nova-class {c} ignored")),
+            }
+        }
+
+        None
+    }
+
+    /// `s` without a class, for positions that cannot have one (`what`: set
+    /// elements, map keys), with a warning if it had one.
+    fn unclassified(&mut self, s: &Json, at: &str, what: &str) -> Json {
+        let mut s = s.clone();
+        // shortcut: only a class on the schema itself is dropped, not one that a `$ref` reaches.
+        if let Some(o) = s.as_object_mut()
+            && o.remove("x-nova-class").is_some()
+        {
+            self.warn(
+                at,
+                format!("{what} cannot be @personal or @secret, since they appear in paths; the class is dropped"),
+            );
+        }
+
+        s
+    }
+
+    /// The standard library type (`std.Uuid`) that `x-nova-type` names
+    /// (`novafile.dev/std.Uuid`), if any. Warns on a name that is not a type
+    /// of the bundled standard library.
+    fn std_type(&mut self, o: &Obj, at: &str) -> Option<String> {
+        let x = o.get("x-nova-type")?;
+        let ty = x
+            .as_str()
+            .and_then(|x| x.strip_prefix(novafile_schema::STD_NAME)?.strip_prefix('.'))
+            .filter(|ty| latest_std().def(ty).is_some());
+        if ty.is_none() {
+            self.warn(at, format!("x-nova-type {x} is not a type of {} and is ignored", novafile_schema::STD_NAME));
+        }
+
+        self.uses_std |= ty.is_some();
+        ty.map(|ty| format!("{STD_ALIAS}.{ty}"))
     }
 
     /// Apply an `x-nova-range` annotation, warning if it does not parse.
@@ -1107,6 +1214,41 @@ const MAP_KEYWORDS: &[&str] = &[
     "minProperties",
     "maxProperties",
 ];
+
+/// The alias under which a converted schema imports the standard library.
+const STD_ALIAS: &str = "std";
+
+/// The newest bundled version of the standard library.
+fn latest_std() -> &'static Schema {
+    novafile_schema::std_schemas().last().expect("at least one standard library version is bundled")
+}
+
+/// The standard library type for a JSON Schema string `format` (proposal 0008).
+fn std_of_format(f: &str) -> Option<&'static str> {
+    Some(match f {
+        "uuid" => "Uuid",
+        "uri" => "Uri",
+        "uri-reference" => "UriReference",
+        "email" => "Email",
+        _ => return None,
+    })
+}
+
+/// Import the newest bundled standard library as `std` and link its
+/// definitions. A scratch schema does the linking, so the reference checks
+/// do not run before the defaults are resolved.
+fn import_std(schema: &mut Schema) {
+    let reference = latest_std().reference().expect("the standard library has a name and version");
+    let mut scratch = Schema::default();
+    scratch.imports.push(novafile_schema::Import {
+        alias: STD_ALIAS.into(),
+        reference,
+    });
+    scratch.link(&|_| Err(String::new())).expect("the bundled standard library links");
+    schema.imports = scratch.imports;
+    schema.imported = scratch.imported;
+    schema.def_classes.extend(scratch.def_classes);
+}
 
 /// Set `@len` from a pair of min/max keywords, if either is present.
 fn len(t: &mut TypeRef, o: &Obj, min: &str, max: &str) {
