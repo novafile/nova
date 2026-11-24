@@ -225,15 +225,18 @@ fn comprehensions_and_defs_handle_classified_values() {
     refused("s: @set[$db.password, a]\n");
 }
 
-/// Failures on classified values do not quote them.
+/// Failing on a classified value looks like succeeding: both render `@redacted`, since an error
+/// would tell something about the value (whether the password is a number, say).
 #[test]
-fn failures_on_classified_values_do_not_quote_them() {
-    let e = run("i: $int($db.password)\n", Reveal::Redact, None).unwrap_err().to_string();
-    assert!(e.contains("classified") && !e.contains("hunter2"), "{e}");
-    let e = run("@def n(x: int) = $x\ni: $n($db.password)\n", Reveal::Redact, None).unwrap_err().to_string();
-    assert!(e.contains("classified") && !e.contains("hunter2"), "{e}");
-    let e = run("i: $($db.password + 1)\n", Reveal::Redact, None).unwrap_err().to_string();
-    assert!(e.contains("classified") && !e.contains("hunter2"), "{e}");
+fn failures_on_classified_values_look_like_success() {
+    let out = redacted("@def n(x: int) = $x\na: $int($db.password)\nb: $n($db.password)\nc: $($db.password + 1)\n");
+    for field in ["a", "b", "c"] {
+        assert!(out.contains(&format!("{field}: @redacted")), "{field}: {out}");
+    }
+
+    // Without a classified operand, a failure is still an error.
+    let e = run("@def n(x: int) = $x\nb: $n($db.host)\n", Reveal::Redact, None).unwrap_err().to_string();
+    assert!(e.contains("does not match"), "{e}");
 }
 
 /// A presence test through a classified list would show its length.

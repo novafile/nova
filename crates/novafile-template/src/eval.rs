@@ -460,9 +460,8 @@ impl<'a> Eval<'a> {
             return ops::binary(op, &lhs, &rhs).map_err(TemplateError);
         };
 
-        // The message of a failed operation could quote the classified operand.
-        let v = ops::binary(op, &lhs, &rhs).map_err(|_| TemplateError(format!("`{}` failed on a classified operand", op.as_str())))?;
-        Ok(taint::taint(v, class))
+        // Failure must look like success: whether it fails tells something about the operand.
+        Ok(taint::taint(ops::binary(op, &lhs, &rhs).unwrap_or(Value::Null), class))
     }
 
     /// Call a `@def` visible here, or else a built-in.
@@ -495,22 +494,35 @@ impl<'a> Eval<'a> {
         }
 
         let args = args.into_iter().map(|a| taint::clear(a).map(|(v, _)| v)).collect::<Result<Vec<_>, _>>()?;
-        // The message of a failed call could quote the classified argument.
-        let v = builtins::call(self, name, args).map_err(|_| TemplateError(format!("{name}: failed on a classified argument")))?;
-        Ok(taint::taint(v, class))
+        // Failure must look like success: whether `int` or `base64_decode` fails, say, tells
+        // something about the argument. Only a budget overrun, which needs no look at the
+        // value, stays an error.
+        match builtins::call(self, name, args) {
+            Ok(v) => Ok(taint::taint(v, class)),
+            Err(e) if self.over_budget() => Err(e),
+            Err(_) => Ok(taint::taint(Value::Null, class)),
+        }
+    }
+
+    /// Whether the output or step budget is used up.
+    fn over_budget(&self) -> bool {
+        self.budget.nodes > self.limits.max_nodes || self.budget.bytes > self.limits.max_bytes || self.budget.steps > self.limits.max_steps
     }
 
     /// Check `v` against `ty` (a `@def` parameter or result type) as [`Schema::check_as`]
-    /// does. A classified value is checked in clear, and a failure does not quote it.
-    fn check_typed(&self, v: &Value, ty: &TypeRef, what: impl FnOnce() -> String) -> Result<(), TemplateError> {
+    /// does. A classified value is checked in clear; if it does not match, the result is its
+    /// class instead of an error, since a failure would tell something about the value.
+    fn check_typed(&self, v: &Value, ty: &TypeRef, what: impl FnOnce() -> String) -> Result<Option<Class>, TemplateError> {
         if taint::class_in(v).is_none() {
-            return self.schema.check_as(v, ty).map_err(|is| TemplateError(format!("{}: {}", what(), issues(&is))));
+            return self
+                .schema
+                .check_as(v, ty)
+                .map(|()| None)
+                .map_err(|is| TemplateError(format!("{}: {}", what(), issues(&is))));
         }
 
-        let (clear, _) = taint::clear(v.clone())?;
-        self.schema
-            .check_as(&clear, ty)
-            .map_err(|_| TemplateError(format!("{}: the value is classified", what())))
+        let (clear, class) = taint::clear(v.clone())?;
+        Ok(self.schema.check_as(&clear, ty).err().and(class))
     }
 
     /// Call `f`: check the arguments against the parameter types (without converting them),
@@ -546,13 +558,19 @@ impl<'a> Eval<'a> {
                 None => self.eval(p.default.as_ref().expect("checked arity"))?,
             };
 
-            self.check_typed(&v, ty, || format!("argument {:?} of {name} does not match `{}`", p.name, p.ty))?;
+            // A classified argument that does not match makes the call a classified null.
+            if let Some(c) = self.check_typed(&v, ty, || format!("argument {:?} of {name} does not match `{}`", p.name, p.ty))? {
+                return Ok((taint::taint(Value::Null, c), false));
+            }
+
             self.bind_local(&p.name, v)?;
         }
 
         let (v, owned) = self.eval_owned(&f.def.body)?;
-        if let (Some(t), Some(text)) = (&f.result, &f.def.result) {
-            self.check_typed(&v, t, || format!("the result of {name} does not match `{text}`"))?;
+        if let (Some(t), Some(text)) = (&f.result, &f.def.result)
+            && let Some(c) = self.check_typed(&v, t, || format!("the result of {name} does not match `{text}`"))?
+        {
+            return Ok((taint::taint(Value::Null, c), false));
         }
 
         Ok((v, owned))
