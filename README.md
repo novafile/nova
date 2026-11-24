@@ -61,20 +61,26 @@ replicas: 5 -> 8
 A template is typed, total, and operates on values rather than text, so there is no Helm-style `nindent`:
 
 ```
-@template
+@template 0.2
 @param env: string
 @param services: list<string>
+@param replicas: u16 = 2
 @param metrics: bool = false
-@let defaults = {enabled: true, replicas: 2}
+@let defaults = {enabled: true, replicas: $replicas}
+
+@def dns_label(s: string): string = $trim_suffix($slice($lower($s), 0, 63), "-")
 
 services:
   @for name in $services:
     - ...$defaults
-      id: $name
-      image: "ghcr.io/example/${name}:v2"
-  @if $metrics and $env == production:
+      id: $dns_label($name)
+      image: "ghcr.io/example/${lower($name)}:v2"
+  @if $metrics and $replicas > 1:
     - id: metrics
+      ports: $([for p in [9090, 9091]: {port: $p, name: "m-${p}"}])
 ```
+
+Template language 0.2 adds expressions (comparisons, `+`, `-`, `*`, list and record comprehensions), user functions with `@def`, and 40 built-in functions for strings, collections, numbers, conversions and digests (`revision` turns Helm's `checksum/config` into a hash of the configuration value). A function can only call functions defined above it, loops only iterate over existing values, and every render has an output budget and a step budget, so every render terminates. Records iterate by key and sets and maps in canonical order, so equal arguments render to equal values.
 
 ## Serde
 
@@ -126,7 +132,7 @@ Put `#[nova(name = …, version = …)]` on the root type. It gives the schema i
 | [`novafile-text`](crates/novafile-text) | Text parser; human, compact and canonical writers; paths; source spans; template syntax; NOVA Lines (`.novl`) record streams; token heuristics; [miette](https://docs.rs/miette) diagnostics (feature `miette`) |
 | [`novafile-schema`](crates/novafile-schema) | Schema language, schema-directed resolution, `@key`, compatibility checks, fingerprints |
 | [`novafile-patch`](crates/novafile-patch) | `@get` queries and projections; the patch language; atomic apply; diff |
-| [`novafile-template`](crates/novafile-template) | Template rendering with typed parameters, output budget and sandboxed imports |
+| [`novafile-template`](crates/novafile-template) | Template rendering with typed parameters, expressions, `@def` functions, a standard library, output and step budgets and sandboxed imports |
 | [`novafile-json`](crates/novafile-json) | JSON and JSONL mapping with explicit loss reporting |
 | [`novafile-formats`](crates/novafile-formats) | YAML, TOML and CBOR adapters with explicit loss reporting |
 | [`novafile-proto`](crates/novafile-proto) | `.proto` generation and Protobuf encoding/decoding driven by NOVA schemas (`@id` = field number) |
@@ -201,7 +207,7 @@ Lookup is offline: built-in schemas, then catalogs (`--catalog`, `NOVA_CATALOG`,
 
 ## Conventions and `nvf lint`
 
-JSON never settled on naming conventions; NOVA has them: `snake_case` keys and variants, and `@id` on all fields or on none. `nvf lint` checks documents and schemas, and `--fix` applies the safe fixes (renaming keys, typing timestamps) without disturbing comments. Data that mirrors an external JSON, YAML or TOML contract is marked `@compat json` (added automatically by `nvf convert`). For such data, names are left alone and anything the format cannot represent is flagged. See [spec Appendix E](https://github.com/novafile/spec/blob/main/SPEC.md#appendix-e--conventions-and-lints).
+JSON never settled on naming conventions; NOVA has them: `snake_case` keys and variants, and `@id` on all fields or on none. `nvf lint` checks documents and schemas, and `--fix` applies the safe fixes (renaming keys, typing timestamps) without disturbing comments. Data that mirrors an external JSON, YAML or TOML contract is marked `@compat json` (added automatically by `nvf convert`). For such data, names are left alone and anything the format cannot represent is flagged. Templates get their own rules: a `@def` that shadows a built-in, a bare word passed in an interpolation where a `$` reference was probably meant, patterns that are not literals, and functions that are never called. See [spec Appendix E](https://github.com/novafile/spec/blob/main/SPEC.md#appendix-e--conventions-and-lints).
 
 ```bash
 nvf lint config.nova examples/*.novs

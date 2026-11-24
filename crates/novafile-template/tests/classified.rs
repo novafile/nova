@@ -193,3 +193,66 @@ fn unresolvable_schema_fails_closed() {
     let out = run("@import \"unknown.nova\" as u\nx: $u.password\n", Reveal::All, None).unwrap();
     assert!(out.contains("hunter2"), "{out}");
 }
+
+/// Built-in functions and operators give their result the class of a classified operand.
+#[test]
+fn functions_and_operators_propagate_the_class() {
+    let out = redacted("u: $upper($db.password)\nh: $sha256($db.password)\nn: $len($db.tokens)\ne: $($db.password == \"x\")\nj: $to_json($db.admin)\n");
+    for field in ["u", "h", "n", "e", "j"] {
+        assert!(out.contains(&format!("{field}: @redacted")), "{field}: {out}");
+    }
+}
+
+/// Built-ins that only move values keep the class of each value they move.
+#[test]
+fn pass_through_functions_keep_classes_per_value() {
+    let out = redacted("h: $get($db, host, \"\")\np: $get($db, password, \"\")\nks: $keys($db)\nv: $values($db)\n");
+    assert!(out.contains("h: db.internal") && out.contains("p: @redacted"), "{out}");
+    assert!(out.contains("ks: [admin,env,host,owner,password,tokens,user]"), "{out}");
+    assert!(out.contains("v: [@redacted,@redacted,db.internal,@redacted,@redacted,@redacted,app]"), "{out}");
+}
+
+/// Comprehensions, `@def` calls and branches see classified values like the other constructs.
+#[test]
+fn comprehensions_and_defs_handle_classified_values() {
+    let out = redacted("@def same(s: string) = $s\nx: $same($db.password)\nks: $([for k, v in $db: $k])\nvs: $([for k, v in $db if $k == host: $v])\n");
+    assert!(out.contains("x: @redacted") && out.contains("vs: [db.internal]"), "{out}");
+    refused("l: $([for t in $db.tokens: $t])\n");
+    refused("l: $([for k, v in $db if $v == \"hunter2\": $k])\n");
+    refused("r: $({for k, v in $db: $v: 1})\n");
+    refused("x:\n  @if $($db.password == \"\" or true):\n    y: 1\n");
+    refused("x:\n  @if $(not ($db.password == \"\")):\n    y: 1\n");
+    refused("s: @set[$db.password, a]\n");
+}
+
+/// Failures on classified values do not quote them.
+#[test]
+fn failures_on_classified_values_do_not_quote_them() {
+    let e = run("i: $int($db.password)\n", Reveal::Redact, None).unwrap_err().to_string();
+    assert!(e.contains("classified") && !e.contains("hunter2"), "{e}");
+    let e = run("@def n(x: int) = $x\ni: $n($db.password)\n", Reveal::Redact, None).unwrap_err().to_string();
+    assert!(e.contains("classified") && !e.contains("hunter2"), "{e}");
+    let e = run("i: $($db.password + 1)\n", Reveal::Redact, None).unwrap_err().to_string();
+    assert!(e.contains("classified") && !e.contains("hunter2"), "{e}");
+}
+
+/// A presence test through a classified list would show its length.
+#[test]
+fn presence_inside_a_classified_list_is_refused() {
+    refused("x:\n  @if $db.tokens[3] != null:\n    y: 1\n");
+    refused("x:\n  @if $db.tokens[0] == null:\n    y: 1\n");
+    let out = redacted("t: $db.tokens[3]\n");
+    assert!(out.contains("t: @redacted"), "{out}");
+}
+
+/// Plain rendering is unchanged: classification needs `render_redacted`.
+#[test]
+fn plain_render_shows_derived_values() {
+    let opts = Options {
+        loader: &Mem,
+        ..Options::default()
+    };
+    let src = "@template\n@import \"db.nova\" as db\nu: $upper($db.password)\n";
+    let v = render(src, &Record::new(), &opts).unwrap();
+    assert!(novafile_text::to_text(&v, Profile::Compact).contains("HUNTER2"));
+}

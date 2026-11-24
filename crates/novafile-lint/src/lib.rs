@@ -21,6 +21,10 @@
 //! | `classified-hint` | fields named `password`, `secret`, `token`, `api_key` or `private_key` without a class | warning | — |
 //! | `std-hint` | `string` fields named `uuid`, `…_uuid`, `email`, `url`, `uri` or `phone` whose type is not from `novafile.dev/std` (off by default) | hint | — |
 //! | `std-restated` | a local alias that is the same as a `novafile.dev/std` type | hint | — |
+//! | `shadowed-builtin` | template `@def`s with the name of a built-in function | warning | — |
+//! | `bare-argument` | bare-word arguments in an interpolation that name a value in scope: `"${lower(name)}"` | warning | — |
+//! | `dynamic-pattern` | `matches` patterns that are not literals and cannot be checked at load time | hint | — |
+//! | `unused-def` | template `@def`s that are never called | hint | — |
 //!
 //! Configuration: [`Config`], or in a document or schema `@x-lint case=camel allow=quoted-key,mixed-list`.
 //! Rules that are off by default ([`OFF_BY_DEFAULT`]) need `enable=rule,…`.
@@ -30,6 +34,7 @@
 //! not apply, and every value the format cannot represent is reported.
 
 mod case;
+mod template;
 
 pub use case::{Case, split_words};
 
@@ -136,13 +141,11 @@ fn is_ident(s: &str) -> bool {
 /// # Errors
 ///
 /// Returns a [`ParseError`](novafile_text::ParseError) if `src` is malformed,
-/// its `@x-lint` directive is invalid, or it contains template constructs.
+/// or its `@x-lint` directive is invalid. A `@template` document gets only the
+/// template rules (`shadowed-builtin`, `bare-argument`, `dynamic-pattern`,
+/// `unused-def`).
 pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_text::ParseError> {
     let (doc, spans) = novafile_text::parse_with_spans(src)?;
-    if doc.is_template() {
-        return Ok(Vec::new());
-    }
-
     let mut config = config.clone();
     if let Some(arg) = doc.directive("x-lint") {
         config = config.with_directive(arg).map_err(|m| novafile_text::ParseError {
@@ -152,6 +155,10 @@ pub fn lint_document(src: &str, config: &Config) -> Result<Vec<Finding>, novafil
             message: m,
             fix: None,
         })?;
+    }
+
+    if doc.is_template() {
+        return Ok(template::lint(src, &doc, &config));
     }
 
     let value = doc.body.to_value().map_err(|m| novafile_text::ParseError {

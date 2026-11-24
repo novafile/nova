@@ -226,3 +226,25 @@ fn strip_at(v: Value, path: &mut Vec<Segment>, marks: &mut Vec<ClassMark>, depth
         other => other,
     })
 }
+
+/// `v` without any wrapper, at any depth, and the strongest class they had.
+///
+/// # Errors
+///
+/// Fails if `v` nests more deeply than [`MAX_DEPTH`].
+pub(crate) fn clear(v: Value) -> Result<(Value, Option<Class>), TemplateError> {
+    let class = class_in(&v);
+    if class.is_none() {
+        return Ok((v, None));
+    }
+
+    Ok((strip(v, &mut Vec::new())?, class))
+}
+
+/// The error for a template that branches on, or selects by, a classified
+/// value (0009.7). The message names the construct, never the value.
+pub(crate) fn branches<T>(what: &str) -> Result<T, TemplateError> {
+    err(format!(
+        "{what} depends on a classified value; this is not allowed when classified values are redacted"
+    ))
+}

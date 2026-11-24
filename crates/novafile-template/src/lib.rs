@@ -1,12 +1,28 @@
-//! NOVA templates (spec §9).
+//! NOVA templates (spec §9, template language 0.2).
 //!
 //! A template is a document whose first directive is `@template`. Rendering
 //! turns it into a plain value; nothing downstream (schemas, hashing, binary
-//! encoding, patches) ever sees template constructs. The language is
-//! deliberately *total*: no recursion, no user-defined functions, no
-//! arithmetic, iteration only over finite values, and an output budget — so
-//! every render terminates with bounded output. Templates substitute values,
-//! never text, so there is no indentation or escaping to get wrong.
+//! encoding, patches) ever sees template constructs. Templates substitute
+//! values, never text, so there is no indentation or escaping to get wrong.
+//!
+//! Template language 0.2 adds an expression language (references, calls,
+//! `or`/`and`/`not`, comparisons, `+`/`-`/`*` and `[for …]`/`{for …}`
+//! comprehensions), user functions declared with `@def`, and a standard
+//! library of 40 built-in functions ([`BUILTINS`]). The language stays
+//! deliberately *total*: a function can only call built-ins and functions
+//! defined above it, loops only iterate over values that already exist, and
+//! every render is bounded by an output budget and a step budget
+//! ([`Limits`]), so every render terminates.
+//!
+//! Records iterate by key in UTF-8 byte order, maps and sets in canonical
+//! order (spec §2.12) and lists and tuples in order, in `@for`, in
+//! comprehensions and in every built-in that walks a collection, so equal
+//! arguments always render to equal values.
+//!
+//! `lower`, `upper` and `trim` use the Unicode tables of the Rust standard
+//! library this crate is compiled with ([`char::UNICODE_VERSION`]). Template
+//! language 0.2 pins Unicode 17.0.0; results differ only for code points whose
+//! case mapping or `White_Space` property changed between the versions.
 //!
 //! [`render_redacted`] also knows classified values (proposal 0009.7). A
 //! value that comes from an imported document through a `@personal` or
@@ -14,18 +30,23 @@
 //! output then holds placeholders in place of these values, unless the mode
 //! reveals them. The `taint` module tells how.
 
+mod builtins;
+mod eval;
+mod json;
+mod ops;
 mod taint;
 
-use novafile_schema::{Class, RedactKey, Redacted, Reveal, SCHEMA_BUDGET, Schema, parse_type_within, redact};
-use novafile_text::ast::{Cond, Entry, ForHead, Item, Key, Node, Part};
-use novafile_text::path::step;
-use novafile_text::{Path, Segment, parse_document};
+pub use builtins::BUILTINS;
+
+use eval::{Eval, Func};
+use novafile_schema::{RedactKey, Redacted, Reveal, SCHEMA_BUDGET, Schema, parse_type_within, redact};
+use novafile_text::ast::{Decl, Node, TemplateHeader};
+use novafile_text::parse_document;
 use novafile_value::{Record, Value};
 use std::cell::Cell;
-use std::collections::HashSet;
 use std::fmt;
-use std::fmt::Write as _;
 use std::path::{Component, PathBuf};
+use std::rc::Rc;
 
 /// A template that failed to parse, bind its arguments, import, or evaluate; the message
 /// says why.
@@ -131,11 +152,15 @@ impl Loader for FsLoader {
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     /// Maximum number of value nodes produced, counting every copy (guards against exponential
-    /// `@let` reuse).
+    /// `@let` reuse) and the elements, fields and entries of every collection an expression
+    /// builds, intermediate ones included.
     pub max_nodes: usize,
     /// Maximum total bytes of string and byte-string content produced, counting every copy
     /// (guards against strings doubled by repeated `${}` interpolation).
     pub max_bytes: usize,
+    /// Maximum number of evaluation steps (operators, conditions, loop iterations and calls,
+    /// counted exactly as in proposal 0006 §0006.7), across the render and its imports.
+    pub max_steps: u64,
     /// Maximum nesting depth of `@import` chains.
     pub max_import_depth: usize,
 }
@@ -145,6 +170,7 @@ impl Default for Limits {
         Limits {
             max_nodes: 1_000_000,
             max_bytes: 64 << 20,
+            max_steps: 10_000_000,
             max_import_depth: 16,
         }
     }
@@ -156,7 +182,7 @@ pub struct Options<'a> {
     pub loader: &'a dyn Loader,
     /// Schema whose named types parameters may use (e.g. `list<Service>`).
     pub schema: Option<&'a Schema>,
-    /// Output budget and import depth.
+    /// Output and step budgets and import depth.
     pub limits: Limits,
 }
 
@@ -174,16 +200,16 @@ impl Default for Options<'_> {
 ///
 /// This function does not know classified values: it does not ask the
 /// loader for schemas, and it shows every value in clear. It is the
-/// rendering for deployment, which 0009.7 says must reveal anyway, and it
-/// keeps its behavior from before proposal 0009. Use [`render_redacted`] for
-/// output that a person or agent reads.
+/// rendering for deployment, which 0009.7 says must reveal anyway. Use
+/// [`render_redacted`] for output that a person or agent reads.
 ///
 /// # Errors
 ///
-/// Returns a [`TemplateError`] if `src` is not a valid template; an argument is
-/// unknown, missing, or does not match its `@param` type (resolved against
-/// `opts.schema`); an import fails, cycles, or nests too deeply; evaluation
-/// fails; or the output exceeds the node or byte budget in `opts.limits`.
+/// Returns a [`TemplateError`] if `src` is not a valid template (including a `@def` that
+/// calls itself or a function defined below it); an argument is unknown, missing, or does not
+/// match its `@param` type (resolved against `opts.schema`); an import fails, cycles, or nests
+/// too deeply; evaluation fails; or the render exceeds the node, byte or step budget in
+/// `opts.limits`.
 pub fn render(src: &str, args: &Record, opts: &Options) -> Result<Value, TemplateError> {
     let run = Run {
         opts,
@@ -212,8 +238,9 @@ pub struct Redaction<'a> {
 /// An imported data document that declares `@schema` is resolved against
 /// the schema that [`Loader::schema`] gives. Its `@personal` and `@secret`
 /// values are classified, and so is every value that the template derives
-/// from them: a reference into them, and a string that interpolates one,
-/// gets the strongest class among its parts. The template itself and its
+/// from them: a reference into them, and the result of an operator, a
+/// built-in function or an interpolation with a classified operand, which
+/// gets the strongest class among its operands. The template itself and its
 /// arguments classify nothing.
 ///
 /// # Errors
@@ -221,9 +248,10 @@ pub struct Redaction<'a> {
 /// As [`render`]. Also fails if an imported document declares a `@schema`
 /// that the loader cannot give (except when `mode` reveals everything), or
 /// does not match it; and, unless `mode` shows the class, if the template
-/// branches on a classified value: an `@if` condition, an `@for` or a spread
-/// over a classified container, a selector that compares a classified
-/// value, or a classified record key, set element or map key.
+/// branches on a classified value: a condition or filter, a loop, a spread
+/// or an `and`/`or` over a classified value, a selector that compares a
+/// classified value, a presence test inside a classified container, or a
+/// classified record key, comprehension key, set element or map key.
 pub fn render_redacted(src: &str, args: &Record, opts: &Options, mode: &Redaction) -> Result<Redacted, TemplateError> {
     let run = Run {
         opts,
@@ -248,9 +276,9 @@ struct Run<'r, 'o> {
 }
 
 /// Render `src`, identified by `id` when imported. `stack` holds the importing documents
-/// (for cycle detection) and `budget` the output produced so far, shared across imports.
+/// (for cycle detection) and `budget` the output and steps so far, shared across imports.
 fn render_inner(src: &str, id: Option<&str>, args: &Record, run: &Run, stack: &mut Vec<String>, budget: &mut Cost) -> Result<Value, TemplateError> {
-    let opts = run.opts;
+    let (opts, patterns) = (run.opts, &run.patterns);
     let where_ = || id.map(|i| format!(" in {i}")).unwrap_or_default();
     let doc = parse_document(src).map_err(|e| TemplateError(format!("{e}{}", where_())))?;
     let Some(h) = &doc.template else {
@@ -265,15 +293,21 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, run: &Run, stack: &m
         };
     };
 
-    let mut ev = Eval {
-        scopes: vec![Vec::new()],
-        budget,
-        limits: opts.limits,
-    };
-
-    // Parameters.
+    // Load-time checks, before any argument is bound.
+    check_calls(h, &doc.body).map_err(|e| TemplateError(format!("{}{}", e.0, where_())))?;
     let empty = Schema::default();
     let schema = opts.schema.unwrap_or(&empty);
+    let mut funcs = Vec::new();
+    for d in h.decls.iter().filter_map(|d| if let Decl::Def(d) = d { Some(d) } else { None }) {
+        let ty = |t: &str, what: &str| parse_type_within(t, patterns).map_err(|m| TemplateError(format!("@def {} {what}: {m}", d.name)));
+        let params = d.params.iter().map(|p| ty(&p.ty, &format!("parameter {}", p.name))).collect::<Result<_, _>>()?;
+        let result = d.result.as_deref().map(|t| ty(t, "result")).transpose()?;
+        funcs.push((d, params, result));
+    }
+
+    let mut ev = Eval::new(budget, opts.limits, schema, patterns);
+
+    // Parameters.
     for k in args.keys() {
         if !h.params.iter().any(|p| &p.name == k) {
             return err(format!("unknown parameter {k:?}{}", where_()));
@@ -281,10 +315,10 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, run: &Run, stack: &m
     }
 
     for p in &h.params {
-        let ty = parse_type_within(&p.ty, &run.patterns).map_err(|m| TemplateError(format!("@param {}: {m}", p.name)))?;
+        let ty = parse_type_within(&p.ty, patterns).map_err(|m| TemplateError(format!("@param {}: {m}", p.name)))?;
         let v = match (args.get(&p.name), &p.default) {
             (Some(v), _) => v.clone(),
-            (None, Some(d)) => ev.node(d)?,
+            (None, Some(d)) => ev.eval(d)?,
             (None, None) if p.optional => Value::Null,
             (None, None) => return err(format!("missing required parameter {:?}{}", p.name, where_())),
         };
@@ -302,7 +336,7 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, run: &Run, stack: &m
             })?
         };
 
-        ev.bind(&p.name, v)?;
+        ev.bind_global(&p.name, v)?;
     }
 
     // Imports.
@@ -320,18 +354,27 @@ fn render_inner(src: &str, id: Option<&str>, args: &Record, run: &Run, stack: &m
         }
 
         stack.push(id.unwrap_or("<root>").to_owned());
-        let v = render_inner(&isrc, Some(&iid), &Record::new(), run, stack, ev.budget)?;
+        let v = ev.with_budget(|budget| render_inner(&isrc, Some(&iid), &Record::new(), run, stack, budget))?;
         stack.pop();
-        ev.bind(&imp.alias, v)?;
+        ev.bind_global(&imp.alias, v)?;
     }
 
-    // Lets, in order; each may use parameters, imports and earlier lets.
-    for l in &h.lets {
-        let v = ev.node(&l.value)?;
-        ev.bind(&l.name, v)?;
+    // Lets and defs, in order; each may use parameters, imports and earlier declarations.
+    let mut funcs = funcs.into_iter();
+    for d in &h.decls {
+        match d {
+            Decl::Let(l) => {
+                let v = ev.eval(&l.value)?;
+                ev.bind_global(&l.name, v)?;
+            }
+            Decl::Def(_) => {
+                let (def, params, result) = funcs.next().expect("one entry per @def");
+                ev.define(Rc::new(Func::new(def, params, result)));
+            }
+        }
     }
 
-    ev.node(&doc.body)
+    ev.place(&doc.body)
 }
 
 /// The data document `v`, identified by `id`, resolved against the schema
@@ -367,36 +410,82 @@ fn classified(mut v: Value, reference: &str, id: Option<&str>, loader: &dyn Load
     Ok(v)
 }
 
-/// The error for a template that branches on, or selects by, a classified
-/// value (0009.7). The message names the construct, never the value.
-fn branches_on_classified<T>(what: &str) -> Result<T, TemplateError> {
-    err(format!(
-        "{what} depends on a classified value; this is not allowed when classified values are redacted"
-    ))
+/// Check every call in the header and body: a `@def` may call only built-ins and functions
+/// defined above it, so a call of itself or of a later function is an error; so is a call of a
+/// name that is neither, and a function defined twice.
+fn check_calls(h: &TemplateHeader, body: &Node) -> Result<(), TemplateError> {
+    let defs: Vec<&str> = h
+        .decls
+        .iter()
+        .filter_map(|d| if let Decl::Def(d) = d { Some(d.name.as_str()) } else { None })
+        .collect();
+    // Calls in `n`, written where the first `above` functions exist, inside function `own`.
+    let check = |n: &Node, above: usize, own: Option<&str>, what: &str| -> Result<(), TemplateError> {
+        let mut bad = None;
+        n.walk(&mut |x| {
+            if let Node::Call(c) = x
+                && bad.is_none()
+            {
+                let name = c.name.as_str();
+                if own == Some(name) {
+                    bad = Some(format!("{what} calls itself; recursion is not allowed"));
+                } else if defs[above..].contains(&name) && !defs[..above].contains(&name) {
+                    bad = Some(format!(
+                        "{what} calls {name}, which is defined below it; a @def can only be called below its definition"
+                    ));
+                } else if !defs[..above].contains(&name) && !BUILTINS.contains(&name) {
+                    bad = Some(format!("{what} calls unknown function {name}"));
+                }
+            }
+        });
+        bad.map_or(Ok(()), err)
+    };
+
+    for p in &h.params {
+        if let Some(d) = &p.default {
+            check(d, 0, None, &format!("@param {}", p.name))?;
+        }
+    }
+
+    let mut above = 0;
+    for d in &h.decls {
+        match d {
+            Decl::Let(l) => check(&l.value, above, None, &format!("@let {}", l.name))?,
+            Decl::Def(d) => {
+                if defs[..above].contains(&d.name.as_str()) {
+                    return err(format!("@def {} is already defined", d.name));
+                }
+
+                let what = format!("@def {}", d.name);
+                for p in &d.params {
+                    if let Some(x) = &p.default {
+                        check(x, above, Some(&d.name), &what)?;
+                    }
+                }
+
+                check(&d.body, above, Some(&d.name), &what)?;
+                above += 1;
+            }
+        }
+    }
+
+    check(body, above, None, "the template body")
 }
 
-/// Evaluator state for one template.
-struct Eval<'b> {
-    /// Bindings, innermost scope last; `@for` pushes a scope per iteration.
-    scopes: Vec<Vec<(String, Value)>>,
-    /// Output produced so far, shared with importing templates.
-    budget: &'b mut Cost,
-    /// The node and byte maxima.
-    limits: Limits,
-}
-
-/// Output produced: value nodes and string/byte-string content bytes.
+/// Output produced and work done: value nodes, string/byte-string content bytes and steps.
 #[derive(Clone, Copy, Default)]
-struct Cost {
+pub(crate) struct Cost {
     /// Value nodes, containers and their contents alike.
-    nodes: usize,
+    pub(crate) nodes: usize,
     /// Bytes of string and byte-string content.
-    bytes: usize,
+    pub(crate) bytes: usize,
+    /// Evaluation steps (only accumulated in the shared budget).
+    pub(crate) steps: u64,
 }
 
 impl Cost {
     /// The nodes and content bytes of `v`.
-    fn of(v: &Value) -> Cost {
+    pub(crate) fn of(v: &Value) -> Cost {
         let mut c = Cost::default();
         c.add(v);
         c
@@ -417,383 +506,5 @@ impl Cost {
             Value::Variant(_, Some(p)) => self.add(p),
             _ => {}
         }
-    }
-}
-
-impl Eval<'_> {
-    /// Count `nodes` produced nodes and `bytes` content bytes against the budget; fails once
-    /// either limit is exceeded.
-    fn charge(&mut self, nodes: usize, bytes: usize) -> Result<(), TemplateError> {
-        self.budget.nodes += nodes;
-        self.budget.bytes += bytes;
-        if self.budget.nodes > self.limits.max_nodes {
-            return err(format!("template output exceeds the limit of {} nodes", self.limits.max_nodes));
-        }
-
-        if self.budget.bytes > self.limits.max_bytes {
-            return err(format!(
-                "template output exceeds the limit of {} bytes of string and bytes content",
-                self.limits.max_bytes
-            ));
-        }
-
-        Ok(())
-    }
-
-    /// Bind `name` in the innermost scope; redefining a name in the same scope is an error.
-    fn bind(&mut self, name: &str, v: Value) -> Result<(), TemplateError> {
-        let scope = self.scopes.last_mut().unwrap();
-        if scope.iter().any(|(n, _)| n == name) {
-            return err(format!("{name:?} is already defined"));
-        }
-
-        scope.push((name.to_owned(), v));
-        Ok(())
-    }
-
-    /// Resolve a `$name.path` reference, searching from the innermost scope outwards. The
-    /// result gets the strongest class of the classified values on the way to it.
-    fn lookup(&mut self, p: &Path) -> Result<Value, TemplateError> {
-        let Some((Segment::Field(name), rest)) = p.0.split_first() else {
-            return err(format!("invalid reference ${p}"));
-        };
-
-        let base = self
-            .scopes
-            .iter()
-            .rev()
-            .flat_map(|s| s.iter().rev())
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v)
-            .ok_or_else(|| TemplateError(format!("undefined reference ${name}")))?;
-        let mut cur = base;
-        let mut class = None;
-        for (i, seg) in rest.iter().enumerate() {
-            if let Some((c, inner)) = taint::tainted(cur) {
-                class = class.max(Some(c));
-                cur = inner;
-            }
-
-            // Inside a classified container, a selector that compares values (or map keys) is
-            // an equality test on classified data: a hit and a miss would differ.
-            let compares = matches!(seg, Segment::Match(..) | Segment::Key(_)) || matches!(cur, Value::Map(_));
-            if (class.is_some() && compares) || taint::selects_classified(cur, seg) {
-                return branches_on_classified(&format!("the selector in ${p}"));
-            }
-
-            let here = || Path(rest[..i].to_vec());
-            let upto = || Path(rest[..=i].to_vec());
-            cur = match seg {
-                Segment::All | Segment::Filter(..) | Segment::Project(_) => {
-                    return err(format!("${p}: {}", novafile_text::PathError::NotSingular(Path(rest.to_vec()))));
-                }
-                _ => match step(cur, seg, &here, &upto) {
-                    Ok(next) => next,
-                    // Inside a classified container, a missing field must look like a present one:
-                    // an error would tell which fields are set (proposal 0009.5.2).
-                    Err(novafile_text::PathError::NotFound(_)) if class.is_some() => return self.charged(taint::taint_opt(Value::Null, class)),
-                    Err(e) => return err(format!("${p}: {e}")),
-                },
-            };
-        }
-
-        self.charged(taint::taint_opt(cur.clone(), class))
-    }
-
-    /// Charge the cost of the value `v` that a reference yields, and return it.
-    fn charged(&mut self, v: Value) -> Result<Value, TemplateError> {
-        let c = Cost::of(&v);
-        self.charge(c.nodes, c.bytes)?;
-        Ok(v)
-    }
-
-    /// Interpolate a string: references must be scalars and are inserted in their text form.
-    /// Also returns the strongest class among the references.
-    fn text(&mut self, parts: &[Part]) -> Result<(String, Option<Class>), TemplateError> {
-        let mut s = String::new();
-        let mut class = None;
-        for p in parts {
-            match p {
-                Part::Text(t) => {
-                    // Referenced values are charged by `lookup`; literal text is charged here.
-                    self.charge(0, t.len())?;
-                    s.push_str(t);
-                }
-                Part::Ref(r) => {
-                    let (v, own) = taint::untaint(self.lookup(r)?);
-                    class = class.max(own);
-                    match &v {
-                        Value::String(x) => s.push_str(x),
-                        Value::Int(i) => s.push_str(&i.to_string()),
-                        Value::Float(f) => {
-                            let _ = write!(s, "{f:?}");
-                        }
-                        Value::Decimal(d) => s.push_str(&d.to_string()),
-                        Value::Rational(r) => s.push_str(&r.to_string()),
-                        Value::Bool(b) => s.push_str(&b.to_string()),
-                        Value::Timestamp(t) => s.push_str(&t.to_string()),
-                        Value::Duration(d) => s.push_str(&d.to_string()),
-                        Value::Variant(t, None) => s.push_str(t),
-                        other => return err(format!("cannot interpolate a {} (${r}); only scalars can appear in strings", other.kind())),
-                    }
-                }
-            }
-        }
-
-        Ok((s, class))
-    }
-
-    /// Evaluate `n` as an operand of an `@if` condition, which must not be classified.
-    fn operand(&mut self, n: &Node) -> Result<Value, TemplateError> {
-        let v = self.node(n)?;
-        if taint::class_in(&v).is_some() {
-            return branches_on_classified("an @if condition");
-        }
-
-        Ok(v)
-    }
-
-    /// For a comparison with the literal `null`, whether the other side is present: a missing
-    /// field counts as absent. Presence is not classified (proposal 0009.6.1), so a classified
-    /// value may be tested this way, but not a field inside a classified container. `None` for
-    /// every other comparison.
-    fn presence(&mut self, a: &Node, b: &Node) -> Result<Option<bool>, TemplateError> {
-        let ((Node::Lit(Value::Null), other) | (other, Node::Lit(Value::Null))) = (a, b) else {
-            return Ok(None);
-        };
-
-        if let Node::Ref(p) = other
-            && let Some((Segment::Field(last), parent)) = p.0.split_last()
-            && !parent.is_empty()
-        {
-            // Which fields a classified container holds is classified, like the container.
-            let parent = self.lookup(&Path(parent.to_vec()))?;
-            if taint::tainted(&parent).is_some() {
-                return branches_on_classified("a presence test inside a classified value");
-            }
-
-            if let Value::Record(r) = &parent
-                && r.get(last).is_none()
-            {
-                return Ok(Some(false));
-            }
-        }
-
-        let v = self.node(other)?;
-        let inner = taint::tainted(&v).map_or(&v, |(_, inner)| inner);
-        Ok(Some(*inner != Value::Null))
-    }
-
-    /// Evaluate an `@if` condition; plain tests must be bools.
-    fn cond(&mut self, c: &Cond) -> Result<bool, TemplateError> {
-        Ok(match c {
-            Cond::Test(n) => match self.operand(n)? {
-                Value::Bool(b) => b,
-                other => {
-                    return err(format!(
-                        "conditions must be bool, found {} (compare explicitly, e.g. `$x != null`)",
-                        other.kind()
-                    ));
-                }
-            },
-            Cond::Eq(a, b) => match self.presence(a, b)? {
-                Some(present) => !present,
-                None => self.operand(a)? == self.operand(b)?,
-            },
-            Cond::Ne(a, b) => match self.presence(a, b)? {
-                Some(present) => present,
-                None => self.operand(a)? != self.operand(b)?,
-            },
-            Cond::Not(c) => !self.cond(c)?,
-            Cond::And(a, b) => self.cond(a)? && self.cond(b)?,
-            Cond::Or(a, b) => self.cond(a)? || self.cond(b)?,
-        })
-    }
-
-    /// The body of the first `@if` / `@else if` arm whose condition holds, else `els`.
-    fn pick<'a, T>(&mut self, arms: &'a [(Cond, Vec<T>)], els: &'a [T]) -> Result<&'a [T], TemplateError> {
-        for (c, body) in arms {
-            if self.cond(c)? {
-                return Ok(body);
-            }
-        }
-
-        Ok(els)
-    }
-
-    /// Run `body` once per element of the iterable, with loop variables in a new scope.
-    fn each<T>(&mut self, head: &ForHead, mut body: impl FnMut(&mut Self) -> Result<T, TemplateError>) -> Result<Vec<T>, TemplateError> {
-        let iter = self.node(&head.iter)?;
-        if taint::tainted(&iter).is_some() {
-            return branches_on_classified("an @for loop");
-        }
-
-        let pairs: Vec<(Value, Value)> = match iter {
-            Value::List(l) | Value::Tuple(l) | Value::Set(l) => l.into_iter().enumerate().map(|(i, v)| (Value::Int(i as i128), v)).collect(),
-            Value::Record(r) => r.into_entries().into_iter().map(|(k, v)| (Value::String(k), v)).collect(),
-            Value::Map(m) => m,
-            other => return err(format!("@for needs a list, set, tuple, record or map, found {}", other.kind())),
-        };
-
-        let mut out = Vec::with_capacity(pairs.len());
-        for (k, v) in pairs {
-            self.scopes.push(Vec::new());
-            if let Some(i) = &head.index {
-                self.bind(i, k)?;
-            }
-
-            self.bind(&head.var, v)?;
-            let r = body(self);
-            self.scopes.pop();
-            out.push(r?);
-        }
-
-        Ok(out)
-    }
-
-    /// Evaluate list items into `out`, expanding spreads, `@if` and `@for`.
-    fn items(&mut self, items: &[Item], out: &mut Vec<Value>) -> Result<(), TemplateError> {
-        for it in items {
-            match it {
-                Item::Node(n) => out.push(self.node(n)?),
-                Item::Spread(n) => match self.spread(n)? {
-                    Value::List(l) | Value::Tuple(l) | Value::Set(l) => out.extend(l),
-                    other => return err(format!("cannot spread a {} into a list", other.kind())),
-                },
-                Item::If(arms, e) => {
-                    let branch = self.pick(arms, e)?;
-                    self.items(branch, out)?;
-                }
-                Item::For(h, body) => {
-                    for chunk in self.each(h, |ev| {
-                        let mut v = Vec::new();
-                        ev.items(body, &mut v)?;
-                        Ok(v)
-                    })? {
-                        out.extend(chunk);
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Later entries win, except that two explicit fields may not share a key.
-    fn entries(&mut self, entries: &[Entry], out: &mut Record, explicit: &mut HashSet<String>) -> Result<(), TemplateError> {
-        for e in entries {
-            match e {
-                Entry::Field(k, n) => {
-                    let key = match k {
-                        Key::Lit(s) => s.clone(),
-                        Key::Interp(parts) => match self.text(parts)? {
-                            (_, Some(_)) => return branches_on_classified("a record key"),
-                            (k, None) => k,
-                        },
-                    };
-
-                    if explicit.contains(&key) {
-                        return err(format!("duplicate key {key:?}"));
-                    }
-
-                    let v = self.node(n)?;
-                    out.set(key.clone(), v);
-                    explicit.insert(key);
-                }
-                Entry::Spread(n) => match self.spread(n)? {
-                    Value::Record(r) => {
-                        for (k, v) in r.into_entries() {
-                            explicit.remove(&k);
-                            out.set(k, v);
-                        }
-                    }
-                    other => return err(format!("cannot spread a {} into a record", other.kind())),
-                },
-                Entry::If(arms, e) => {
-                    let branch = self.pick(arms, e)?;
-                    self.entries(branch, out, explicit)?;
-                }
-                Entry::For(h, body) => {
-                    // Each iteration contributes entries to the same record.
-                    let parts = self.each(h, |ev| {
-                        let mut r = Record::new();
-                        let mut ex = HashSet::new();
-                        ev.entries(body, &mut r, &mut ex)?;
-                        Ok(r)
-                    })?;
-
-                    for r in parts {
-                        for (k, v) in r.into_entries() {
-                            if !explicit.insert(k.clone()) {
-                                return err(format!("duplicate key {k:?} produced by @for"));
-                            }
-
-                            out.set(k, v);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Evaluate the operand of a spread, which must not be classified as a whole: its length
-    /// or keys would show in the output.
-    fn spread(&mut self, n: &Node) -> Result<Value, TemplateError> {
-        let v = self.node(n)?;
-        if taint::tainted(&v).is_some() {
-            return branches_on_classified("a spread");
-        }
-
-        Ok(v)
-    }
-
-    /// Evaluate a set element or map key, which must not be classified: a duplicate
-    /// is an error, so the result would tell whether two values are equal.
-    fn unique(&mut self, n: &Node, what: &str) -> Result<Value, TemplateError> {
-        let v = self.node(n)?;
-        if taint::class_in(&v).is_some() {
-            return branches_on_classified(what);
-        }
-
-        Ok(v)
-    }
-
-    /// Evaluate a node to a value, charging every produced node against the budget.
-    fn node(&mut self, n: &Node) -> Result<Value, TemplateError> {
-        self.charge(1, 0)?;
-        Ok(match n {
-            Node::Lit(v) => {
-                let c = Cost::of(v);
-                self.charge(c.nodes - 1, c.bytes)?;
-                v.clone()
-            }
-            Node::List(items) => {
-                let mut out = Vec::new();
-                self.items(items, &mut out)?;
-                Value::List(out)
-            }
-            Node::Tuple(items) => Value::Tuple(items.iter().map(|n| self.node(n)).collect::<Result<_, _>>()?),
-            Node::Set(items) => Value::set(items.iter().map(|n| self.unique(n, "a set element")).collect::<Result<_, _>>()?).map_err(TemplateError)?,
-            Node::Map(entries) => Value::map(
-                entries
-                    .iter()
-                    .map(|(k, v)| Ok((self.unique(k, "a map key")?, self.node(v)?)))
-                    .collect::<Result<_, TemplateError>>()?,
-            )
-            .map_err(TemplateError)?,
-            Node::Record(entries) => {
-                let mut r = Record::new();
-                self.entries(entries, &mut r, &mut HashSet::new())?;
-                Value::Record(r)
-            }
-            Node::Variant(t, p) => Value::Variant(t.clone(), p.as_ref().map(|p| self.node(p).map(Box::new)).transpose()?),
-            Node::Ref(p) => self.lookup(p)?,
-            Node::Interp(parts) => {
-                let (s, class) = self.text(parts)?;
-                taint::taint_opt(Value::String(s), class)
-            }
-        })
     }
 }

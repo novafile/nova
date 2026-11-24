@@ -172,3 +172,25 @@ fn std_lints() {
     let in_schema = src.replacen("\n@import", "\n@x-lint enable=std-hint\n@import", 1);
     assert!(lint_schema(&in_schema, &Config::default()).unwrap().iter().any(|f| f.rule == "std-hint"));
 }
+
+#[test]
+fn template_rules() {
+    let src = "@template\n@param name: string\n@param p: string\n@def lower(s: string) = $s\n@def unused(x: int) = $x\na: \"${upper(name)}\"\nb: $lower(x)\nc: $matches($name, $p)\nd: $matches($name, \"[a-z]+\")\n";
+    let f = lint_document(src, &Config::default()).unwrap();
+    let rules: Vec<(&str, Level)> = f.iter().map(|f| (f.rule, f.level)).collect();
+    assert_eq!(
+        rules,
+        [
+            ("shadowed-builtin", Level::Warning),
+            ("unused-def", Level::Hint),
+            ("bare-argument", Level::Warning),
+            ("dynamic-pattern", Level::Hint),
+        ],
+        "{f:#?}"
+    );
+    assert_eq!(&src[f[0].start..f[0].end], "@def lower");
+    assert_eq!(&src[f[2].start..f[2].end], "upper");
+    assert_eq!(&src[f[3].start..f[3].end], "$matches");
+    let f = lint_document(&src.replacen('\n', "\n@x-lint allow=unused-def,bare-argument\n", 1), &Config::default()).unwrap();
+    assert_eq!(f.len(), 2, "{f:#?}");
+}
