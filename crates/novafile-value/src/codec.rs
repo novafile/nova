@@ -144,6 +144,40 @@ fn unzigzag(v: u128) -> i128 {
     (v >> 1).cast_signed() ^ -(v & 1).cast_signed()
 }
 
+/// Read an unsigned LEB128 varint from `buf` at `*pos`, and advance `*pos` past
+/// every byte read, also on failure.
+///
+/// Rejects values that overflow `u128` and non-minimal encodings (a trailing
+/// zero byte), so each integer has exactly one encoding.
+fn read_varint(buf: &[u8], pos: &mut usize) -> Result<u128, &'static str> {
+    let mut v: u128 = 0;
+    let mut shift = 0;
+    loop {
+        let b = *buf.get(*pos).ok_or("unexpected end of input")?;
+        *pos += 1;
+        // Fast path: most lengths, counts and small integers fit one byte.
+        if shift == 0 && b & 0x80 == 0 {
+            return Ok(u128::from(b));
+        }
+
+        // The 19th byte holds bits 126-127 and must be the last.
+        if shift == 126 && (b & 0x7F > 0x03 || b & 0x80 != 0) {
+            return Err("varint overflow");
+        }
+
+        v |= u128::from(b & 0x7F) << shift;
+        if b & 0x80 == 0 {
+            if b == 0 && shift > 0 {
+                return Err("non-minimal varint");
+            }
+
+            return Ok(v);
+        }
+
+        shift += 7;
+    }
+}
+
 /// Encoder state for one [`encode`] call over a value borrowed for `'v`.
 struct Encoder<'v> {
     /// Output switches.
@@ -461,36 +495,9 @@ impl<'a> Decoder<'a> {
         Ok(s)
     }
 
-    /// Read an unsigned LEB128 varint.
-    ///
-    /// Rejects values that overflow `u128` and non-minimal encodings (a trailing
-    /// zero byte), so each integer has exactly one encoding.
+    /// Read an unsigned LEB128 varint; see [`read_varint`].
     fn varint(&mut self) -> Result<u128, DecodeError> {
-        let mut v: u128 = 0;
-        let mut shift = 0;
-        loop {
-            let b = self.byte()?;
-            // Fast path: most lengths, counts and small integers fit one byte.
-            if shift == 0 && b & 0x80 == 0 {
-                return Ok(u128::from(b));
-            }
-
-            // The 19th byte holds bits 126-127 and must be the last.
-            if shift == 126 && (b & 0x7F > 0x03 || b & 0x80 != 0) {
-                return self.err("varint overflow");
-            }
-
-            v |= u128::from(b & 0x7F) << shift;
-            if b & 0x80 == 0 {
-                if b == 0 && shift > 0 {
-                    return self.err("non-minimal varint");
-                }
-
-                return Ok(v);
-            }
-
-            shift += 7;
-        }
+        read_varint(self.buf, &mut self.pos).or_else(|msg| self.err(msg))
     }
 
     /// Read an element count, rejecting counts larger than the remaining input
@@ -1057,6 +1064,10 @@ fn decode_whole<'a, T: Build<'a>>(buf: &'a [u8]) -> Result<T, DecodeError> {
 
     Ok(v)
 }
+
+/// Kani proofs for the integer coding helpers.
+#[cfg(kani)]
+mod proofs;
 
 #[cfg(test)]
 mod tests {

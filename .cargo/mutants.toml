@@ -1,0 +1,8 @@
+# cargo-mutants settings; run through `task mutants` for the resource caps.
+
+# Kani harnesses compile only under `cfg(kani)`, so mutating them proves nothing.
+exclude_globs = ["**/proofs.rs"]
+# Parallel jobs under a CPU quota run slower than the unconstrained baseline.
+timeout_multiplier = 3.0
+# Skip gitignored paths (`target/`, `.claude/` worktrees) when copying the tree for each job.
+gitignore = true

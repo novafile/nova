@@ -471,6 +471,10 @@ impl fmt::Display for Duration {
     }
 }
 
+/// Kani proofs for the calendar and range helpers.
+#[cfg(kani)]
+mod proofs;
+
 #[cfg(test)]
 mod tests {
     use super::*;

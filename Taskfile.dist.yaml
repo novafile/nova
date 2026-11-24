@@ -1,5 +1,18 @@
 version: '3'
 
+vars:
+  # Resource caps for the heavy verification tasks: override with `task kani MEM=16G CPU=800% JOBS=8`.
+  MEM: '{{ .MEM | default "8G" }}'
+  CPU: '{{ .CPU | default "400%" }}'
+  JOBS: '{{ .JOBS | default "4" }}'
+  # Runs a command in a transient cgroup: a hard memory cap without swap, and a CPU quota.
+  BOUNDED: systemd-run --user --scope --quiet -p MemoryMax={{.MEM}} -p MemorySwapMax=0 -p CPUQuota={{.CPU}}
+
+env:
+  CARGO_BUILD_JOBS: '{{.JOBS}}'
+  # /tmp is often tmpfs, which the memory cap counts; keep scratch files on disk.
+  TMPDIR: '{{.ROOT_DIR}}/target/tmp'
+
 tasks:
   default:
     cmds:
@@ -30,3 +43,37 @@ tasks:
         find . -path ./target -prune -o -path '*/fuzz/Cargo.toml' -print | while read -r m; do
           cargo clean --manifest-path "$m"
         done
+
+  test:prop:
+    desc: Run the property tests under the memory and CPU caps (PROPTEST_CASES=4096 for a deep run)
+    preconditions:
+      - sh: command -v systemd-run
+        msg: "systemd-run not found — the bounded tasks need systemd with a user manager"
+    cmds:
+      - mkdir -p target/tmp
+      - '{{.BOUNDED}} cargo test -p novafile-value -p novafile-binary -p novafile-text -p novafile-patch --test prop -- --test-threads={{.JOBS}} {{.CLI_ARGS}}'
+
+  kani:
+    desc: Prove the Kani harnesses in novafile-value under the memory and CPU caps
+    preconditions:
+      - sh: command -v systemd-run
+        msg: "systemd-run not found — the bounded tasks need systemd with a user manager"
+      - sh: command -v cargo-kani
+        msg: "cargo-kani not found — cargo install --locked kani-verifier && cargo kani setup"
+    cmds:
+      - mkdir -p target/tmp
+      - '{{.BOUNDED}} cargo kani -p novafile-value -Z unstable-options --harness-timeout 300s -j {{.JOBS}} --output-format terse {{.CLI_ARGS}}'
+
+  mutants:
+    desc: Run cargo-mutants on the core crates under the memory and CPU caps (pass `-- -p <crate>` to narrow)
+    preconditions:
+      - sh: command -v systemd-run
+        msg: "systemd-run not found — the bounded tasks need systemd with a user manager"
+      - sh: command -v cargo-mutants
+        msg: "cargo-mutants not found — cargo install --locked cargo-mutants"
+    env:
+      # Mutant runs only need to kill mutants; deep runs belong to `test:prop`.
+      PROPTEST_CASES: '64'
+    cmds:
+      - mkdir -p target/tmp
+      - '{{.BOUNDED}} cargo mutants -j {{div .JOBS 2}} {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}-p novafile-value -p novafile-binary{{end}}'

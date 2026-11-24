@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 823670e9a968c73c7390186314fa91a37e7a52df7a2fd82193992cb4233ceff5 # shrinks to f = Frame { schema: Some("a@0.0.0"), value: Record(Record { entries: [("ࠀ", Float(0.0)), ("𐀀", Null), ("0", Int(-332306998946228968225951765070086145)), ("ࠀࠀA Aࠀ𐀀𐀀", Bytes([0, 0, 0, 0, 0]))] }), meta: false }, at = Index(1036333936725255709), bits = 26
