@@ -44,6 +44,10 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
+      # ring (via ureq's rustls) compiles C, which needs a musl C compiler for this target.
+      - name: Install musl-gcc
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
       - run: cargo install cargo-auditable --locked --version "$CARGO_AUDITABLE_VERSION"
         shell: bash
       - run: cargo auditable build --release --locked --target "$TARGET" -p novafile-cli -p novafile-lsp
