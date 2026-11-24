@@ -205,9 +205,44 @@ Lookup is offline: built-in schemas, then catalogs (`--catalog`, `NOVA_CATALOG`,
 
 `nvf patch -w` and `nvf lint --fix` lock the file while they read, change and rewrite it, so parallel patches are not lost. The new contents are written to a temporary file and renamed over the old one. On Unix the lock is on the file itself. On Windows it is a `<file>.lock` file next to it, which stays on disk: ignore it in version control with patterns such as `*.nova.lock` (not `*.lock`, which also matches `Cargo.lock`).
 
+### Imports and the standard library
+
+A schema can import the definitions of another schema version and refer to them as `alias.Name` ([proposal 0008](https://github.com/novafile/spec/blob/main/proposals/0008-schema-imports-and-standard-library.md)). Imports name an exact version; the tools fill in its fingerprint, so a schema's fingerprint pins what it imports. The standard library `novafile.dev/std` is bundled and never fetched. It holds fixed, regular string types: `Uuid`, `Uri`, `UriReference`, `Urn`, `Email`, `E164`, `Name`, `NonBlank`, `PortablePath`, `SemVer`, `Sha256Hex`, `CountryCode`, `CurrencyCode`, and the int type `Port`.
+
+```
+@schema acme.example/crm@1.0.0
+@import novafile.dev/std@0.1.0 as std
+
+record Contact:
+  id: std.Uuid @key
+  name: std.Name @len(..200)       # refines the std type: both constraints hold
+  files?: list<std.PortablePath>
+```
+
+Constraints apply along the whole chain of aliases, so a refinement adds to the type it refines. `nvf schema check` compares the definitions that imports bring in, so bumping an import is breaking only if a type the schema uses changed.
+
+### Classified values
+
+A schema can mark types `@secret` (credentials, keys) or `@personal` (data about people), also on whole records ([proposal 0009](https://github.com/novafile/spec/blob/main/proposals/0009-classified-values-and-redaction.md)). Every command that prints values then redacts them by default; the stored document is unchanged:
+
+```
+$ nvf get ops.nova 'services[id=api]'
+@revision k:3f9c0e5d…
+@scope services[id=api]
+id: api
+db_url: @redacted
+owner: @redacted("p:7c1e9302a4b1")
+```
+
+- `get`, `convert`, `diff`, `fmt --to …`, `hash`, `stats`, `validate --resolve`, printed `patch` results, `render` to stdout, and the language server's hover and outline all redact. `--reveal` shows everything, `--reveal=personal` personal data only, and `--reveal=PATH,…` the values at those paths.
+- Personal values get a keyed pseudonym (`p:…`), so equal values stay recognisable. Revisions of documents with hidden values print as opaque `k:` tokens, which `nvf patch` accepts as a base. The key comes from `NOVA_REDACT_KEY` (64 hex digits) or from `redact.key` next to the user schema cache, made on first use and readable only by you. Without a key, `nvf hash` refuses instead of printing a token that changes on every run.
+- Filters that compare a hidden value, patches that write a placeholder back, and templates that branch on a classified value are errors. Validation and conflict messages never quote classified values.
+- `nvf render -o FILE` writes the values in clear, since rendering for deployment needs them; output to stdout is redacted.
+- If a document's `@schema` cannot be found or the document does not validate, nothing can be classified. In agent mode the commands then refuse, unless you pass `--reveal` or `--no-schema`; otherwise they warn and show the values.
+
 ## Conventions and `nvf lint`
 
-JSON never settled on naming conventions; NOVA has them: `snake_case` keys and variants, and `@id` on all fields or on none. `nvf lint` checks documents and schemas, and `--fix` applies the safe fixes (renaming keys, typing timestamps) without disturbing comments. Data that mirrors an external JSON, YAML or TOML contract is marked `@compat json` (added automatically by `nvf convert`). For such data, names are left alone and anything the format cannot represent is flagged. Templates get their own rules: a `@def` that shadows a built-in, a bare word passed in an interpolation where a `$` reference was probably meant, patterns that are not literals, and functions that are never called. See [spec Appendix E](https://github.com/novafile/spec/blob/main/SPEC.md#appendix-e--conventions-and-lints).
+JSON never settled on naming conventions; NOVA has them: `snake_case` keys and variants, and `@id` on all fields or on none. `nvf lint` checks documents and schemas, and `--fix` applies the safe fixes (renaming keys, typing timestamps) without disturbing comments. Data that mirrors an external JSON, YAML or TOML contract is marked `@compat json` (added automatically by `nvf convert`). For such data, names are left alone and anything the format cannot represent is flagged. Schemas get rules for classified values (`classified-default`, an error: a default would put the value in the schema; `classified-hint` for fields such as `password` without a class) and for the standard library (`std-restated` for a local alias that repeats a std type; `std-hint`, off unless `@x-lint enable=std-hint`). Templates get their own rules: a `@def` that shadows a built-in, a bare word passed in an interpolation where a `$` reference was probably meant, patterns that are not literals, and functions that are never called. See [spec Appendix E](https://github.com/novafile/spec/blob/main/SPEC.md#appendix-e--conventions-and-lints).
 
 ```bash
 nvf lint config.nova examples/*.novs

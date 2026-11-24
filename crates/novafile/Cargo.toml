@@ -24,6 +24,7 @@ patch = ["dep:novafile-patch"]
 # Schemas; with `serde`, also `serde::from_str_with_schema`.
 schema = ["dep:novafile-schema", "novafile-serde?/schema"]
 derive = ["schema", "novafile-schema/derive"]
+# Needs Rust 1.100 (see novafile-facet); every other feature builds with the workspace rust-version.
 facet = ["dep:novafile-facet"]
 formats = ["dep:novafile-formats", "dep:novafile-json"]
 proto = ["dep:novafile-proto"]
