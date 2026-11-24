@@ -11,6 +11,7 @@ const SCHEMA: &str = "@root Db
 record Creds @secret:
   user: string
   token: string
+  mfa?: string
 
 record Db:
   host: string
@@ -20,6 +21,7 @@ record Db:
   admin?: Creds
   tokens?: list<string> @secret
   env?: map<string, string> @secret
+  note?: string @secret
 ";
 
 /// A loader that keeps its documents in memory and knows the schema `ops`.
@@ -167,6 +169,18 @@ fn presence_of_a_classified_value_may_be_tested() {
     )
     .unwrap();
     assert!(out.contains("y: 1") && !out.contains("z: 1"), "{out}");
+
+    // A missing optional field is absent, not an error.
+    let out = run("x:\n  @if $db.note != null:\n    n: 1\n  @else:\n    n: 0\n", Reveal::Redact, None).unwrap();
+    assert!(out.contains("n: 0"), "{out}");
+}
+
+/// Which fields a classified container holds is classified: a missing field looks like a set one.
+#[test]
+fn fields_inside_a_classified_container_do_not_show_presence() {
+    let out = run("t: $db.admin.mfa\nu: $db.admin.user\n", Reveal::Redact, None).unwrap();
+    assert!(out.contains("t: @redacted") && out.contains("u: @redacted"), "{out}");
+    refused("x:\n  @if $db.admin.mfa != null:\n    y: 1\n");
 }
 
 /// An import whose `@schema` the loader cannot give is refused unless everything is revealed.

@@ -487,11 +487,21 @@ impl Eval<'_> {
                 Segment::All | Segment::Filter(..) | Segment::Project(_) => {
                     return err(format!("${p}: {}", novafile_text::PathError::NotSingular(Path(rest.to_vec()))));
                 }
-                _ => step(cur, seg, &here, &upto).map_err(|e| TemplateError(format!("${p}: {e}")))?,
+                _ => match step(cur, seg, &here, &upto) {
+                    Ok(next) => next,
+                    // Inside a classified container, a missing field must look like a present one:
+                    // an error would tell which fields are set (proposal 0009.5.2).
+                    Err(novafile_text::PathError::NotFound(_)) if class.is_some() => return self.charged(taint::taint_opt(Value::Null, class)),
+                    Err(e) => return err(format!("${p}: {e}")),
+                },
             };
         }
 
-        let v = taint::taint_opt(cur.clone(), class);
+        self.charged(taint::taint_opt(cur.clone(), class))
+    }
+
+    /// Charge the cost of the value `v` that a reference yields, and return it.
+    fn charged(&mut self, v: Value) -> Result<Value, TemplateError> {
         let c = Cost::of(&v);
         self.charge(c.nodes, c.bytes)?;
         Ok(v)
@@ -543,13 +553,31 @@ impl Eval<'_> {
         Ok(v)
     }
 
-    /// For a comparison with the literal `null`, whether the other side is present.
-    /// Presence is not classified (proposal 0009.6.1), so a classified value may be tested
-    /// this way; `None` for every other comparison.
+    /// For a comparison with the literal `null`, whether the other side is present: a missing
+    /// field counts as absent. Presence is not classified (proposal 0009.6.1), so a classified
+    /// value may be tested this way, but not a field inside a classified container. `None` for
+    /// every other comparison.
     fn presence(&mut self, a: &Node, b: &Node) -> Result<Option<bool>, TemplateError> {
         let ((Node::Lit(Value::Null), other) | (other, Node::Lit(Value::Null))) = (a, b) else {
             return Ok(None);
         };
+
+        if let Node::Ref(p) = other
+            && let Some((Segment::Field(last), parent)) = p.0.split_last()
+            && !parent.is_empty()
+        {
+            // Which fields a classified container holds is classified, like the container.
+            let parent = self.lookup(&Path(parent.to_vec()))?;
+            if taint::tainted(&parent).is_some() {
+                return branches_on_classified("a presence test inside a classified value");
+            }
+
+            if let Value::Record(r) = &parent
+                && r.get(last).is_none()
+            {
+                return Ok(Some(false));
+            }
+        }
 
         let v = self.node(other)?;
         let inner = taint::tainted(&v).map_or(&v, |(_, inner)| inner);

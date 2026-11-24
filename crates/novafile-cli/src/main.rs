@@ -177,6 +177,7 @@ enum Cmd {
     ///
     /// For a document with classified values this prints the opaque `k:` token instead, since
     /// a hash lets a reader test guesses of a hidden value; `--reveal` prints the revision.
+    /// Without a redaction key the token would change on every run, so this then fails.
     Hash {
         /// Document to hash.
         file: PathBuf,
@@ -1255,9 +1256,17 @@ fn redact_key() -> Option<RedactKey> {
 }
 
 /// Reads the key file `path`, or makes it with 32 random bytes, readable only by the user.
+///
+/// The key is written to a temporary file first and then linked to `path`, so `path` is
+/// never seen empty or half written, and of two processes that make it, the second uses
+/// the key of the first.
 fn key_file(path: &Path) -> Result<RedactKey, String> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => return RedactKey::from_hex(&text),
+    let read = || -> Result<RedactKey, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        RedactKey::from_hex(text.trim()).map_err(|e| format!("{e}; delete the file to make a new key"))
+    };
+    match std::fs::metadata(path) {
+        Ok(_) => return read(),
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.to_string()),
         Err(_) => {}
     }
@@ -1269,19 +1278,29 @@ fn key_file(path: &Path) -> Result<RedactKey, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
 
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    let linked = write_new_private(&tmp, key.to_hex().as_bytes()).and_then(|()| std::fs::hard_link(&tmp, path));
+    // The temporary name is ours alone; it is not needed after the link, or after a failure.
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(key),
+        // Another process made it first: use its key.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => read(),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Writes `bytes` to the new file `path`, readable only by the user, and syncs it to disk.
+fn write_new_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-    match opts.open(path) {
-        Ok(mut f) => {
-            f.write_all(key.to_hex().as_bytes()).map_err(|e| e.to_string())?;
-            Ok(key)
-        }
-        // Another process made it first: use its key.
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => RedactKey::from_hex(&std::fs::read_to_string(path).map_err(|e| e.to_string())?),
-        Err(e) => Err(e.to_string()),
-    }
+    let mut f = opts.open(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()
 }
 
 /// A placeholder as one line of raw output: `@redacted` or `@redacted(p:…)`.
@@ -1506,6 +1525,10 @@ fn run(cli: Cli) -> R<ExitCode> {
             let l = load(&file)?;
             let v = view(&l, &file, None, &reveal, classified.no_schema, agent)?;
             let rev = revision(&l.value);
+            if v.hidden > 0 && v.key.is_none() {
+                return Err("classified values are hidden and there is no redaction key for a stable token; set NOVA_REDACT_KEY, or pass --reveal".into());
+            }
+
             println!("{}", v.token(&rev).unwrap_or_else(|| rev.to_string()));
         }
         Cmd::Validate {

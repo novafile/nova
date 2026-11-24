@@ -622,3 +622,35 @@ fn hash_stats_and_fmt_do_not_show_classified_values() {
     let plain = ok(&d, &["stats", "--reveal", "doc.nova"]);
     assert_ne!(ok(&d, &["stats", "doc.nova"]), plain, "sizes are those of the redacted view");
 }
+
+#[test]
+fn the_key_file_is_made_once_and_hash_needs_a_key() {
+    let d = classified("key-file");
+    let keyless = || {
+        let mut c = command(&d);
+        c.env_remove("NOVA_REDACT_KEY");
+        c
+    };
+    let hash = || run(keyless().args(["hash", "doc.nova"]), "");
+    let (a, b) = (hash(), hash());
+    assert!(a.status.success() && stdout(&a).starts_with("k:"), "{a:?}");
+    assert_eq!(stdout(&a), stdout(&b), "the key file keeps the token stable");
+
+    let key = d.join(".cache/nova/redact.key");
+    let dir = key.parent().unwrap();
+    assert_eq!(std::fs::read_to_string(&key).unwrap().len(), 64);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    let names: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert!(names.iter().all(|n| !n.to_string_lossy().ends_with(".tmp")), "{names:?}");
+
+    // A broken key file: no stable token, so hash fails instead of printing a random one.
+    std::fs::write(&key, "").unwrap();
+    let o = hash();
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(stderr(&o).contains("NOVA_REDACT_KEY") && stderr(&o).contains("delete the file"), "{o:?}");
+    assert!(stdout(&run(keyless().args(["hash", "--reveal", "doc.nova"]), "")).starts_with("sha256:"));
+}
