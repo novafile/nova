@@ -1240,6 +1240,7 @@ dependencies = [
  "criterion",
  "novafile-text",
  "novafile-value",
+ "proptest",
 ]
 
 [[package]]
@@ -1358,6 +1359,7 @@ version = "0.5.0"
 dependencies = [
  "novafile-text",
  "novafile-value",
+ "proptest",
 ]
 
 [[package]]
@@ -1449,6 +1451,7 @@ version = "0.5.0"
 dependencies = [
  "facet",
  "num-bigint 0.5.1",
+ "proptest",
  "schemars",
  "serde",
  "serde_json",

@@ -17,6 +17,7 @@ novafile-value.workspace = true
 novafile-text.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 criterion.workspace = true
 
 [[bench]]

@@ -16,5 +16,8 @@ categories.workspace = true
 novafile-value = { workspace = true, features = ["revision"] }
 novafile-text.workspace = true
 
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true
