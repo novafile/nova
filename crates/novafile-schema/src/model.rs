@@ -235,7 +235,46 @@ impl LenUnit {
     }
 }
 
-/// Type-level attributes `@range`, `@len` and `@pattern` (spec §6.1).
+/// The classification of a value (proposal 0009): which readers may see it
+/// in clear. `Secret` is stronger than `Personal`, so `max` picks the class
+/// that wins when several apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Class {
+    /// `@personal`: data about people. Readers see a keyed pseudonym.
+    Personal,
+    /// `@secret`: credentials and keys. Readers see only a placeholder.
+    Secret,
+}
+
+impl Class {
+    /// The attribute name without `@`: `personal` or `secret`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Class::Personal => "personal",
+            Class::Secret => "secret",
+        }
+    }
+
+    /// The class for an attribute name, or `None` if `s` names none.
+    #[must_use]
+    pub fn from_name(s: &str) -> Option<Class> {
+        match s {
+            "personal" => Some(Class::Personal),
+            "secret" => Some(Class::Secret),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Class {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// Type-level attributes `@range`, `@len`, `@pattern` (spec §6.1) and the
+/// class attributes `@personal` and `@secret` (proposal 0009).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Constraints {
     /// `@range(lo..hi)`: inclusive numeric bounds, either side optional.
@@ -246,8 +285,20 @@ pub struct Constraints {
     pub len: Option<(Option<u64>, Option<u64>)>,
     /// What `@len` counts for strings; other values always count elements.
     pub len_unit: LenUnit,
-    /// `@pattern("…")`: an I-Regexp the whole string must match. Only on `string`.
+    /// `@pattern("…")`: an I-Regexp the whole string must match. Only on
+    /// `string`, or on a reference to an alias of `string`.
     pub pattern: Option<crate::Pattern>,
+    /// `@personal` or `@secret`: the class of every value of this type. It
+    /// does not change which values are valid.
+    pub class: Option<Class>,
+}
+
+impl Constraints {
+    /// These constraints without the class: the part that decides validity.
+    #[must_use]
+    pub fn without_class(&self) -> Constraints {
+        Constraints { class: None, ..self.clone() }
+    }
 }
 
 /// A type expression as used for a field, element, payload or alias: kind,
@@ -354,6 +405,17 @@ pub enum Def {
     Alias(TypeRef),
 }
 
+/// An `@import name@version[#fingerprint] as alias` directive (proposal 0008).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Import {
+    /// The alias that qualifies references: `std` in `std.Uuid`. An
+    /// identifier without `-` or `.`, unique within the schema.
+    pub alias: String,
+    /// The exact version imported. [`Schema::link`] fills in the fingerprint
+    /// when the source does not give one.
+    pub reference: crate::SchemaRef,
+}
+
 /// A parsed schema: optional identity, optional `@root`, and named definitions.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Schema {
@@ -369,13 +431,28 @@ pub struct Schema {
     /// `@x-…` extension directives as written (without `@`), in order. They
     /// are not part of the canonical text or the descriptor (spec §6.6).
     pub extensions: Vec<String>,
+    /// `@import` directives in source order (proposal 0008).
+    pub imports: Vec<Import>,
+    /// The definitions of imported schemas, named `alias.Name`, with their
+    /// references rewritten the same way. [`Schema::link`] fills it in. It is
+    /// not part of the canonical text, which keeps only the imports.
+    pub imported: Vec<(String, Def)>,
+    /// `@personal` or `@secret` on record and enum definitions, imported
+    /// ones included (proposal 0009).
+    pub def_classes: Vec<(String, Class)>,
 }
 
 impl Schema {
     /// The definition named `name`, if any.
     #[must_use]
     pub fn def(&self, name: &str) -> Option<&Def> {
-        self.defs.iter().find(|(n, _)| n == name).map(|(_, d)| d)
+        self.defs.iter().chain(&self.imported).find(|(n, _)| n == name).map(|(_, d)| d)
+    }
+
+    /// The class written on the record or enum definition `name`, if any.
+    #[must_use]
+    pub fn def_class(&self, name: &str) -> Option<Class> {
+        self.def_classes.iter().find(|(n, _)| n == name).map(|(_, c)| *c)
     }
 
     /// The `@root` type, if the schema has a root.
@@ -471,6 +548,10 @@ impl fmt::Display for TypeRef {
             write!(f, " @pattern({})", novafile_text::quote(p.as_str()))?;
         }
 
+        if let Some(c) = self.constraints.class {
+            write!(f, " @{c}")?;
+        }
+
         Ok(())
     }
 }
@@ -481,6 +562,10 @@ impl fmt::Display for Schema {
             writeln!(f, "@schema {n}@{v}")?;
         }
 
+        for i in &self.imports {
+            writeln!(f, "@import {} as {}", i.reference, i.alias)?;
+        }
+
         if let Some(r) = &self.root {
             writeln!(f, "@root {r}")?;
         }
@@ -489,10 +574,11 @@ impl fmt::Display for Schema {
         defs.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, def) in defs {
             writeln!(f)?;
+            let class = self.def_class(name).map(|c| format!(" @{c}")).unwrap_or_default();
             match def {
                 Def::Alias(t) => writeln!(f, "type {name} = {t}")?,
                 Def::Enum(vs) => {
-                    writeln!(f, "enum {name}:")?;
+                    writeln!(f, "enum {name}{class}:")?;
                     for v in vs {
                         match &v.payload {
                             Some(t) => write!(f, "  {}({t})", v.name)?,
@@ -506,7 +592,7 @@ impl fmt::Display for Schema {
                     }
                 }
                 Def::Record(r) => {
-                    writeln!(f, "record {name}{}:", if r.open { " @open" } else { "" })?;
+                    writeln!(f, "record {name}{}{class}:", if r.open { " @open" } else { "" })?;
                     for fd in &r.fields {
                         write!(f, "  {}{}: {}", novafile_text::key_text(&fd.name), if fd.optional { "?" } else { "" }, fd.ty)?;
                         if fd.key {

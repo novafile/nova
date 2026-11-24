@@ -3,13 +3,16 @@
 //! values, `@key` uniqueness and evolution checks.
 
 pub mod catalog;
+mod class;
 mod compat;
 pub mod derive;
 mod descriptor;
+mod link;
 mod model;
 mod parse;
 mod pattern;
 mod positional;
+mod redact;
 mod resolve;
 mod version;
 mod warn;
@@ -17,12 +20,14 @@ mod warn;
 pub use compat::{Change, check_compatibility, widens};
 pub use derive::{NovaSchema, SchemaGen, schema_for};
 pub use descriptor::{LEGACY_META_SCHEMA_NAME, META_CATALOG_NAME, META_CATALOG_SRC, META_SCHEMA_NAME, META_SCHEMA_SRC, meta_catalog, meta_schema};
+pub use link::{STD_NAME, STD_SRCS, bundled, std_schemas};
 pub use model::*;
 #[cfg(feature = "derive")]
 pub use novafile_derive::NovaSchema;
-pub use parse::{SchemaError, parse_schema, parse_type, parse_type_within};
+pub use parse::{SchemaError, parse_schema, parse_schema_unlinked, parse_type, parse_type_within};
 pub use pattern::{Pattern, SCHEMA_BUDGET};
-pub use resolve::Issue;
+pub use redact::{RedactKey, Redacted, Reveal, concrete_path, redact};
+pub use resolve::{ClassMark, Issue};
 pub use version::{ChangeKind, NameKind, PreId, SchemaRef, Version, schema_name_kind, valid_schema_name};
 pub use warn::UnionWarning;
 
@@ -278,6 +283,23 @@ impl Schema {
         }
 
         (cur, None)
+    }
+
+    /// `t` and the aliased types that a chain of aliases from `t` reaches,
+    /// in order, at most 64. [`Self::deref`] returns the last of them.
+    #[must_use]
+    pub fn alias_chain<'a>(&'a self, t: &'a TypeRef) -> Vec<&'a TypeRef> {
+        let mut chain = vec![t];
+        let mut cur = t;
+        while chain.len() <= 64
+            && let TypeKind::Named(n) = &cur.kind
+            && let Some(Def::Alias(a)) = self.def(n)
+        {
+            chain.push(a);
+            cur = a;
+        }
+
+        chain
     }
 
     /// The declared type at a concrete path below the root type (fields and

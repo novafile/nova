@@ -1,6 +1,6 @@
 //! NOVA schema → JSON Schema (2020-12). See the crate documentation for the mapping.
 
-use novafile_schema::{Constraints, Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
+use novafile_schema::{Class, Constraints, Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
 use novafile_value::Value;
 use novafile_value::schemars_support::patterns;
 use serde_json::{Map, Value as Json, json};
@@ -41,12 +41,22 @@ pub fn to_json_schema(schema: &Schema) -> Json {
     }
 
     let mut defs = Map::new();
-    for (name, def) in &schema.defs {
-        let s = match def {
+    let used = used_imports(schema);
+    let imported = schema.imported.iter().filter(|(n, _)| used.contains(n.as_str()));
+    for (name, def) in schema.defs.iter().chain(imported) {
+        let mut s = match def {
             Def::Alias(t) => ty(schema, t),
             Def::Record(r) => record(schema, r),
             Def::Enum(vs) => variants(schema, vs),
         };
+
+        if !matches!(def, Def::Alias(_)) {
+            classify(&mut s, schema.def_class(name));
+        }
+
+        if let Some(std) = std_type(schema, name) {
+            mark_std(&mut s, std);
+        }
 
         defs.insert(name.clone(), s);
     }
@@ -58,7 +68,89 @@ pub fn to_json_schema(schema: &Schema) -> Json {
     Json::Object(root)
 }
 
-/// The `$ref` target of a named definition.
+/// The names of the imported definitions that the root and the local
+/// definitions use, directly or through other definitions.
+fn used_imports(schema: &Schema) -> std::collections::HashSet<&str> {
+    let mut seen = std::collections::HashSet::new();
+    let mut todo: Vec<&TypeRef> = schema.root.iter().collect();
+    for (_, d) in &schema.defs {
+        def_types(d, &mut todo);
+    }
+
+    while let Some(t) = todo.pop() {
+        match &t.kind {
+            TypeKind::Named(n) => {
+                if seen.insert(n.as_str())
+                    && let Some(d) = schema.def(n)
+                {
+                    def_types(d, &mut todo);
+                }
+            }
+            TypeKind::List(e) | TypeKind::Set(e) => todo.push(e),
+            TypeKind::Map(k, v) => todo.extend([&**k, &**v]),
+            TypeKind::Tuple(ts) | TypeKind::Union(ts) => todo.extend(ts),
+            _ => {}
+        }
+    }
+
+    seen
+}
+
+/// Push the type expressions that the definition `d` contains.
+fn def_types<'a>(d: &'a Def, out: &mut Vec<&'a TypeRef>) {
+    match d {
+        Def::Alias(t) => out.push(t),
+        Def::Enum(vs) => out.extend(vs.iter().filter_map(|v| v.payload.as_ref())),
+        Def::Record(r) => out.extend(r.fields.iter().map(|f| &f.ty)),
+    }
+}
+
+/// The type name in the standard library (`Uuid`) of the imported
+/// definition `name` (`std.Uuid`), if its alias imports the standard library.
+fn std_type<'a>(schema: &Schema, name: &'a str) -> Option<&'a str> {
+    let (alias, ty) = name.split_once('.')?;
+    let std = schema.imports.iter().any(|i| i.alias == alias && i.reference.name == novafile_schema::STD_NAME);
+    (std && !ty.contains('.')).then_some(ty)
+}
+
+/// Add `x-nova-type` to the schema of the standard library type `ty`, and
+/// the JSON Schema `format` that matches it, if there is one (proposal 0008).
+fn mark_std(s: &mut Json, ty: &str) {
+    let Json::Object(o) = s else { return };
+    let format = match ty {
+        "Uuid" => Some("uuid"),
+        "Uri" => Some("uri"),
+        "UriReference" => Some("uri-reference"),
+        "Email" => Some("email"),
+        _ => None,
+    };
+
+    if let Some(f) = format {
+        o.insert("format".into(), f.into());
+    }
+
+    o.insert("x-nova-type".into(), format!("{}.{ty}", novafile_schema::STD_NAME).into());
+}
+
+/// Add the class of a type or definition (proposal 0009): `x-nova-class`,
+/// and `writeOnly: true` for `@secret`. An `any` schema (`true`) becomes `{}`
+/// so that it can hold the keywords.
+fn classify(s: &mut Json, class: Option<Class>) {
+    let Some(class) = class else { return };
+    if *s == Json::Bool(true) {
+        *s = Json::Object(Map::new());
+    }
+
+    let Json::Object(o) = s else { return };
+    if class == Class::Secret {
+        o.insert("writeOnly".into(), true.into());
+    }
+
+    o.insert("x-nova-class".into(), class.name().into());
+}
+
+/// The `$ref` target of a named definition. Definition names, imported
+/// ones (`std.Uuid`) included, have no `/` or `~`, so they need no escaping.
 fn def_ref(name: &str) -> String {
     format!("#/$defs/{name}")
 }
@@ -180,6 +272,7 @@ fn ty(schema: &Schema, t: &TypeRef) -> Json {
         s = nullable(s);
     }
 
+    classify(&mut s, t.constraints.class);
     s
 }
 

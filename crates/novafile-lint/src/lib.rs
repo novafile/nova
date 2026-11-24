@@ -17,8 +17,13 @@
 //! | `schema-name-reserved` | schemas named under `novafile.dev/` that the specification does not define | warning | — |
 //! | `unpinned-fetch` | a catalog with `remote` entries whose fetched versions (in the user cache) it does not pin | hint | — |
 //! | `partial-ids` | records where only some fields have `@id` (an enum where only some variants have `@id` is a schema error) | warning | — |
+//! | `classified-default` | a default on a field whose type is `@personal` or `@secret`: the value is in the schema | error | — |
+//! | `classified-hint` | fields named `password`, `secret`, `token`, `api_key` or `private_key` without a class | warning | — |
+//! | `std-hint` | `string` fields named `uuid`, `…_uuid`, `email`, `url`, `uri` or `phone` whose type is not from `novafile.dev/std` (off by default) | hint | — |
+//! | `std-restated` | a local alias that is the same as a `novafile.dev/std` type | hint | — |
 //!
 //! Configuration: [`Config`], or in a document or schema `@x-lint case=camel allow=quoted-key,mixed-list`.
+//! Rules that are off by default ([`OFF_BY_DEFAULT`]) need `enable=rule,…`.
 //!
 //! A document declaring `@compat json` (or `yaml`, `toml`) mirrors a contract
 //! in that format: its key names are dictated externally, so `key-case` does
@@ -40,7 +45,12 @@ pub enum Level {
     Hint,
     /// A convention violation; `nvf lint` exits 1 if any remains.
     Warning,
+    /// A defect that can expose data, such as a secret written in a schema.
+    Error,
 }
+
+/// Rules that run only when [`Config::enable`] names them.
+pub const OFF_BY_DEFAULT: &[&str] = &["std-hint"];
 
 /// A text replacement that fixes a finding.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,6 +87,8 @@ pub struct Config {
     pub case: Case,
     /// Names of disabled rules.
     pub allow: Vec<String>,
+    /// Names of rules in [`OFF_BY_DEFAULT`] to run.
+    pub enable: Vec<String>,
 }
 
 impl Default for Config {
@@ -84,6 +96,7 @@ impl Default for Config {
         Config {
             case: Case::Snake,
             allow: Vec::new(),
+            enable: Vec::new(),
         }
     }
 }
@@ -91,7 +104,7 @@ impl Default for Config {
 impl Config {
     /// Whether `rule` is enabled.
     fn on(&self, rule: &str) -> bool {
-        !self.allow.iter().any(|a| a == rule)
+        !self.allow.iter().any(|a| a == rule) && (!OFF_BY_DEFAULT.contains(&rule) || self.enable.iter().any(|e| e == rule))
     }
 
     /// Apply `@x-lint key=value …` settings from a document header.
@@ -104,7 +117,8 @@ impl Config {
             match part.split_once('=') {
                 Some(("case", c)) => self.case = Case::parse(c).ok_or_else(|| format!("unknown case {c:?} (snake, camel, kebab)"))?,
                 Some(("allow", rules)) => self.allow.extend(rules.split(',').map(str::to_owned)),
-                _ => return Err(format!("unknown @x-lint setting {part:?} (case=…, allow=…)")),
+                Some(("enable", rules)) => self.enable.extend(rules.split(',').map(str::to_owned)),
+                _ => return Err(format!("unknown @x-lint setting {part:?} (case=…, allow=…, enable=…)")),
             }
         }
 
@@ -395,9 +409,19 @@ fn unpinned_fetches(src: &str) -> Vec<Finding> {
 ///
 /// Returns a [`SchemaError`](novafile_schema::SchemaError) if `src` is not a
 /// valid schema or its `@x-lint` directive is invalid.
-#[expect(clippy::too_many_lines, reason = "one pass per schema rule, in rule order")]
 pub fn lint_schema(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_schema::SchemaError> {
-    let schema = novafile_schema::parse_schema(src)?;
+    lint_parsed_schema(src, &novafile_schema::parse_schema(src)?, config)
+}
+
+/// [`lint_schema`] for a schema that the caller already parsed and linked
+/// from `src`, so that imports of catalog schemas work (proposal 0008).
+///
+/// # Errors
+///
+/// Returns a [`SchemaError`](novafile_schema::SchemaError) if the `@x-lint`
+/// directive of the schema is invalid.
+#[expect(clippy::too_many_lines, reason = "one pass per schema rule, in rule order")]
+pub fn lint_parsed_schema(src: &str, schema: &novafile_schema::Schema, config: &Config) -> Result<Vec<Finding>, novafile_schema::SchemaError> {
     let mut config = config.clone();
     for e in &schema.extensions {
         if let Some(arg) = e.strip_prefix("x-lint")
@@ -559,8 +583,137 @@ pub fn lint_schema(src: &str, config: &Config) -> Result<Vec<Finding>, novafile_
         }
     }
 
+    field_hints(schema, src, config, &mut out);
+    std_restated(schema, src, config, &mut out);
     out.sort_by_key(|f| (f.start, f.rule));
     Ok(out)
+}
+
+/// Field names that usually hold a secret (proposal 0009), as snake-case words.
+const SECRET_NAMES: &[&str] = &["password", "secret", "token", "api_key", "private_key"];
+
+/// Field names that have a type in `novafile.dev/std` (proposal 0008), as
+/// snake-case words. A name that ends in `_uuid` counts as well.
+const STD_NAMES: &[&str] = &["uuid", "email", "url", "uri", "phone"];
+
+/// Byte range of the line of field `field` in record `record`: at the field
+/// name, or at the record header if the field name is not found as written.
+fn field_at(src: &str, record: &str, field: &str) -> (usize, usize) {
+    let def = src.find(&format!("record {record}")).unwrap_or(0);
+    let needle = format!("  {field}");
+    src[def..].find(&needle).map_or((def, def), |i| (def + i + 2, def + i + needle.len()))
+}
+
+/// Field rules from proposals 0008 and 0009: `classified-default`,
+/// `classified-hint` and `std-hint`.
+fn field_hints(schema: &novafile_schema::Schema, src: &str, config: &Config, out: &mut Vec<Finding>) {
+    use novafile_schema::{Def, TypeKind};
+    for (name, def) in &schema.defs {
+        let Def::Record(r) = def else { continue };
+        for f in &r.fields {
+            let class = schema.type_class(&f.ty);
+            let words = split_words(&f.name).join("_");
+            let (start, end) = field_at(src, name, &f.name);
+            let mut push = |rule, level, message| {
+                out.push(Finding {
+                    rule,
+                    level,
+                    message,
+                    start,
+                    end,
+                    fix: None,
+                });
+            };
+            if config.on("classified-default")
+                && f.default.is_some()
+                && let Some(c) = class
+            {
+                push(
+                    "classified-default",
+                    Level::Error,
+                    format!(
+                        "field `{name}.{}` has a @{c} type and a default, which puts the value in the schema; remove the default",
+                        f.name
+                    ),
+                );
+            }
+
+            // A field of a classified record is classified through the record (proposal 0009).
+            if config.on("classified-hint") && class.is_none() && schema.def_class(name).is_none() && SECRET_NAMES.contains(&words.as_str()) {
+                push(
+                    "classified-hint",
+                    Level::Warning,
+                    format!(
+                        "field `{name}.{}` looks like a secret but its type has no class; add @secret (or @personal)",
+                        f.name
+                    ),
+                );
+            }
+
+            let std_name = STD_NAMES.contains(&words.as_str()) || words.ends_with("_uuid");
+            if config.on("std-hint") && std_name && *schema.base_kind(&f.ty) == TypeKind::String && !is_std(schema, &f.ty) {
+                push(
+                    "std-hint",
+                    Level::Hint,
+                    format!(
+                        "field `{name}.{}` is a plain string; consider a type from {}",
+                        f.name,
+                        novafile_schema::STD_NAME
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// Whether `t`, or an alias on its chain, refers to a definition imported
+/// from `novafile.dev/std`.
+fn is_std(schema: &novafile_schema::Schema, t: &novafile_schema::TypeRef) -> bool {
+    schema.alias_chain(t).into_iter().any(|link| match &link.kind {
+        novafile_schema::TypeKind::Named(n) => n
+            .split_once('.')
+            .is_some_and(|(alias, _)| schema.imports.iter().any(|i| i.alias == alias && i.reference.name == novafile_schema::STD_NAME)),
+        _ => false,
+    })
+}
+
+/// `std-restated`: local aliases whose definition, without a class, is the
+/// same text as a type of the newest bundled `novafile.dev/std`.
+fn std_restated(schema: &novafile_schema::Schema, src: &str, config: &Config, out: &mut Vec<Finding>) {
+    let Some(std) = novafile_schema::std_schemas().last() else { return };
+    if !config.on("std-restated") {
+        return;
+    }
+
+    for (name, def) in &schema.defs {
+        let novafile_schema::Def::Alias(t) = def else { continue };
+        let plain = novafile_schema::TypeRef {
+            constraints: t.constraints.without_class(),
+            ..t.clone()
+        }
+        .to_string();
+        let Some((std_name, _)) = std
+            .defs
+            .iter()
+            .find(|(_, d)| matches!(d, novafile_schema::Def::Alias(s) if s.to_string() == plain))
+        else {
+            continue;
+        };
+        let needle = format!("type {name}");
+        let (start, end) = src.find(&needle).map_or((0, 0), |i| (i, i + needle.len()));
+        let version = std.version.as_ref().map(ToString::to_string).unwrap_or_default();
+        out.push(Finding {
+            rule: "std-restated",
+            level: Level::Hint,
+            message: format!(
+                "type {name} restates {std_name} of {}@{version}; import it and use that type",
+                novafile_schema::STD_NAME
+            ),
+            start,
+            end,
+            fix: None,
+        });
+    }
 }
 
 /// Every `@pattern` written in `t`, outermost first.

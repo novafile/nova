@@ -147,7 +147,7 @@ fn fetch_locations_and_checks() {
         Some("https://billing.acme.dev/acme.dev/billing/invoice@2.1.0")
     );
     assert_eq!(at("other.org/a@1.0.0").as_deref(), Some("https://other.org/a/1.0.0.novs"));
-    for never in ["local@1.0.0", "acme.test/a@1.0.0", "x.example/a@1.0.0", "novafile.dev/meta/schema@0.3.3"] {
+    for never in ["local@1.0.0", "acme.test/a@1.0.0", "x.example/a@1.0.0", "novafile.dev/meta/schema@0.3.4"] {
         assert_eq!(at(never), None, "{never}");
     }
 
@@ -224,4 +224,54 @@ fn cache_round_trip_and_immutable_versions() {
     let other = parse_schema(&schema("acme.dev/a@1.0.0", "string")).unwrap();
     assert_eq!(r.store(&other, &schema("acme.dev/a@1.0.0", "string")).unwrap_err().kind(), "conflict");
     assert!(std::fs::read_to_string(&path).unwrap().contains("a: int"));
+}
+
+#[test]
+fn imports_resolve_through_the_catalog() {
+    let d = scratch("imports");
+    put(&d, "nova-catalog.nova", "schemas:\n  - path: schemas/\n");
+    put(
+        &d,
+        "schemas/common.novs",
+        "@schema acme.test/common@1.2.0\ntype Code = string @pattern(\"[A-Z]+\")\n",
+    );
+    put(&d, "schemas/common13.novs", "@schema acme.test/common@1.3.0\ntype Code = string\n");
+    put(
+        &d,
+        "schemas/app.novs",
+        "@schema acme.test/app@1.0.0\n@import acme.test/common@1.2.0 as c\n@import novafile.dev/std@0.1.0 as std\n@root R\nrecord R:\n  code: c.Code\n  id: std.Uuid\n",
+    );
+    let r = resolver(&d);
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+    let app = r.resolve("acme.test/app@1.0.0").unwrap().schema;
+    // The exact imported version is linked, not the newest readable one.
+    assert!(
+        app.validate(&novafile_text::parse("code: x\nid: 0f8fad5b-d9cb-469f-a165-70867728950e\n").unwrap())
+            .is_err()
+    );
+    assert!(app.to_canonical_text().contains("@import acme.test/common@1.2.0#"));
+    // std is built in and never fetched.
+    assert_eq!(r.resolve("novafile.dev/std@0.1.0").unwrap().origin, Origin::Builtin);
+    assert!(r.fetch_url(&SchemaRef::parse("novafile.dev/std@0.1.0").unwrap()).is_err());
+    // Text loaded directly links through the same places.
+    assert!(r.load_text("@import acme.test/common@1.2.0 as c\ntype T = c.Code\n").is_ok());
+}
+
+#[test]
+fn import_cycles_are_problems() {
+    let d = scratch("cycle");
+    put(&d, "nova-catalog.nova", "schemas:\n  - path: schemas/\n");
+    put(
+        &d,
+        "schemas/a.novs",
+        "@schema acme.test/a@1.0.0\n@import acme.test/b@1.0.0 as b\ntype A = b.B\n",
+    );
+    put(
+        &d,
+        "schemas/b.novs",
+        "@schema acme.test/b@1.0.0\n@import acme.test/a@1.0.0 as a\ntype B = string\n",
+    );
+    let r = resolver(&d);
+    assert!(r.problems.iter().any(|p| p.contains("import cycle")), "{:?}", r.problems);
+    assert_eq!(r.resolve("acme.test/a@1.0.0").unwrap_err().kind(), "not-found");
 }

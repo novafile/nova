@@ -268,6 +268,7 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
                             novafile_text::PathError::Ambiguous(..) => "ambiguous",
                             novafile_text::PathError::Type { .. } => "type",
                             novafile_text::PathError::NotSingular(_) => "not-singular",
+                            novafile_text::PathError::Classified(_) => "classified",
                         };
 
                         json!({"query": q, "error": kind, "message": e.to_string()})

@@ -41,6 +41,10 @@ fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value
                 }
             };
 
+            if elems.iter().any(|e| filters.iter().any(|f| reveals_redacted(e, f))) {
+                return Err(PathError::Classified(Path(full.0[..depth + n].to_vec())));
+            }
+
             let keep = |e: &&Value| {
                 filters.iter().all(|f| match f {
                     Segment::Filter(lhs, CmpOp::Absent, _) => lhs.get(e).is_err(),
@@ -78,6 +82,20 @@ fn sel(cur: &Value, segs: &[Segment], depth: usize, full: &Path) -> Result<Value
     }
 }
 
+/// Whether the filter `f`, applied to the element `e` of a redacted view
+/// (proposal 0009), would reveal something about a classified value: a
+/// comparison that reaches a placeholder, or any filter that looks through
+/// one. Whether a classified value exists stays visible. Without
+/// placeholders this is always false.
+fn reveals_redacted(e: &Value, f: &Segment) -> bool {
+    let Segment::Filter(lhs, op, _) = f else { return false };
+    (0..=lhs.0.len()).any(|k| {
+        let reached = Path(lhs.0[..k].to_vec()).get(e).is_ok_and(Value::is_redacted);
+        let comparison = !matches!(op, CmpOp::Exists | CmpOp::Absent);
+        reached && (k < lhs.0.len() || comparison)
+    })
+}
+
 /// Keep only `fields` of a record, or of each record in a list; fields a
 /// record lacks are left out.
 fn project(v: &Value, fields: &[String], at: &Path) -> Result<Value, PathError> {
@@ -110,6 +128,10 @@ pub struct Response {
     pub scope: Option<Path>,
     /// The selected value.
     pub value: Value,
+    /// An opaque token that stands for `revision` in the output (proposal
+    /// 0009, `k:…`), when the value is a redacted view. Hosts map it back
+    /// when a patch names it as its base.
+    pub token: Option<String>,
 }
 
 impl Response {
@@ -117,7 +139,7 @@ impl Response {
     /// unless it is the root, `@scope` directives.
     #[must_use]
     pub fn to_text(&self, profile: Profile) -> String {
-        let rev = self.revision.to_string();
+        let rev = self.token.clone().unwrap_or_else(|| self.revision.to_string());
         let scope = self.scope.as_ref().map(std::string::ToString::to_string);
         let mut d: Vec<(&str, &str)> = vec![("revision", &rev)];
         if let Some(s) = &scope
@@ -159,5 +181,6 @@ pub fn get(root: &Value, request: &str) -> Result<Response, String> {
         revision: revision(root),
         scope,
         value,
+        token: None,
     })
 }

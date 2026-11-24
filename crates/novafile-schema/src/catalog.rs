@@ -6,7 +6,10 @@
 //! the tools; [`Resolver::fetch_url`], [`Resolver::accept_fetched`] and
 //! [`Resolver::store`] give them everything else.
 
-use crate::{LEGACY_META_SCHEMA_NAME, META_SCHEMA_NAME, NameKind, Schema, SchemaRef, Version, meta_catalog, meta_schema, parse_schema, schema_name_kind};
+use crate::{
+    LEGACY_META_SCHEMA_NAME, META_SCHEMA_NAME, NameKind, Schema, SchemaRef, Version, meta_catalog, meta_schema, parse_schema_unlinked, schema_name_kind,
+    std_schemas,
+};
 use novafile_value::Value;
 use std::cmp::Ordering;
 use std::fmt;
@@ -21,6 +24,10 @@ pub const MAX_FETCH_BYTES: u64 = 4 << 20;
 /// How many directory entries the catalog sources may make lookup visit, so a
 /// catalog pointing at a huge tree cannot stall every lookup.
 const MAX_SOURCE_ENTRIES: usize = 100_000;
+
+/// How long a chain of `@import`s may be. A longer chain is most likely a
+/// cycle, which would otherwise recurse forever.
+const MAX_IMPORT_DEPTH: usize = 16;
 
 /// How deep the catalog source directories are searched.
 const MAX_SOURCE_DEPTH: usize = 32;
@@ -375,6 +382,9 @@ pub struct Resolver {
     sources: Vec<Found>,
     /// Files that could not be read or parsed, as notes.
     pub problems: Vec<String>,
+    /// Linked imports by `name@version`, so a schema imported many times is
+    /// linked once.
+    linked: std::sync::Mutex<std::collections::HashMap<String, Schema>>,
 }
 
 impl Resolver {
@@ -408,6 +418,7 @@ impl Resolver {
 
         let builtin = [meta_schema(), meta_catalog()]
             .into_iter()
+            .chain(std_schemas().iter().cloned())
             .map(|schema| Found {
                 origin: Origin::Builtin,
                 schema,
@@ -421,6 +432,7 @@ impl Resolver {
             builtin,
             sources: Vec::new(),
             problems: Vec::new(),
+            linked: std::sync::Mutex::default(),
         };
         r.index_sources();
         Ok(r)
@@ -451,7 +463,7 @@ impl Resolver {
                 continue;
             }
 
-            match read_bounded(&f).and_then(|t| parse_schema(&t).map_err(|e| e.to_string())) {
+            match read_bounded(&f).and_then(|t| parse_schema_unlinked(&t).map_err(|e| e.to_string())) {
                 // Anonymous schemas have no name to be found by.
                 Ok(schema) if schema.reference().is_some() => self.sources.push(Found {
                     origin: Origin::File(f),
@@ -461,6 +473,86 @@ impl Resolver {
                 Err(m) => self.problems.push(format!("{}: {m}", f.display())),
             }
         }
+
+        self.link_sources();
+    }
+
+    /// Link every indexed source against the others and the built-in schemas.
+    /// Sources that fail to link become problems and are no longer found.
+    fn link_sources(&mut self) {
+        let mut linked = Vec::with_capacity(self.sources.len());
+        for f in &self.sources {
+            match self.link(f.schema.clone(), 0) {
+                Ok(schema) => linked.push(Found {
+                    origin: f.origin.clone(),
+                    schema,
+                }),
+                Err(m) => self.problems.push(format!("{}: {m}", f.origin)),
+            }
+        }
+
+        self.sources = linked;
+    }
+
+    /// Link `schema`: resolve its imports among the built-in schemas, the
+    /// catalog sources and the cache, then check its references. `depth` is
+    /// the length of the import chain so far.
+    ///
+    /// # Errors
+    ///
+    /// Fails if an import does not resolve to exactly the version it names,
+    /// the chain is longer than [`MAX_IMPORT_DEPTH`], or a check fails.
+    fn link(&self, mut schema: Schema, depth: usize) -> Result<Schema, String> {
+        if depth > MAX_IMPORT_DEPTH {
+            return Err(format!("imports nest deeper than {MAX_IMPORT_DEPTH} levels; is there an import cycle?"));
+        }
+
+        schema.link(&|r| self.import(r, depth)).map_err(|e| e.message)?;
+        Ok(schema)
+    }
+
+    /// The linked schema with exactly the name and version of the import `r`,
+    /// with conflicts and pins checked as for [`Resolver::resolve`].
+    fn import(&self, r: &SchemaRef, depth: usize) -> Result<Schema, String> {
+        let id = format!("{}@{}", r.name, r.version);
+        if let Some(s) = self.linked.lock().ok().and_then(|m| m.get(&id).cloned()) {
+            return Ok(s);
+        }
+
+        self.check_conflicts(&r.name).map_err(|e| e.to_string())?;
+        let exact = |f: &&Found| {
+            f.schema.name.as_deref() == Some(r.name.as_str()) && f.schema.version.as_ref().is_some_and(|v| v.precedence(&r.version) == Ordering::Equal)
+        };
+        let cached = self.cached_unlinked(&r.name);
+        let found = self
+            .builtin
+            .iter()
+            .chain(&self.sources)
+            .chain(&cached)
+            .find(exact)
+            .ok_or_else(|| format!("no catalog source or cache holds exactly {}@{}", r.name, r.version))?;
+        let schema = self.link(found.schema.clone(), depth + 1)?;
+        self.check_pin(&Found {
+            origin: found.origin.clone(),
+            schema: schema.clone(),
+        })
+        .map_err(|e| e.to_string())?;
+        if let Ok(mut m) = self.linked.lock() {
+            m.insert(id, schema.clone());
+        }
+
+        Ok(schema)
+    }
+
+    /// Parse and link schema text with this resolver's places, as for a file
+    /// that a tool loads directly.
+    ///
+    /// # Errors
+    ///
+    /// Fails on a syntax error, an import that does not resolve, or a failed check.
+    pub fn load_text(&self, text: &str) -> Result<Schema, crate::SchemaError> {
+        let schema = parse_schema_unlinked(text)?;
+        self.link(schema, 0).map_err(|message| crate::SchemaError { line: 0, message })
     }
 
     /// Whether the user enabled fetching in the user catalog.
@@ -479,6 +571,19 @@ impl Resolver {
 
     /// Fetched versions of `name` in the cache.
     fn cached(&self, name: &str) -> Vec<Found> {
+        self.cached_unlinked(name)
+            .into_iter()
+            .filter_map(|f| {
+                Some(Found {
+                    schema: self.link(f.schema, 0).ok()?,
+                    origin: f.origin,
+                })
+            })
+            .collect()
+    }
+
+    /// Fetched versions of `name` in the cache, parsed but not linked.
+    fn cached_unlinked(&self, name: &str) -> Vec<Found> {
         let Some(dir) = self.cache.as_ref().map(|c| c.join(name)) else {
             return Vec::new();
         };
@@ -487,7 +592,7 @@ impl Resolver {
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "novs"))
             .filter_map(|p| {
-                let schema = parse_schema(&read_bounded(&p).ok()?).ok()?;
+                let schema = parse_schema_unlinked(&read_bounded(&p).ok()?).ok()?;
                 (schema.name.as_deref() == Some(name)).then_some(Found {
                     origin: Origin::Cache(p),
                     schema,
@@ -595,7 +700,11 @@ impl Resolver {
     ///
     /// Local names, special-use domains and bundled schemas are never fetched.
     pub fn fetch_url(&self, r: &SchemaRef) -> Result<Fetch, String> {
-        if schema_name_kind(&r.name) != Some(NameKind::Qualified) || is_special_use(&r.name) || r.name.starts_with("novafile.dev/meta/") {
+        if schema_name_kind(&r.name) != Some(NameKind::Qualified)
+            || is_special_use(&r.name)
+            || r.name.starts_with("novafile.dev/meta/")
+            || r.name == crate::STD_NAME
+        {
             return Err(format!("{r} is never fetched: only qualified names outside special-use domains are"));
         }
 
@@ -635,7 +744,9 @@ impl Resolver {
     ///
     /// Fails, and the text must be discarded, if any check fails.
     pub fn accept_fetched(&self, r: &SchemaRef, text: &str) -> Result<Schema, LookupError> {
-        let schema = parse_schema(text).map_err(|e| LookupError::Invalid(format!("fetched {r}: not a valid schema: {e}")))?;
+        let schema = self
+            .load_text(text)
+            .map_err(|e| LookupError::Invalid(format!("fetched {r}: not a valid schema: {e}")))?;
         let declared = schema
             .reference()
             .ok_or_else(|| LookupError::Invalid(format!("fetched {r}: the file is an anonymous schema")))?;
@@ -672,7 +783,7 @@ impl Resolver {
             .ok_or_else(|| LookupError::Invalid("no user cache directory".into()))?
             .join(&r.name);
         let path = dir.join(format!("{}.novs", r.version));
-        if let Ok(old) = std::fs::read_to_string(&path).map_err(|_| ()).and_then(|t| parse_schema(&t).map_err(|_| ()))
+        if let Ok(old) = std::fs::read_to_string(&path).map_err(|_| ()).and_then(|t| self.load_text(&t).map_err(|_| ()))
             && old.revision() != schema.revision()
         {
             return Err(LookupError::Conflict(format!(

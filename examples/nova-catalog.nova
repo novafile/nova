@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: CC0-1.0
+# Lets tools find the example schemas, e.g. infrastructure.novs for `@schema infrastructure@1.0.0`.
+schemas:
+  - path: ./

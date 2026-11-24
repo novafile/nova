@@ -203,3 +203,15 @@ fn patterns_and_literals_validate_like_nova() {
         assert_eq!(errors(&v, &json_of(&value)).is_empty(), ok, "json schema: {doc}");
     }
 }
+
+#[test]
+fn std_types_validate() {
+    let schema = parse_schema("@import novafile.dev/std@0.1.0 as std\n@root R\n\nrecord R:\n  id: std.Uuid\n  token: string @secret\n").unwrap();
+    let v = validator(&schema);
+    let good = serde_json::json!({"id": "0189a3f2-7b1c-7d4e-9f00-123456789abc", "token": "x"});
+    assert_eq!(errors(&v, &good), Vec::<String>::new());
+    // std.Uuid is lowercase only; the pattern makes JSON Schema agree with NOVA.
+    let bad = serde_json::json!({"id": "0189A3F2-7B1C-7D4E-9F00-123456789ABC", "token": "x"});
+    assert_eq!(errors(&v, &bad).len(), 1);
+    assert!(schema.resolve(&novafile_json::from_json_str(&bad.to_string()).unwrap()).is_err());
+}

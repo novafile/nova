@@ -80,7 +80,7 @@ impl Scalar<'_> {
             Scalar::Double => "double".into(),
             Scalar::String | Scalar::Decimal | Scalar::Rational => "string".into(),
             Scalar::Bytes => "bytes".into(),
-            Scalar::Enum(name, _) => ident(name),
+            Scalar::Enum(name, _) => type_ident(name),
         }
     }
 }
@@ -105,7 +105,7 @@ impl Message<'_> {
     /// fully qualified.
     fn proto_name(self) -> String {
         match self {
-            Message::Record(name, _) | Message::Union(name, _) => ident(name),
+            Message::Record(name, _) | Message::Union(name, _) => type_ident(name),
             Message::Timestamp => "google.protobuf.Timestamp".into(),
             Message::Duration => "google.protobuf.Duration".into(),
             Message::Empty => "google.protobuf.Empty".into(),
@@ -293,17 +293,27 @@ pub(crate) fn ident(name: &str) -> String {
     name.replace('-', "_")
 }
 
+/// A definition name as a Protobuf message or enum name. Protobuf allows
+/// neither `-` nor `.` in a name, so both become `_`: the imported definition
+/// `std.Uuid` becomes `std_Uuid`, in the same package as the local
+/// definitions. [`Plan::new`] rejects the collisions this can cause, for
+/// example with a local definition `std_Uuid`.
+pub(crate) fn type_ident(name: &str) -> String {
+    name.replace(['-', '.'], "_")
+}
+
 /// Whether `s` is a Protobuf identifier: `[A-Za-z_][A-Za-z0-9_]*`.
 fn is_proto_ident(s: &str) -> bool {
     s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// `HttpMethod` / `not-found` / `notFound` → `HTTP_METHOD` / `NOT_FOUND` / `NOT_FOUND`.
+/// `HttpMethod` / `not-found` / `notFound` / `std.Kind` → `HTTP_METHOD` /
+/// `NOT_FOUND` / `NOT_FOUND` / `STD_KIND`.
 pub(crate) fn screaming_snake(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);
     let mut prev_lower = false;
     for c in name.chars() {
-        if c == '-' || c == '_' {
+        if matches!(c, '-' | '_' | '.') {
             out.push('_');
             prev_lower = false;
         } else {
@@ -328,7 +338,8 @@ pub(crate) fn enum_value_name(enum_name: &str, variant: &str) -> String {
 pub(crate) struct Plan<'s> {
     /// The root message.
     pub root: Message<'s>,
-    /// Reachable record and enum definitions, in schema order.
+    /// Reachable record and enum definitions: local ones in schema order,
+    /// then imported ones (named `alias.Name`) in link order.
     pub defs: Vec<(&'s str, &'s Def)>,
     /// Well-known-type imports needed by the `.proto` file.
     pub imports: BTreeSet<&'static str>,
@@ -441,6 +452,7 @@ impl<'s> Plan<'s> {
         let defs: Vec<_> = schema
             .defs
             .iter()
+            .chain(&schema.imported)
             .filter(|(n, _)| reachable.contains(n.as_str()))
             .map(|(n, d)| (n.as_str(), d))
             .collect();
@@ -459,7 +471,12 @@ fn root_message(schema: &Schema) -> Result<Message<'_>, String> {
     };
     let at = || format!("@root {root}");
     let not_a_message = || format!("{}: must be a record (or an enum with payloads) to become a Protobuf message", at());
-    let (name, def) = schema.defs.iter().find(|(n, _)| n == root).ok_or_else(|| format!("{}: not defined", at()))?;
+    let (name, def) = schema
+        .defs
+        .iter()
+        .chain(&schema.imported)
+        .find(|(n, _)| n == root)
+        .ok_or_else(|| format!("{}: not defined", at()))?;
     let single = match def {
         Def::Record(r) => Single::Message(Message::Record(name, r)),
         Def::Enum(vs) if vs.iter().any(|v| v.payload.is_some()) => Single::Message(Message::Union(name, vs)),
@@ -493,7 +510,7 @@ fn check_package_names(defs: &[(&str, &Def)]) -> Result<(), String> {
     };
 
     for (name, def) in defs {
-        claim(ident(name), (*name).to_owned())?;
+        claim(type_ident(name), (*name).to_owned())?;
         if let Def::Enum(vs) = def
             && vs.iter().all(|v| v.payload.is_none())
         {

@@ -1,11 +1,15 @@
 //! Schema-directed resolution and validation (spec §6.3–6.4).
 
-use crate::model::{Constraints, Def, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
+use crate::model::{Class, Constraints, Def, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
 use base64::Engine;
 use novafile_text::{Path, Segment};
 use novafile_value::{Decimal, Duration, Rational, Record, Timestamp, Value};
 use std::collections::HashSet;
 use std::fmt::Write as _;
+
+/// The path of a classified value and its class, as [`Schema::classify`]
+/// reports it (proposal 0009).
+pub type ClassMark = (Path, Class);
 
 /// A problem found while resolving or validating a value.
 #[derive(Clone, Debug, PartialEq)]
@@ -41,9 +45,25 @@ struct Ctx<'s> {
     /// Calls to [`Self::check`] left. Overlapping union members can retry the
     /// same value exponentially often, so the work is bounded by input size.
     fuel: usize,
+    /// The paths of classified values and their classes (proposal 0009), in
+    /// the order their checks finish. A union member that fails takes its
+    /// entries back.
+    classes: Vec<(Vec<Segment>, Class)>,
+    /// The strongest class of the value being checked or any value that
+    /// contains it. Issues then leave the value out of their messages.
+    inside: Option<Class>,
+    /// Whether `classes` follow sets into their resolved order. Otherwise
+    /// they keep the source order, as the stored value has it.
+    resolved_paths: bool,
 }
 
 impl<'s> Ctx<'s> {
+    /// `detail` if the value being checked is not classified, else `value`:
+    /// messages about a classified value must not show it (proposal 0009).
+    fn shown(&self, detail: impl FnOnce() -> String) -> String {
+        if self.inside.is_some() { "value".to_owned() } else { detail() }
+    }
+
     /// Record a problem at the current path.
     fn issue(&mut self, m: impl Into<String>) {
         self.issues.push(Issue {
@@ -64,8 +84,16 @@ impl<'s> Ctx<'s> {
         }
 
         self.depth += 1;
+        let class = self.schema.node_class(t);
+        let outer = self.inside;
+        self.inside = outer.max(class);
         let v = self.check_at(v, t);
+        self.inside = outer;
         self.depth -= 1;
+        if let Some(c) = class {
+            self.classes.push((self.path.clone(), c));
+        }
+
         v
     }
 
@@ -116,10 +144,10 @@ impl<'s> Ctx<'s> {
             (kind, _) => self.structural(v, kind),
         };
 
-        // Constraints on the alias chain and the use site.
-        self.constraints(&v, &rt.constraints);
-        if !std::ptr::eq(rt, t) {
-            self.constraints(&v, &t.constraints);
+        // Constraints on the use site and every alias of the chain all hold
+        // (proposal 0008: a reference to an alias refines it).
+        for link in self.schema.alias_chain(t) {
+            self.constraints(&v, &link.constraints);
         }
 
         v
@@ -130,7 +158,7 @@ impl<'s> Ctx<'s> {
     /// naming it as `shown` and carrying the closest member's issues as
     /// detail (spec §6.4).
     fn union(&mut self, v: Value, members: &'s [TypeRef], shown: &'s TypeRef) -> Value {
-        let (mark, kmark) = (self.issues.len(), self.keyed.len());
+        let (mark, kmark, cmark) = (self.issues.len(), self.keyed.len(), self.classes.len());
         let mut failures = Vec::with_capacity(members.len());
         for m in members {
             let r = self.check(v.clone(), m);
@@ -141,10 +169,13 @@ impl<'s> Ctx<'s> {
 
             failures.push(self.issues.split_off(mark));
             self.keyed.truncate(kmark);
+            self.classes.truncate(cmark);
         }
 
         let mut msg = String::new();
-        if !matches!(v, Value::List(_) | Value::Set(_) | Value::Tuple(_) | Value::Map(_) | Value::Record(_)) {
+        // A near miss of a classified member must not show the value either.
+        let classified = self.inside.is_some() || members.iter().any(|m| self.schema.type_class(m).is_some());
+        if !classified && !matches!(v, Value::List(_) | Value::Set(_) | Value::Tuple(_) | Value::Map(_) | Value::Record(_)) {
             msg = format!("{} ", novafile_text::flow_string(&v));
         }
 
@@ -259,7 +290,8 @@ impl<'s> Ctx<'s> {
             (TypeKind::Int(k), v @ Value::Int(i)) => {
                 let (lo, hi) = k.bounds();
                 if i < lo || i > hi {
-                    self.issue(format!("{i} is out of range for {}", k.name()));
+                    let shown = self.shown(|| i.to_string());
+                    self.issue(format!("{shown} is out of range for {}", k.name()));
                 }
 
                 v
@@ -294,10 +326,18 @@ impl<'s> Ctx<'s> {
             (TypeKind::Duration, Value::String(s)) => self.lexical(s, "duration", |s| Duration::parse(s).map(Value::Duration)),
             (TypeKind::List(et), Value::List(items)) => Value::List(self.elements(items, et)),
             (TypeKind::Set(et), Value::Set(items) | Value::List(items)) => {
+                let cmark = self.classes.len();
                 let items = self.elements(items, et);
                 match Value::set(items.clone()) {
-                    Ok(s) => s,
+                    Ok(s) => {
+                        if self.resolved_paths {
+                            self.reindex_classes(cmark, &items, &s);
+                        }
+
+                        s
+                    }
                     Err(e) => {
+                        let e = self.shown(|| e);
                         self.issue(e);
                         Value::Set(items)
                     }
@@ -359,12 +399,29 @@ impl<'s> Ctx<'s> {
         }
     }
 
+    /// Point the class entries from `cmark` on at the elements' places in the
+    /// set `sorted`, which [`Value::set`] built from `items` in canonical
+    /// order: redaction looks values up in the resolved value.
+    fn reindex_classes(&mut self, cmark: usize, items: &[Value], sorted: &Value) {
+        let Value::Set(sorted) = sorted else { return };
+        let at = self.path.len();
+        for (path, _) in &mut self.classes[cmark..] {
+            if let Some(Segment::Index(i)) = path.get(at)
+                && let Some(item) = usize::try_from(*i).ok().and_then(|i| items.get(i))
+                && let Some(j) = sorted.iter().position(|x| x == item)
+            {
+                path[at] = index_segment(j);
+            }
+        }
+    }
+
     /// A map of `entries`, reporting keys that conversion made equal
     /// (`"1/2"` and `"2/4"` as `rational`), as the set arm does for elements.
     fn unique_keys(&mut self, entries: Vec<(Value, Value)>) -> Value {
         match Value::map(entries.clone()) {
             Ok(m) => m,
             Err(e) => {
+                let e = self.shown(|| e);
                 self.issue(e);
                 Value::Map(entries)
             }
@@ -391,6 +448,7 @@ impl<'s> Ctx<'s> {
         match f(&s) {
             Ok(v) => v,
             Err(e) => {
+                let e = self.shown(|| e);
                 self.issue(format!("string is not a valid {what}: {e}"));
                 Value::String(s)
             }
@@ -495,17 +553,20 @@ impl<'s> Ctx<'s> {
             Value::String(s) => match vs.iter().find(|d| d.name == s) {
                 Some(d) if d.payload.is_none() => Value::Variant(s, None),
                 Some(_) => {
-                    self.issue(format!("variant {s} requires a payload"));
+                    let shown = self.shown(|| s.clone());
+                    self.issue(format!("variant {shown} requires a payload"));
                     Value::String(s)
                 }
                 None => {
-                    self.issue(format!("unknown variant {s:?}; expected one of {}", names(vs)));
+                    let shown = self.shown(|| format!("{s:?}"));
+                    self.issue(format!("unknown variant {shown}; expected one of {}", names(vs)));
                     Value::String(s)
                 }
             },
             Value::Variant(tag, payload) => match vs.iter().find(|d| d.name == tag) {
                 None => {
-                    self.issue(format!("unknown variant {tag:?}; expected one of {}", names(vs)));
+                    let shown = self.shown(|| format!("{tag:?}"));
+                    self.issue(format!("unknown variant {shown}; expected one of {}", names(vs)));
                     Value::Variant(tag, payload)
                 }
                 Some(d) => match (&d.payload, payload) {
@@ -517,11 +578,13 @@ impl<'s> Ctx<'s> {
                         Value::Variant(tag, Some(Box::new(p)))
                     }
                     (None, Some(p)) => {
-                        self.issue(format!("variant {tag} takes no payload"));
+                        let shown = self.shown(|| tag.clone());
+                        self.issue(format!("variant {shown} takes no payload"));
                         Value::Variant(tag, Some(p))
                     }
                     (Some(_), None) => {
-                        self.issue(format!("variant {tag} requires a payload"));
+                        let shown = self.shown(|| tag.clone());
+                        self.issue(format!("variant {shown} requires a payload"));
                         Value::Variant(tag, None)
                     }
                 },
@@ -542,18 +605,16 @@ impl<'s> Ctx<'s> {
             // Exact across kinds; NaN never satisfies a range.
             if lo.as_ref().is_some_and(|lo| !lo.le(&n)) || hi.as_ref().is_some_and(|hi| !n.le(hi)) {
                 let b = |o: &Option<Num>| o.as_ref().map(std::string::ToString::to_string).unwrap_or_default();
-                self.issue(format!("{n} is outside @range({}..{})", b(lo), b(hi)));
+                let shown = self.shown(|| n.to_string());
+                self.issue(format!("{shown} is outside @range({}..{})", b(lo), b(hi)));
             }
         }
 
         if let (Some(p), Value::String(s)) = (&c.pattern, v)
             && !p.is_match(s)
         {
-            self.issue(format!(
-                "{} does not match @pattern({})",
-                novafile_text::quote(s),
-                novafile_text::quote(p.as_str())
-            ));
+            let shown = self.shown(|| novafile_text::quote(s));
+            self.issue(format!("{shown} does not match @pattern({})", novafile_text::quote(p.as_str())));
         }
 
         if let Some((lo, hi)) = c.len {
@@ -629,12 +690,17 @@ impl Schema {
     ///
     /// Returns every issue found if `v` does not conform to `t`.
     pub fn resolve_as(&self, v: &Value, t: &TypeRef) -> Result<Value, Vec<Issue>> {
-        let (out, issues) = self.run(v, t, true);
+        let (out, issues, _) = self.run(v, t, true);
         if issues.is_empty() { Ok(out) } else { Err(issues) }
     }
 
     /// One resolution or validation pass of `v` against `t`.
-    fn run(&self, v: &Value, t: &TypeRef, apply_defaults: bool) -> (Value, Vec<Issue>) {
+    fn run(&self, v: &Value, t: &TypeRef, apply_defaults: bool) -> (Value, Vec<Issue>, Vec<ClassMark>) {
+        self.run_with(v, t, apply_defaults, true)
+    }
+
+    /// [`Self::run`], with class paths in resolved or in source order.
+    fn run_with(&self, v: &Value, t: &TypeRef, apply_defaults: bool, resolved_paths: bool) -> (Value, Vec<Issue>, Vec<ClassMark>) {
         let mut c = Ctx {
             schema: self,
             path: Vec::new(),
@@ -643,6 +709,9 @@ impl Schema {
             depth: 0,
             apply_defaults,
             fuel: nodes(v).saturating_mul(256).saturating_add(4096),
+            classes: Vec::new(),
+            inside: None,
+            resolved_paths,
         };
 
         let out = c.check(v.clone(), t);
@@ -653,7 +722,8 @@ impl Schema {
             });
         }
 
-        (out, c.issues)
+        let classes = c.classes.into_iter().map(|(p, class)| (Path(p), class)).collect();
+        (out, c.issues, classes)
     }
 
     /// Resolve against the `@root` type.
@@ -686,7 +756,48 @@ impl Schema {
             }]
         })?;
 
-        let (_, issues) = self.run(v, &t, false);
+        let (_, issues, _) = self.run(v, &t, false);
         if issues.is_empty() { Ok(()) } else { Err(issues) }
+    }
+
+    /// Resolve `v` against the `@root` type like [`Schema::resolve`], and also
+    /// return the classified values (proposal 0009): the path of every value
+    /// that a `@personal` or `@secret` type classifies, with that class. A
+    /// path may lie below another one; the outer class then applies too.
+    ///
+    /// # Errors
+    ///
+    /// As [`Schema::resolve`].
+    pub fn classify(&self, v: &Value) -> Result<(Value, Vec<ClassMark>), Vec<Issue>> {
+        let t = self.root_type().ok_or_else(|| {
+            vec![Issue {
+                path: Path::root(),
+                message: "schema has no @root".into(),
+            }]
+        })?;
+
+        let (out, issues, classes) = self.run(v, &t, true);
+        if issues.is_empty() { Ok((out, classes)) } else { Err(issues) }
+    }
+
+    /// The classified paths of `v` in its own coordinates, as stored: set
+    /// elements keep their source order and nothing is converted. Sinks that
+    /// show or compare the stored value (queries, diffs, patch conflicts,
+    /// editors) redact `v` itself with these paths; [`Schema::classify`]
+    /// gives paths into the resolved value instead (proposal 0009).
+    ///
+    /// # Errors
+    ///
+    /// As [`Schema::resolve`].
+    pub fn classify_source(&self, v: &Value) -> Result<Vec<ClassMark>, Vec<Issue>> {
+        let t = self.root_type().ok_or_else(|| {
+            vec![Issue {
+                path: Path::root(),
+                message: "schema has no @root".into(),
+            }]
+        })?;
+
+        let (_, issues, classes) = self.run_with(v, &t, false, false);
+        if issues.is_empty() { Ok(classes) } else { Err(issues) }
     }
 }

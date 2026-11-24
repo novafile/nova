@@ -591,3 +591,102 @@ fn nova_catalog_is_used_without_a_project_catalog() {
     server.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// The markdown of the hover at `line`:`character` of `uri`.
+fn hover_text(c: &mut Client, uri: &str, line: u32, character: u32) -> String {
+    let hover = c.request(
+        "textDocument/hover",
+        json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+    );
+    hover["contents"]["value"].as_str().unwrap_or_default().to_owned()
+}
+
+/// Hovers and the outline show `@redacted` for a classified value (proposal 0009),
+/// also while the document is invalid, and no values for a document whose schema
+/// is not found.
+#[test]
+fn classified_values_are_redacted() {
+    let (mut c, server, dir) = start();
+    let root = base(&dir);
+    let schema = format!("{root}/sec.novs");
+    open(
+        &c,
+        &schema,
+        "@schema acme.test/sec@1.0.0\n@root Config\n\ntype Token = string @secret\n\nrecord Config:\n  user: string @id(1)\n  token: Token @id(2)\n  creds?: Creds @id(3)\n\nrecord Creds:\n  login: string @id(1)\n  password: Token @id(2)\n",
+    );
+    assert_eq!(c.diagnostics_for(&schema), json!([]));
+
+    let doc = format!("{root}/sec.nova");
+    for (text, invalid) in [
+        ("@schema acme.test/sec@1.0.0\nuser: ann\ntoken: hunter2\n", false),
+        ("@schema acme.test/sec@1.0.0\nuser: 1\ntoken: hunter2\n", true),
+    ] {
+        open(&c, &doc, text);
+        assert_eq!(c.diagnostics_for(&doc).as_array().unwrap().is_empty(), !invalid);
+        let md = hover_text(&mut c, &doc, 2, 9);
+        assert!(md.contains("@redacted") && md.contains("@secret") && !md.contains("hunter2"), "{md}");
+        let symbols = c.request("textDocument/documentSymbol", json!({"textDocument": {"uri": doc}}));
+        assert!(!symbols.to_string().contains("hunter2"), "{symbols}");
+    }
+
+    // A secret in a flow record of an invalid document, and an invalid secret.
+    open(
+        &c,
+        &doc,
+        "@schema acme.test/sec@1.0.0\nuser: 1\ntoken: 12345\ncreds: {login: a, password: hunter2}\n",
+    );
+    let d = c.diagnostics_for(&doc);
+    assert!(d.to_string().contains("nova::invalid") && !d.to_string().contains("12345"), "{d}");
+    let md = hover_text(&mut c, &doc, 3, 2);
+    assert!(md.contains("login") && !md.contains("hunter2"), "{md}");
+
+    let lost = format!("{root}/lost.nova");
+    open(&c, &lost, "@schema acme.test/none@1.0.0\ntoken: hunter2\n");
+    let md = hover_text(&mut c, &lost, 1, 9);
+    assert!(md.contains("not shown") && !md.contains("hunter2"), "{md}");
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    server.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A schema that imports the bundled standard library links without a catalog,
+/// and a hover on an imported name shows its definition; an import that does not
+/// resolve is an error (proposal 0008).
+#[test]
+fn schema_imports_link() {
+    let (mut c, server, dir) = start();
+    let root = base(&dir);
+    let schema = format!("{root}/ids.novs");
+    open(
+        &c,
+        &schema,
+        "@schema acme.test/ids@1.0.0\n@import novafile.dev/std@0.1.0 as std\n@root R\n\nrecord R:\n  id: std.Uuid @id(1)\n",
+    );
+    assert_eq!(c.diagnostics_for(&schema), json!([]));
+    let md = hover_text(&mut c, &schema, 5, 9);
+    assert!(md.contains("type std.Uuid = string") && md.contains("novafile.dev/std@0.1.0"), "{md}");
+
+    // A name after a multibyte character in a comment.
+    let comment = format!("{root}/comment.novs");
+    open(&c, &comment, "@schema acme.test/c@1.0.0\n@root R\n# see §R\nrecord R:\n  n: int @id(1)\n");
+    c.diagnostics_for(&comment);
+    let md = hover_text(&mut c, &comment, 2, 7);
+    assert!(md.contains("record R"), "{md}");
+
+    let bad = format!("{root}/bad.novs");
+    open(
+        &c,
+        &bad,
+        "@schema acme.test/bad@1.0.0\n@import acme.test/nope@1.0.0 as nope\n@root R\n\nrecord R:\n  id: nope.Id @id(1)\n",
+    );
+    let d = c.diagnostics_for(&bad);
+    assert_eq!(d[0]["code"], "nova::schema", "{d}");
+    assert!(d[0]["message"].as_str().unwrap().contains("acme.test/nope"), "{d}");
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    server.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+}

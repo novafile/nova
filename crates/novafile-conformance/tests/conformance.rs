@@ -27,8 +27,9 @@ fn conformance_suite() {
     eprintln!("{} conformance cases pass", exp.len());
 }
 
-/// The meta-schema embedded in `novafile-schema` is a verbatim copy of the
-/// normative one in the specification (Apache-2.0), and must stay identical.
+/// The meta-schemas and the newest standard library embedded in
+/// `novafile-schema` are verbatim copies of the normative ones in the
+/// specification (Apache-2.0), and must stay identical.
 #[test]
 fn embedded_meta_schema_matches_spec() {
     let Some(dir) = novafile_conformance::locate() else {
@@ -39,6 +40,7 @@ fn embedded_meta_schema_matches_spec() {
     for (file, embedded) in [
         ("schema.novs", novafile_schema::META_SCHEMA_SRC),
         ("catalog.novs", novafile_schema::META_CATALOG_SRC),
+        ("std.novs", novafile_schema::STD_SRCS[novafile_schema::STD_SRCS.len() - 1]),
     ] {
         let spec = std::fs::read_to_string(dir.join("../meta").join(file)).unwrap_or_else(|e| panic!("spec meta/{file}: {e}"));
         assert_eq!(embedded, spec, "crates/novafile-schema/meta/{file} drifted from the spec's meta/{file}");

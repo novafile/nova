@@ -35,6 +35,9 @@
 //! | `name?: T` (optional field), `T?` (nullable), field with `= default` | `optional T` | proto3 explicit presence, for scalar and enum fields; message fields always have presence. |
 //! | `@deprecated` | `[deprecated = true]` | |
 //! | type aliases | — | Inlined; their constraints are checked by validation, not by Protobuf. |
+//! | `@import … as a`, `a.Name` | `a_Name` | Imported records and enums become messages and enums in the same package; `.` (like `-`) becomes `_`. A collision with a local name is an error. |
+//! | std type (`std.Uuid`) | `string` | An alias, so inlined; the field comment also gives the std name (`novafile.dev/std.Uuid`). |
+//! | `@secret`, `@personal` | `[debug_redact = true]` | On a field (or `oneof` member) whose type is classified, through aliases and classified record and enum definitions. A classified list or set element marks the whole `repeated` field, since every value of the field is such an element. |
 //!
 //! # Presence and defaults
 //!
@@ -82,6 +85,9 @@
 //! collection-typed variant payloads (a `oneof` member cannot be repeated);
 //! a root that is not a record or an enum with payloads; and, when encoding,
 //! extra fields of an `@open` record (they have no field number).
+//! [`proto_file`] also rejects a classified map value: `debug_redact` marks
+//! a whole field, keys included, so it cannot express that class. Encoding
+//! and decoding need no field options and accept such a map.
 //!
 //! [Protocol Buffers]: https://protobuf.dev/programming-guides/proto3/
 

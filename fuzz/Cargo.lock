@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-binary"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "novafile-text",
  "novafile-value",
@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-text"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "novafile-value",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-value"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "num-bigint",
  "sha2",

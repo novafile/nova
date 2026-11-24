@@ -114,6 +114,31 @@ impl fmt::Display for PatchError {
 
 impl std::error::Error for PatchError {}
 
+impl PatchError {
+    /// This error, but a failed comparison of `patch` at a path where `hide`
+    /// holds no longer shows the values (proposal 0009.6.2): the message
+    /// only says that the old value did not match. Hosts pass the classified
+    /// paths of the stored document.
+    #[must_use]
+    pub fn hiding(self, patch: &Patch, hide: &dyn Fn(&Path) -> bool) -> PatchError {
+        match self {
+            PatchError::Op { index, line, op, message }
+                if (message.starts_with("conflict:") || message.starts_with("test failed:"))
+                    && patch.ops.get(index).is_some_and(|o| hide(&patch.scope.join(&o.path))) =>
+            {
+                let shown = patch.ops.get(index).map_or(op, |o| format!("{} (values hidden)", o.path));
+                PatchError::Op {
+                    index,
+                    line,
+                    op: shown,
+                    message: "conflict: the old value did not match (the value is classified)".to_owned(),
+                }
+            }
+            other => other,
+        }
+    }
+}
+
 impl fmt::Display for Op {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let p = &self.path;
@@ -203,7 +228,8 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
                 "patch" => {
                     seen_header = true;
                     for tok in arg.split_whitespace() {
-                        if tok.starts_with("sha256:") {
+                        // `k:` is an opaque revision token from a redacted view (proposal 0009).
+                        if tok.starts_with("sha256:") || tok.starts_with("k:") {
                             patch.base = Some(tok.to_owned());
                         } else if patch.schema.is_none() {
                             patch.schema = Some(tok.to_owned());
@@ -309,6 +335,30 @@ pub struct Applied {
     pub base: Revision,
 }
 
+/// Fail on the first operation whose value, old value or test value holds a
+/// redaction placeholder (proposal 0009): a placeholder from a redacted view
+/// must never be written back.
+fn reject_placeholders(patch: &Patch) -> Result<(), PatchError> {
+    for (index, op) in patch.ops.iter().enumerate() {
+        let values: Vec<&Value> = match &op.kind {
+            OpKind::Replace { old, new } => vec![old, new],
+            OpKind::Set(v) | OpKind::Add(v) => vec![v],
+            OpKind::Remove(v) | OpKind::Test(v) => v.iter().collect(),
+        };
+
+        if values.iter().any(|v| v.contains_redacted()) {
+            return Err(PatchError::Op {
+                index,
+                line: op.line,
+                op: op.to_string(),
+                message: "redacted placeholder cannot be written".into(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 /// Apply a patch atomically. `validate` runs on the result before it is
 /// accepted (e.g. schema validation); any failure leaves `doc` untouched.
 ///
@@ -332,6 +382,7 @@ pub fn apply(doc: &Value, patch: &Patch, validate: &dyn Fn(&Value) -> Result<(),
         patch.scope.get(doc).map_err(PatchError::Scope)?;
     }
 
+    reject_placeholders(patch)?;
     let mut work = doc.clone();
     for (index, op) in patch.ops.iter().enumerate() {
         // Removing the scope target lets a positional scope (`items[0]`) slide

@@ -2,7 +2,7 @@
 //!
 //! [`Schema::to_value`] produces the *descriptor* of a schema: an ordinary
 //! NOVA value described by the meta-schema [`meta_schema`]
-//! (`novafile.dev/meta/schema@0.3.3`). [`Schema::from_value`] turns a descriptor back
+//! (`novafile.dev/meta/schema@0.3.4`). [`Schema::from_value`] turns a descriptor back
 //! into a schema by rendering its canonical text and parsing that, so
 //! descriptors are validated exactly like hand-written schemas.
 
@@ -141,6 +141,10 @@ fn type_value(t: &TypeRef) -> Value {
         e.push(("pattern", s(p.as_str())));
     }
 
+    if let Some(c) = t.constraints.class {
+        e.push(("class", tag(c.name())));
+    }
+
     rec(e)
 }
 
@@ -226,10 +230,23 @@ impl Schema {
                     }
                 };
 
-                rec(vec![("name", s(name)), body])
+                let mut e = vec![("name", s(name)), body];
+                if let Some(c) = self.def_class(name) {
+                    e.push(("class", tag(c.name())));
+                }
+
+                rec(e)
             })
             .collect();
         top.push(("defs", Value::List(defs)));
+        if !self.imports.is_empty() {
+            let imports = self
+                .imports
+                .iter()
+                .map(|i| rec(vec![("alias", s(&i.alias)), ("schema", s(&i.reference.to_string()))]));
+            top.push(("imports", Value::List(imports.collect())));
+        }
+
         rec(top)
     }
 
@@ -257,11 +274,20 @@ impl Schema {
             version: None,
             root: r.get("root").map(value_type).transpose()?,
             defs: Vec::new(),
-            extensions: Vec::new(),
+            ..Schema::default()
         };
 
         if let Some(ver) = text("version") {
             schema.version = Some(crate::Version::parse(&ver)?);
+        }
+
+        for i in r.get("imports").and_then(Value::as_list).into_iter().flatten() {
+            let i = i.as_record().ok_or("import must be a record")?;
+            let field = |k: &str| i.get(k).and_then(Value::as_str).ok_or_else(|| format!("import without {k}"));
+            schema.imports.push(crate::Import {
+                alias: field("alias")?.to_owned(),
+                reference: crate::SchemaRef::parse(field("schema")?)?,
+            });
         }
 
         for d in r.get("defs").and_then(Value::as_list).into_iter().flatten() {
@@ -323,11 +349,23 @@ impl Schema {
                 })
             };
 
+            if let Some(c) = d.get("class").and_then(class_of) {
+                schema.def_classes.push((name.clone(), c));
+            }
+
             schema.defs.push((name, def));
         }
 
         // Validate exactly like schema text (names, references, ids, cycles, defaults).
         crate::parse_schema(&schema.to_canonical_text()).map_err(|e| format!("invalid schema descriptor: {}", e.message))
+    }
+}
+
+/// The class named by a descriptor's `class` tag, if it names one.
+fn class_of(v: &Value) -> Option<crate::Class> {
+    match v {
+        Value::Variant(c, None) | Value::String(c) => crate::Class::from_name(c),
+        _ => None,
     }
 }
 
@@ -416,7 +454,8 @@ fn value_type(v: &Value, budget: &std::cell::Cell<usize>) -> Result<TypeRef, Str
     }
 
     if let Some(p) = r.get("pattern") {
-        if kind != "string" {
+        // A `named` type may refine an alias of string; the schema checks that.
+        if kind != "string" && kind != "named" {
             return Err(format!("`pattern` applies to string, not {kind}"));
         }
 
@@ -424,5 +463,6 @@ fn value_type(v: &Value, budget: &std::cell::Cell<usize>) -> Result<TypeRef, Str
         t.constraints.pattern = Some(crate::Pattern::new_within(p, budget).map_err(|e| format!("pattern {}: {e}", novafile_text::quote(p)))?);
     }
 
+    t.constraints.class = r.get("class").and_then(class_of);
     Ok(t)
 }

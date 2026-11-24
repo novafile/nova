@@ -1248,6 +1248,7 @@ version = "0.4.0"
 dependencies = [
  "clap",
  "detect-coding-agent",
+ "getrandom 0.3.4",
  "miette",
  "novafile-binary",
  "novafile-formats",
@@ -1378,6 +1379,7 @@ dependencies = [
  "novafile-text",
  "novafile-value",
  "regex-automata",
+ "sha2",
  "unicode-segmentation",
 ]
 

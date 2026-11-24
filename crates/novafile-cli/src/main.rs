@@ -3,7 +3,7 @@
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use novafile_binary::{Frame, FrameOptions, MAGIC, decode_frame, encode_frame};
-use novafile_schema::{Schema, check_versions, parse_schema};
+use novafile_schema::{ClassMark, RedactKey, Reveal, Schema, check_versions};
 use novafile_text::diagnostic::SourceDiagnostic;
 use novafile_text::lines::{Header, Positional, Segment, Status, WriteMode};
 use novafile_text::tokens::{HeuristicCounter, TokenCounter};
@@ -61,6 +61,7 @@ const AGENT_GUIDE: &str = r#"NOVA for agents — read narrow, write small, never
    On "conflict" or "stale base": re-run step 1 and rebuild the patch; do not force.
 
 3. Validate:  nvf validate FILE --schema SCHEMA.novs
+   Secrets and personal data print as @redacted; use the @revision (also a k:… token) as the patch base.
    Syntax:    key: value | - item | [a, b] | {k: v} | (tuple,) | !variant | @timestamp("…") | 22/7
    Quote strings that contain ": " or " #", or that start with a reserved character.
 "#;
@@ -145,6 +146,9 @@ enum Cmd {
         /// Rewrite the file in place.
         #[arg(short, long)]
         write: bool,
+        /// How to treat classified values when the output is another format than NOVA text.
+        #[command(flatten)]
+        classified: Classified,
     },
     /// Convert between NOVA text and binary, JSON/JSONL, YAML, TOML, CBOR and Protobuf (input format is detected unless `--from` is given).
     Convert {
@@ -165,11 +169,20 @@ enum Cmd {
         /// Fail instead of warning when the conversion loses type information or precision.
         #[arg(long)]
         strict: bool,
+        /// How to treat classified values.
+        #[command(flatten)]
+        classified: Classified,
     },
     /// Print the document's revision (SHA-256 of the canonical encoding).
+    ///
+    /// For a document with classified values this prints the opaque `k:` token instead, since
+    /// a hash lets a reader test guesses of a hidden value; `--reveal` prints the revision.
     Hash {
         /// Document to hash.
         file: PathBuf,
+        /// How to treat classified values.
+        #[command(flatten)]
+        classified: Classified,
     },
     /// Validate against a schema; with --resolve print the resolved document.
     Validate {
@@ -188,6 +201,10 @@ enum Cmd {
         /// Print the resolved document instead of a status line.
         #[arg(long)]
         resolve: bool,
+        /// Show classified values in the resolved document: all of them (no value), `personal`,
+        /// or a comma-separated list of paths.
+        #[arg(long, num_args = 0..=1, default_missing_value = "", require_equals = true, value_name = "personal|PATHS")]
+        reveal: Option<String>,
     },
     /// Answer a query such as `services[id=api].{replicas,port}`.
     ///
@@ -215,6 +232,9 @@ enum Cmd {
         /// Exit with status 1 if the result is null, false, or an empty list.
         #[arg(short, long)]
         exit_status: bool,
+        /// How to treat classified values.
+        #[command(flatten)]
+        classified: Classified,
     },
     /// Apply a patch atomically.
     ///
@@ -236,11 +256,17 @@ enum Cmd {
         write: bool,
     },
     /// Print a conditional patch that turns A into B.
+    ///
+    /// A change to a classified value prints as `= path: @redacted`; the output is then a report,
+    /// not a patch to apply.
     Diff {
         /// Original document.
         a: PathBuf,
         /// Target document.
         b: PathBuf,
+        /// How to treat classified values.
+        #[command(flatten)]
+        classified: Classified,
     },
     /// Render a @template document.
     Render {
@@ -258,15 +284,26 @@ enum Cmd {
         /// Output format.
         #[arg(long, value_enum, default_value = "nova")]
         to: Format,
+        /// Output file (default: stdout). A file gets the values in clear unless `--reveal`
+        /// says otherwise: rendering for deployment writes files.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Values from imported documents that their schemas classify print as `@redacted`
+        /// on stdout unless revealed (proposal 0009.7).
+        #[arg(long, num_args = 0..=1, default_missing_value = "", require_equals = true, value_name = "personal|PATHS")]
+        reveal: Option<String>,
     },
     /// Compare sizes of every representation (bytes and estimated tokens).
     Stats {
         /// Document to measure.
         file: PathBuf,
+        /// How to treat classified values: sizes are those of the redacted view unless revealed.
+        #[command(flatten)]
+        classified: Classified,
     },
     /// Print a short guide for AI coding agents (read projections, write conditional patches).
     Guide,
-    /// Check documents (.nova) and schemas (.novs) against NOVA conventions; exits 1 on warnings.
+    /// Check documents (.nova) and schemas (.novs) against NOVA conventions; exits 1 on warnings and errors.
     ///
     /// Rules: key-case (`snake_case` keys; fixable), key-collision, quoted-key, untyped-timestamp
     /// (fixable), mixed-list, compat-loss (with `@compat json|yaml|toml`), field-case,
@@ -353,7 +390,7 @@ enum SchemaCmd {
         #[arg(long)]
         pin: bool,
     },
-    /// Print the meta-schema `novafile.dev/meta/schema@0.3.3`, which describes schema descriptors.
+    /// Print the meta-schema `novafile.dev/meta/schema@0.3.4`, which describes schema descriptors.
     Meta,
     /// Print a JSON Schema (2020-12) describing the JSON form of valid documents.
     JsonSchema {
@@ -371,6 +408,22 @@ enum SchemaCmd {
         #[arg(long)]
         version: Option<String>,
     },
+}
+
+/// How a command that prints document values treats classified values (proposal 0009).
+///
+/// Values that the document's schema marks `@secret` or `@personal` print as `@redacted`
+/// unless `--reveal` shows them.
+#[derive(clap::Args)]
+struct Classified {
+    /// Show classified values: all of them (no value), `personal`, or a comma-separated list of
+    /// paths such as `services[id=api].db_url`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "", require_equals = true, value_name = "personal|PATHS")]
+    reveal: Option<String>,
+    /// Continue without classification when the document's schema cannot be found or the
+    /// document is not valid against it. Then no value is redacted.
+    #[arg(long)]
+    no_schema: bool,
 }
 
 /// CLI error: a miette report, so diagnostics with source spans render nicely.
@@ -450,7 +503,7 @@ fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
 }
 
 /// Schema reference of the meta-schema that describes schema descriptors.
-const META_REF: &str = "novafile.dev/meta/schema@0.3.3";
+const META_REF: &str = "novafile.dev/meta/schema@0.3.4";
 
 /// Loads a document in the given input format.
 ///
@@ -764,7 +817,17 @@ fn schema_from_text(p: &Path, src: &str) -> R<Schema> {
         return Ok(Schema::from_value(&v).map_err(|e| format!("{}: {e}", p.display()))?);
     }
 
-    parse_schema(src).map_err(|e| {
+    // Imports resolve through the catalogs that apply to the schema's directory (proposal 0008).
+    let start = p.parent().filter(|_| p.as_os_str() != "-").map(Path::to_path_buf);
+    let parsed = match novafile_schema::catalog::Resolver::new(&novafile_schema::catalog::Options::from_env(vec![], start)) {
+        Ok(r) => r.load_text(src),
+        Err(e) => {
+            eprintln!("warning: {e}; only imports of the standard library resolve");
+            novafile_schema::parse_schema(src)
+        }
+    };
+
+    parsed.map_err(|e| {
         if e.line == 0 {
             E::from(format!("{}: {}", p.display(), e.message))
         } else {
@@ -963,6 +1026,320 @@ fn issues(i: &[novafile_schema::Issue]) -> String {
     i.iter().map(|i| format!("  {i}")).collect::<Vec<_>>().join("\n")
 }
 
+/// The `--reveal` mode: [`Reveal::Redact`] without the flag.
+fn reveal_mode(arg: Option<&str>) -> R<Reveal> {
+    arg.map_or(Ok(Reveal::Redact), |a| Ok(Reveal::parse(a)?))
+}
+
+/// The directory where catalog lookup for the document `file` starts; none for stdin.
+fn start_of(file: &Path) -> Option<PathBuf> {
+    file.parent().filter(|_| file.as_os_str() != "-").map(Path::to_path_buf)
+}
+
+/// A document prepared for output (proposal 0009).
+struct View {
+    /// The value to print: the stored value, with classified values replaced when
+    /// something is hidden. Defaults and conversions are not applied.
+    value: Value,
+    /// How many values became placeholders.
+    hidden: usize,
+    /// The key for pseudonyms and revision tokens, if one was needed and found.
+    key: Option<RedactKey>,
+}
+
+impl View {
+    /// The stored value of `l`, with nothing hidden.
+    fn plain(l: &Loaded) -> View {
+        View {
+            value: l.value.clone(),
+            hidden: 0,
+            key: None,
+        }
+    }
+
+    /// The opaque token (`k:…`) for `rev` when the view hides values, so the revision
+    /// cannot test guesses of a hidden value (proposal 0009.6.5).
+    ///
+    /// Without a stored key, a key for this process only is used: the token then cannot
+    /// serve as a patch base, but the real revision is never shown.
+    fn token(&self, rev: &novafile_value::Revision) -> Option<String> {
+        if self.hidden == 0 {
+            return None;
+        }
+
+        let key = self.key.clone().or_else(|| {
+            let mut bytes = [0u8; 32];
+            getrandom::fill(&mut bytes).ok().map(|()| RedactKey::new(bytes))
+        });
+        Some(key.map_or_else(|| "k:unavailable".to_owned(), |k| k.token(rev)))
+    }
+}
+
+/// Classifies the document `l` (read from `file`) against `schema`, or else against the schema
+/// its `@schema` line names, and redacts what `reveal` does not show.
+///
+/// A document without a schema has no classified values. If the schema cannot be found, or
+/// the document is not valid against it, agent mode fails, so that a missing schema does not
+/// quietly send values to an agent; `--no-schema` continues there, and `--reveal` needs no schema.
+/// Outside agent mode this prints a warning and shows the values.
+fn view(l: &Loaded, file: &Path, schema: Option<&Schema>, reveal: &Reveal, no_schema: bool, agent: bool) -> R<View> {
+    if *reveal == Reveal::All {
+        return Ok(View::plain(l));
+    }
+
+    let refuse = |why: String| -> R<View> {
+        if no_schema || !agent {
+            eprintln!("warning: {why}; values are shown without classification");
+            return Ok(View::plain(l));
+        }
+
+        Err(
+            format!("{why}\nthe document can have classified values; pass --reveal to show all values, or --no-schema to continue without classification")
+                .into(),
+        )
+    };
+
+    let found;
+    let s = if let Some(s) = schema {
+        s
+    } else {
+        let Some(reference) = l
+            .directives
+            .iter()
+            .find(|(n, _)| n == "schema")
+            .map(|(_, r)| r.as_str())
+            .filter(|r| !r.is_empty())
+        else {
+            return Ok(View::plain(l));
+        };
+
+        match lookup(reference, &[], start_of(file), false) {
+            Ok((s, _)) => {
+                found = s;
+                &found
+            }
+            Err(E(e)) => return refuse(format!("{}: cannot find the schema {reference}: {e}", file.display())),
+        }
+    };
+
+    // Source paths: the view keeps the stored form, so a patch based on it matches the file.
+    let marks: Vec<ClassMark> = match s.classify_source(&l.value) {
+        Ok(c) => c,
+        Err(i) => {
+            return refuse(format!(
+                "{} is invalid against {}, so its values cannot be classified:\n{}",
+                file.display(),
+                s.fingerprint(),
+                issues(&i)
+            ));
+        }
+    };
+
+    if marks.is_empty() {
+        return Ok(View::plain(l));
+    }
+
+    let key = redact_key();
+    let r = novafile_schema::redact(&l.value, &marks, reveal, key.as_ref());
+    if r.count() == 0 {
+        return Ok(View::plain(l));
+    }
+
+    Ok(View {
+        value: r.for_output().clone(),
+        hidden: r.count(),
+        key,
+    })
+}
+
+/// Template imports read from files, with the schemas of imported documents looked up
+/// in catalogs, so `nvf render` can classify what they hold (proposal 0009.7).
+struct SchemaLoader {
+    /// Reads the imported files.
+    files: novafile_template::FsLoader,
+    /// Where catalog lookup starts: the template's directory.
+    start: Option<PathBuf>,
+}
+
+impl novafile_template::Loader for SchemaLoader {
+    fn load(&self, path: &str, from: Option<&str>) -> Result<(String, String), String> {
+        self.files.load(path, from)
+    }
+
+    fn schema(&self, reference: &str, _from: Option<&str>) -> Result<Option<Schema>, String> {
+        lookup(reference, &[], self.start.clone(), false)
+            .map(|(s, _)| Some(s))
+            .map_err(|E(e)| e.to_string())
+    }
+}
+
+/// `bytes`, the printed result of a patch, or the patched document `result` with its
+/// classified values redacted when it has any. Fails when the document names a schema that
+/// cannot be found or does not resolve it, since nothing could then be redacted.
+fn redacted_echo(bytes: Vec<u8>, result: &Loaded, file: &Path, schema: Option<&Schema>) -> R<Vec<u8>> {
+    let Some(marks) = conflict_marks(result, file, schema) else {
+        return Err(format!(
+            "{}: the patch applies, but the result is not shown: its schema is not found or does not classify it; use -w",
+            file.display()
+        )
+        .into());
+    };
+
+    if marks.is_empty() {
+        return Ok(bytes);
+    }
+
+    let r = novafile_schema::redact(&result.value, &marks, &Reveal::Redact, redact_key().as_ref());
+    if r.count() == 0 {
+        return Ok(bytes);
+    }
+
+    let shown = Loaded {
+        directives: result.directives.clone(),
+        value: r.for_output().clone(),
+    };
+    render_as(&shown, Format::Nova, false)
+}
+
+/// The classified paths of `l` (read from `file`), from `schema` or the schema its `@schema`
+/// line names: empty without a schema, and `None` when the named schema cannot be found or
+/// does not resolve the document, so that every conflict hides its values.
+fn conflict_marks(l: &Loaded, file: &Path, schema: Option<&Schema>) -> Option<Vec<ClassMark>> {
+    let found;
+    let s = if let Some(s) = schema {
+        s
+    } else {
+        let Some(reference) = l
+            .directives
+            .iter()
+            .find(|(n, _)| n == "schema")
+            .map(|(_, r)| r.as_str())
+            .filter(|r| !r.is_empty())
+        else {
+            return Some(Vec::new());
+        };
+        found = lookup(reference, &[], start_of(file), false).ok()?.0;
+        &found
+    };
+
+    s.classify_source(&l.value).ok()
+}
+
+/// Whether a patch conflict at `at` in `doc` must hide its values: `at` lies at, below or
+/// above a classified path, or the classified paths are unknown (`marks` is `None`).
+fn hides(doc: &Value, marks: Option<&[ClassMark]>, at: &novafile_text::Path) -> bool {
+    let (Some(marks), Some(at)) = (marks, novafile_schema::concrete_path(doc, at)) else {
+        return true;
+    };
+
+    marks.iter().any(|(m, _)| at.starts_with(&m.0) || m.0.starts_with(&at))
+}
+
+/// The key for pseudonyms and revision tokens: `NOVA_REDACT_KEY` (64 hex digits), else
+/// `redact.key` next to the user schema cache, made on first use. Without a key, personal
+/// values become a bare `@redacted` and revisions print in clear.
+fn redact_key() -> Option<RedactKey> {
+    if let Some(hex) = std::env::var_os("NOVA_REDACT_KEY").filter(|v| !v.is_empty()) {
+        let key = hex.to_str().and_then(|h| RedactKey::from_hex(h).ok());
+        if key.is_none() {
+            eprintln!("warning: NOVA_REDACT_KEY must be 64 hex digits; pseudonyms and revision tokens are off");
+        }
+
+        return key;
+    }
+
+    let path = novafile_schema::catalog::user_cache()?.parent()?.join("redact.key");
+    key_file(&path)
+        .map_err(|e| eprintln!("warning: {}: {e}; pseudonyms and revision tokens are off", path.display()))
+        .ok()
+}
+
+/// Reads the key file `path`, or makes it with 32 random bytes, readable only by the user.
+fn key_file(path: &Path) -> Result<RedactKey, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => return RedactKey::from_hex(&text),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.to_string()),
+        Err(_) => {}
+    }
+
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| e.to_string())?;
+    let key = RedactKey::new(bytes);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    match opts.open(path) {
+        Ok(mut f) => {
+            f.write_all(key.to_hex().as_bytes()).map_err(|e| e.to_string())?;
+            Ok(key)
+        }
+        // Another process made it first: use its key.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => RedactKey::from_hex(&std::fs::read_to_string(path).map_err(|e| e.to_string())?),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// A placeholder as one line of raw output: `@redacted` or `@redacted(p:…)`.
+fn raw_placeholder(v: &Value) -> String {
+    match v {
+        Value::Variant(_, Some(p)) => format!("@redacted({})", p.as_str().unwrap_or_default()),
+        _ => "@redacted".into(),
+    }
+}
+
+/// Whether a diff operation at `path` would show a value that the redacted `view` hides: the
+/// path passes through a placeholder, or leads to a value that holds one. Where the path cannot
+/// be followed (a selector that finds nothing, a map, a set), any placeholder below counts.
+fn masked(view: &Value, path: &novafile_text::Path) -> bool {
+    use novafile_text::Segment;
+    let mut cur = view;
+    for seg in &path.0 {
+        if cur.is_redacted() {
+            return true;
+        }
+
+        let next = match (cur, seg) {
+            // A field that is not there holds no value to show.
+            (Value::Record(r), Segment::Field(f)) => match r.get(f) {
+                Some(v) => Some(v),
+                None => return false,
+            },
+            (Value::Variant(t, Some(p)), Segment::Field(f)) if t == f => Some(&**p),
+            (Value::List(l) | Value::Tuple(l), Segment::Index(i)) => usize::try_from(*i).ok().and_then(|i| l.get(i)),
+            (Value::List(l), Segment::Match(f, want)) => l.iter().find(|e| e.as_record().and_then(|r| r.get(f)) == Some(want)),
+            _ => None,
+        };
+
+        match next {
+            Some(n) => cur = n,
+            None => return cur.contains_redacted(),
+        }
+    }
+
+    cur.contains_redacted()
+}
+
+/// Output formats that cannot hold a placeholder: binary encodings, where it must never be
+/// encoded, and YAML and TOML, where it would become a plain string that can be written back.
+fn refuses_placeholders(f: Format) -> bool {
+    matches!(
+        f,
+        Format::Binary
+            | Format::BinaryCanonical
+            | Format::BinaryStream
+            | Format::Cbor
+            | Format::CborDeterministic
+            | Format::Protobuf
+            | Format::Yaml
+            | Format::Toml
+    )
+}
+
 /// Turns a patch error into a diagnostic that points into the patch source.
 fn patch_error(e: &novafile_patch::PatchError, file: &Path, src: &str) -> E {
     use novafile_patch::PatchError as P;
@@ -1001,6 +1378,7 @@ fn patch_error(e: &novafile_patch::PatchError, file: &Path, src: &str) -> E {
 /// Runs the parsed command and returns the process exit code.
 #[expect(clippy::too_many_lines, reason = "one dispatch arm per subcommand")]
 fn run(cli: Cli) -> R<ExitCode> {
+    let agent = agent_detected(cli.agent).is_some();
     match cli.cmd {
         Cmd::Guide => print!("{AGENT_GUIDE}"),
         Cmd::Lint {
@@ -1010,7 +1388,7 @@ fn run(cli: Cli) -> R<ExitCode> {
             fix,
             format,
         } => return lint(&files, case, allow, fix, &format),
-        Cmd::Fmt { file, to, write } => {
+        Cmd::Fmt { file, to, write, classified } => {
             // NOVA text keeps its comments, blank lines and spellings (spec §3).
             let profile = match to {
                 Format::Nova => Some(Profile::Human),
@@ -1062,7 +1440,28 @@ fn run(cli: Cli) -> R<ExitCode> {
                     )
                     .into());
                 }
-                _ => render_as(&decode(&file, input.clone(), InputFormat::Auto, None, false)?, to, false)?,
+                // A conversion to stdout prints values like `nvf convert`, so it redacts like it.
+                _ => {
+                    let reveal = reveal_mode(classified.reveal.as_deref())?;
+                    let l = decode(&file, input.clone(), InputFormat::Auto, None, false)?;
+                    let v = view(&l, &file, None, &reveal, classified.no_schema, agent)?;
+                    if v.hidden > 0 && refuses_placeholders(to) {
+                        return Err(format!(
+                            "{}: classified values are redacted, and this format cannot hold the placeholders; use --reveal",
+                            file.display()
+                        )
+                        .into());
+                    }
+
+                    render_as(
+                        &Loaded {
+                            directives: l.directives,
+                            value: v.value,
+                        },
+                        to,
+                        false,
+                    )?
+                }
             };
 
             out(&bytes, write.then_some(file.as_path()))?;
@@ -1075,19 +1474,49 @@ fn run(cli: Cli) -> R<ExitCode> {
             from,
             output,
             strict,
+            classified,
         } => {
+            let reveal = reveal_mode(classified.reveal.as_deref())?;
             let s = schema.as_deref().map(load_schema).transpose()?;
             let l = load_with(&file, from, s.as_ref(), strict)?;
-            out(&render_with(&l, to, strict, s.as_ref())?, output.as_deref())?;
+            let v = view(&l, &file, s.as_ref(), &reveal, classified.no_schema, agent)?;
+            let name = to.to_possible_value().map(|v| v.get_name().to_owned()).unwrap_or_default();
+            if v.hidden > 0 && refuses_placeholders(to) {
+                return Err(format!(
+                    "{}: {} classified value(s) are redacted, and {name} cannot hold the placeholders; use --reveal or a text format (NOVA, JSON)",
+                    file.display(),
+                    v.hidden
+                )
+                .into());
+            }
+
+            if v.hidden > 0 {
+                lossy(&name, &[format!("{} classified value(s) are redacted", v.hidden)], strict)?;
+            }
+
+            let shown = Loaded {
+                directives: l.directives,
+                value: v.value,
+            };
+
+            out(&render_with(&shown, to, strict, s.as_ref())?, output.as_deref())?;
         }
-        Cmd::Hash { file } => println!("{}", revision(&load(&file)?.value)),
+        Cmd::Hash { file, classified } => {
+            let reveal = reveal_mode(classified.reveal.as_deref())?;
+            let l = load(&file)?;
+            let v = view(&l, &file, None, &reveal, classified.no_schema, agent)?;
+            let rev = revision(&l.value);
+            println!("{}", v.token(&rev).unwrap_or_else(|| rev.to_string()));
+        }
         Cmd::Validate {
             file,
             schema,
             catalog,
             fetch,
             resolve,
+            reveal,
         } => {
+            let reveal = reveal_mode(reveal.as_deref())?;
             let l = load(&file)?;
             let s = if let Some(p) = &schema {
                 load_schema(p)?
@@ -1107,12 +1536,13 @@ fn run(cli: Cli) -> R<ExitCode> {
                 s.accepts_reference(r).map_err(|e| format!("{}: {e}", file.display()))?;
             }
 
-            match s.resolve(&l.value) {
-                Ok(v) => {
+            match s.classify(&l.value) {
+                Ok((v, marks)) => {
                     if resolve {
+                        let key = (!marks.is_empty() && reveal != Reveal::All).then(redact_key).flatten();
                         let resolved = Loaded {
                             directives: vec![("schema".into(), s.fingerprint())],
-                            value: v,
+                            value: novafile_schema::redact(&v, &marks, &reveal, key.as_ref()).for_output().clone(),
                         };
 
                         out(&render_as(&resolved, Format::Nova, false)?, None)?;
@@ -1121,8 +1551,9 @@ fn run(cli: Cli) -> R<ExitCode> {
                     }
                 }
                 Err(i) => {
-                    // Point at each offending value when the input is NOVA text.
-                    let src = read_text(&file).ok();
+                    // Point at each offending value when the input is NOVA text, unless the
+                    // schema classifies values: the snippet would show them (proposal 0009.6.2).
+                    let src = read_text(&file).ok().filter(|_| !s.has_classes());
                     if let Some((_, spans)) = src.as_deref().and_then(|t| novafile_text::parse_with_spans(t).ok()) {
                         let src = src.unwrap();
                         let title = format!(
@@ -1156,13 +1587,21 @@ fn run(cli: Cli) -> R<ExitCode> {
             raw,
             bare,
             exit_status,
+            classified,
         } => {
+            let reveal = reveal_mode(classified.reveal.as_deref())?;
             let l = load_as(&file, from)?;
-            let r = novafile_patch::get(&l.value, &path)?;
+            // The query runs on the redacted view, so a filter cannot test a hidden value.
+            let v = view(&l, &file, None, &reveal, classified.no_schema, agent)?;
+            let mut r = novafile_patch::get(&v.value, &path)?;
+            // The revision is always that of the stored document, never of the view.
+            r.revision = revision(&l.value);
+            r.token = v.token(&r.revision);
             let multi = !novafile_patch::parse_request(&path)?.is_singular();
             let json = matches!(to, Format::Json | Format::JsonCompact);
             let one_line = |v: &Value| -> String {
                 match v {
+                    _ if raw && v.is_redacted() => raw_placeholder(v),
                     Value::String(s) if raw => s.clone(),
                     _ if json => novafile_json::to_json_string(v, false).0,
                     _ => novafile_text::flow_string(v),
@@ -1211,8 +1650,36 @@ fn run(cli: Cli) -> R<ExitCode> {
             let bytes = read_bytes(&file)?;
             // In place, a rounded number would be written back: refuse it, as for lossy output.
             let l = decode(&file, bytes.clone(), InputFormat::Auto, None, write)?;
+            let directives = l.directives.clone();
             let patch_src = read_text(&patch)?;
-            let p = novafile_patch::parse_patch(&patch_src).map_err(|e| patch_error(&e, &patch, &patch_src))?;
+            let mut p = novafile_patch::parse_patch(&patch_src).map_err(|e| patch_error(&e, &patch, &patch_src))?;
+            // `@patch k:…` names an opaque revision token (proposal 0009.6.5), not a schema.
+            if p.base.is_none() && p.schema.as_deref().is_some_and(|t| t.starts_with("k:")) {
+                p.base = p.schema.take();
+            }
+
+            let key = p.base.as_deref().is_some_and(|b| b.starts_with("k:")).then(redact_key);
+            if let Some(key) = &key {
+                let key = key
+                    .as_ref()
+                    .ok_or("the patch base is a k: token, but there is no redaction key to check it with")?;
+                let base = p.base.clone().unwrap_or_default();
+                let current = key.token(&revision(&l.value));
+                // Like a revision, a token can be cut to 8 or more hex digits.
+                if base.len() < 10 || !current.starts_with(&base) {
+                    return Err(SourceDiagnostic::new(
+                        "nova::patch::stale",
+                        format!("conflict: patch expects base {base} but the document is at {current}"),
+                        &name_of(&patch),
+                        &patch_src,
+                    )
+                    .with_help("fetch the document again (`nvf get`) and rebase the patch on the new revision")
+                    .into());
+                }
+
+                p.base = Some(revision(&l.value).to_string());
+            }
+
             let s = schema.as_deref().map(load_schema).transpose()?;
             if let (Some(s), Some(r)) = (&s, &p.schema)
                 && s.reference().is_some()
@@ -1220,6 +1687,9 @@ fn run(cli: Cli) -> R<ExitCode> {
                 s.accepts_reference(r).map_err(|e| format!("{}: {e}", patch.display()))?;
             }
 
+            // Conflicts at classified paths do not show the stored value (proposal 0009.6.2).
+            let marks = conflict_marks(&l, &file, s.as_ref());
+            let hide = |at: &novafile_text::Path| hides(&l.value, marks.as_deref(), at);
             let validate = |v: &Value| match &s {
                 Some(s) => s.validate(v).map_err(|i| i.iter().map(std::string::ToString::to_string).collect()),
                 None => Ok(()),
@@ -1228,19 +1698,19 @@ fn run(cli: Cli) -> R<ExitCode> {
             let text = std::str::from_utf8(&bytes).ok().filter(|t| is_nova_text(&file, t));
             let (bytes, applied) = if let Some(src) = text {
                 // Document-preserving: minimal edits to the source text.
-                let r = novafile_patch::apply_to_source(src, &p, &validate).map_err(|e| patch_error(&e, &patch, &patch_src))?;
+                let r = novafile_patch::apply_to_source(src, &p, &validate).map_err(|e| patch_error(&e.hiding(&p, &hide), &patch, &patch_src))?;
                 (r.text.into_bytes(), r.applied)
             } else {
                 let is_schema = file.extension().is_some_and(|e| e == "novs");
                 let meta = novafile_schema::meta_schema();
                 let meta_check = |v: &Value| meta.validate(v).map_err(|i| i.iter().map(std::string::ToString::to_string).collect());
                 let check: &dyn Fn(&Value) -> Result<(), Vec<String>> = if is_schema { &meta_check } else { &validate };
-                let applied = novafile_patch::apply(&l.value, &p, check).map_err(|e| patch_error(&e, &patch, &patch_src))?;
+                let applied = novafile_patch::apply(&l.value, &p, check).map_err(|e| patch_error(&e.hiding(&p, &hide), &patch, &patch_src))?;
                 if is_schema {
                     // Patched schema descriptors are written back in the schema language.
                     let mut s = Schema::from_value(&applied.value)?;
                     // Descriptors leave out `@x-…` directives; keep the file's own.
-                    if let Ok(old) = novafile_schema::parse_schema(&String::from_utf8_lossy(&bytes)) {
+                    if let Ok(old) = novafile_schema::parse_schema_unlinked(&String::from_utf8_lossy(&bytes)) {
                         s.extensions = old.extensions;
                     }
 
@@ -1274,11 +1744,56 @@ fn run(cli: Cli) -> R<ExitCode> {
                 }
             };
 
+            // The printed result must not echo classified values (proposal 0009.6.3).
+            let bytes = if write {
+                bytes
+            } else {
+                let result = Loaded {
+                    directives,
+                    value: applied.value.clone(),
+                };
+                redacted_echo(bytes, &result, &file, s.as_ref())?
+            };
+
             out(&bytes, write.then_some(file.as_path()))?;
-            eprintln!("{} -> {}", applied.base, applied.revision);
+            if let Some(k) = key.flatten() {
+                eprintln!("{} -> {}", k.token(&applied.base), k.token(&applied.revision));
+            } else {
+                eprintln!("{} -> {}", applied.base, applied.revision);
+            }
         }
-        Cmd::Diff { a, b } => print!("{}", novafile_patch::diff(&load(&a)?.value, &load(&b)?.value)),
-        Cmd::Render { file, set, values, schema, to } => {
+        Cmd::Diff { a, b, classified } => {
+            let reveal = reveal_mode(classified.reveal.as_deref())?;
+            let (la, lb) = (load(&a)?, load(&b)?);
+            let (va, vb) = (
+                view(&la, &a, None, &reveal, classified.no_schema, agent)?,
+                view(&lb, &b, None, &reveal, classified.no_schema, agent)?,
+            );
+            // Diff the stored values, then hide changes to classified values (proposal 0009.6.4):
+            // a diff of two redacted views would not show that a hidden value changed.
+            let mut d = novafile_patch::diff(&la.value, &lb.value);
+            for op in &mut d.ops {
+                if masked(&va.value, &op.path) || masked(&vb.value, &op.path) {
+                    op.kind = novafile_patch::OpKind::Set(Value::Variant(novafile_value::REDACTED_TAG.into(), None));
+                }
+            }
+
+            if va.hidden + vb.hidden > 0 {
+                let rev = revision(&la.value);
+                d.base = va.token(&rev).or_else(|| vb.key.as_ref().map(|k| k.token(&rev)));
+            }
+
+            print!("{d}");
+        }
+        Cmd::Render {
+            file,
+            set,
+            values,
+            schema,
+            to,
+            output,
+            reveal,
+        } => {
             let src = read_text(&file)?;
             let mut args = match values {
                 Some(v) => match load(&v)?.value {
@@ -1295,8 +1810,12 @@ fn run(cli: Cli) -> R<ExitCode> {
             }
 
             let s = schema.as_deref().map(load_schema).transpose()?;
-            let loader = novafile_template::FsLoader {
-                root: file.parent().map(Path::to_path_buf).unwrap_or_default(),
+            let loader = SchemaLoader {
+                files: novafile_template::FsLoader {
+                    // A bare file name has an empty parent: the current directory.
+                    root: file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf(),
+                },
+                start: start_of(&file),
             };
 
             let opts = novafile_template::Options {
@@ -1305,17 +1824,52 @@ fn run(cli: Cli) -> R<ExitCode> {
                 limits: novafile_template::Limits::default(),
             };
 
-            let v = novafile_template::render(&src, &args, &opts).map_err(|e| format!("{}: {e}", file.display()))?;
+            let reveal = match (&reveal, &output) {
+                (None, Some(_)) => Reveal::All,
+                _ => reveal_mode(reveal.as_deref())?,
+            };
+            let key = redact_key();
+            let mode = novafile_template::Redaction { reveal, key: key.as_ref() };
+            let r = novafile_template::render_redacted(&src, &args, &opts, &mode).map_err(|e| format!("{}: {e}", file.display()))?;
             if let Some(s) = &s
                 && s.root.is_some()
             {
+                // Placeholders would not validate: check the clear rendering instead.
+                let clear = novafile_template::Redaction {
+                    reveal: Reveal::All,
+                    key: None,
+                };
+                let v = if r.count() == 0 {
+                    r.for_output().clone()
+                } else {
+                    novafile_template::render_redacted(&src, &args, &opts, &clear)
+                        .map_err(|e| format!("{}: {e}", file.display()))?
+                        .for_output()
+                        .clone()
+                };
                 s.validate(&v).map_err(|i| format!("rendered document is invalid:\n{}", issues(&i)))?;
             }
 
-            out(&render_as(&Loaded { directives: vec![], value: v }, to, false)?, None)?;
+            if r.count() > 0 && refuses_placeholders(to) {
+                return Err("the rendering has redacted values; use --reveal or a text format (NOVA, JSON)".into());
+            }
+
+            out(
+                &render_as(
+                    &Loaded {
+                        directives: vec![],
+                        value: r.for_output().clone(),
+                    },
+                    to,
+                    false,
+                )?,
+                output.as_deref(),
+            )?;
         }
-        Cmd::Stats { file } => {
-            let l = load(&file)?;
+        Cmd::Stats { file, classified } => {
+            let reveal = reveal_mode(classified.reveal.as_deref())?;
+            let stored = load(&file)?;
+            let l = view(&stored, &file, None, &reveal, classified.no_schema, agent)?;
             let c = HeuristicCounter;
             println!("{:<18} {:>9} {:>9}", "representation", "bytes", "~tokens");
             for (name, f) in [
@@ -1422,7 +1976,7 @@ fn run(cli: Cli) -> R<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Runs `nvf lint` over files and prints findings; exits 1 if any warning remains.
+/// Runs `nvf lint` over files and prints findings; exits 1 if any warning or error remains.
 fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, format: &str) -> R<ExitCode> {
     let mut config = novafile_lint::Config::default();
     if let Some(c) = case {
@@ -1430,7 +1984,7 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
     }
 
     config.allow = allow;
-    let mut warnings = 0;
+    let mut failures = 0;
     for file in files {
         if fix && file.as_os_str() == "-" {
             return Err("--fix needs a file to rewrite, not stdin".into());
@@ -1453,7 +2007,9 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
 
         let run = |src: &str| -> R<Vec<novafile_lint::Finding>> {
             if is_schema {
-                Ok(novafile_lint::lint_schema(src, &config).map_err(|e| format!("{}: {e}", file.display()))?)
+                // Linked through the catalogs, so imports of catalog schemas work.
+                let schema = schema_from_text(file, src)?;
+                Ok(novafile_lint::lint_parsed_schema(src, &schema, &config).map_err(|e| format!("{}: {e}", file.display()))?)
             } else {
                 Ok(novafile_lint::lint_document(src, &config).map_err(|e| e.to_diagnostic(&name_of(file), src))?)
             }
@@ -1473,7 +2029,7 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
             write_atomic(file, src.as_bytes())?;
         }
 
-        warnings += findings.iter().filter(|f| f.level == novafile_lint::Level::Warning).count();
+        failures += findings.iter().filter(|f| f.level >= novafile_lint::Level::Warning).count();
         for f in &findings {
             if format == "json" {
                 let (line, col) = novafile_text::spans::line_col_utf16(&src, f.start);
@@ -1483,7 +2039,14 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
                     ("rule", Value::String(f.rule.into())),
                     (
                         "level",
-                        Value::String(if f.level == novafile_lint::Level::Warning { "warning" } else { "hint" }.into()),
+                        Value::String(
+                            match f.level {
+                                novafile_lint::Level::Error => "error",
+                                novafile_lint::Level::Warning => "warning",
+                                novafile_lint::Level::Hint => "hint",
+                            }
+                            .into(),
+                        ),
                     ),
                     ("message", Value::String(f.message.clone())),
                     ("line", Value::Int(i128::from(line) + 1)),
@@ -1500,17 +2063,17 @@ fn lint(files: &[PathBuf], case: Option<String>, allow: Vec<String>, fix: bool, 
                     f.end.saturating_sub(f.start),
                     if f.fix.is_some() { "fixable with --fix" } else { "here" },
                 );
-                d.severity = Some(if f.level == novafile_lint::Level::Warning {
-                    miette::Severity::Warning
-                } else {
-                    miette::Severity::Advice
+                d.severity = Some(match f.level {
+                    novafile_lint::Level::Error => miette::Severity::Error,
+                    novafile_lint::Level::Warning => miette::Severity::Warning,
+                    novafile_lint::Level::Hint => miette::Severity::Advice,
                 });
                 eprintln!("{:?}", miette::Report::new(d));
             }
         }
     }
 
-    Ok(if warnings > 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
+    Ok(if failures > 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
 }
 
 /// Is the CLI driven by a coding agent?

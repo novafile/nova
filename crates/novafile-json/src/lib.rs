@@ -555,6 +555,13 @@ fn write(value: &Value, out: &mut String, path: &mut String, warnings: &mut Vec<
             let pairs = Value::List(m.iter().map(|(k, v)| Value::List(vec![k.clone(), v.clone()])).collect());
             write(&pairs, out, path, warnings, indent);
         }
+        // Placeholders of redacted values (proposal 0009) keep their own shape.
+        Value::Variant(t, p) if t == novafile_value::REDACTED_TAG => {
+            let mut r = Record::new();
+            let pseudonym = p.as_deref().cloned().unwrap_or(Value::Null);
+            r.insert("$redacted".to_owned(), pseudonym).expect("a new record has no keys");
+            write(&Value::Record(r), out, path, warnings, indent);
+        }
         Value::Variant(t, None) => {
             warn("unit variant written as a string");
             quote(t, out);
@@ -571,6 +578,15 @@ fn write(value: &Value, out: &mut String, path: &mut String, warnings: &mut Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Redaction placeholders (proposal 0009) become `{"$redacted": …}`.
+    #[test]
+    fn redaction_placeholders() {
+        let bare = Value::Variant(novafile_value::REDACTED_TAG.into(), None);
+        let pseudo = Value::Variant(novafile_value::REDACTED_TAG.into(), Some(Box::new(Value::String("p:7c1e93".into()))));
+        assert_eq!(to_json_string(&bare, false).0, r#"{"$redacted":null}"#);
+        assert_eq!(to_json_string(&pseudo, false).0, r#"{"$redacted":"p:7c1e93"}"#);
+    }
 
     #[test]
     fn unicode_escapes_take_exactly_four_hex_digits() {

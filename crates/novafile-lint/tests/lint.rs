@@ -133,3 +133,42 @@ fn schema_name_lints() {
     assert_eq!(rules("acme.example/v2x"), [] as [&str; 0]);
     assert_eq!(rules("novafile.dev/community/pddl"), ["schema-name-reserved"]);
 }
+
+#[test]
+fn classified_lints() {
+    let src = "@schema acme.example/ops@1.0.0\ntype ApiToken = string @secret\nrecord Credentials @secret:\n  password: string\nrecord Service:\n  name: string\n  token: ApiToken = \"t0p\"\n  apiKey: string\n  private_key?: string @personal\n  secret: string\n";
+    let f = lint_schema(src, &Config::default()).unwrap();
+    let got: Vec<(&str, Level, &str)> = f.iter().map(|f| (f.rule, f.level, &src[f.start..f.end])).collect();
+    assert_eq!(
+        got,
+        [
+            ("classified-default", Level::Error, "token"),
+            ("classified-hint", Level::Warning, "apiKey"),
+            ("field-case", Level::Warning, "apiKey"),
+            ("classified-hint", Level::Warning, "secret"),
+        ],
+        "{f:#?}"
+    );
+    let quiet = Config::default().with_directive("allow=classified-default,classified-hint,field-case").unwrap();
+    assert_eq!(lint_schema(src, &quiet).unwrap(), [] as [novafile_lint::Finding; 0]);
+}
+
+#[test]
+fn std_lints() {
+    let src = "@schema acme.example/users@1.0.0\n@import novafile.dev/std@0.1.0 as std\ntype Id = std.Uuid\ntype Port = int @range(0..65535)\ntype Mail = string @pattern(\"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?([.][A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\") @personal\nrecord User:\n  uuid: Id\n  owner_uuid: string\n  email: std.Email\n  url: string\n  phone: int\n";
+    let f = lint_schema(src, &Config::default()).unwrap();
+    let got: Vec<(&str, Level, &str)> = f.iter().map(|f| (f.rule, f.level, &src[f.start..f.end])).collect();
+    assert_eq!(
+        got,
+        [("std-restated", Level::Hint, "type Port"), ("std-restated", Level::Hint, "type Mail")],
+        "{f:#?}"
+    );
+    assert!(f[1].message.contains("restates Email of novafile.dev/std@0.1.0"), "{}", f[1].message);
+    // `std-hint` is off by default.
+    let on = Config::default().with_directive("enable=std-hint allow=std-restated").unwrap();
+    let f = lint_schema(src, &on).unwrap();
+    let got: Vec<(&str, &str)> = f.iter().map(|f| (f.rule, &src[f.start..f.end])).collect();
+    assert_eq!(got, [("std-hint", "owner_uuid"), ("std-hint", "url")], "{f:#?}");
+    let in_schema = src.replacen("\n@import", "\n@x-lint enable=std-hint\n@import", 1);
+    assert!(lint_schema(&in_schema, &Config::default()).unwrap().iter().any(|f| f.rule == "std-hint"));
+}
