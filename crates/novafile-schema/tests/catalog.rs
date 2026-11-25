@@ -147,7 +147,7 @@ fn fetch_locations_and_checks() {
         Some("https://billing.acme.dev/acme.dev/billing/invoice@2.1.0")
     );
     assert_eq!(at("other.org/a@1.0.0").as_deref(), Some("https://other.org/a/1.0.0.novs"));
-    for never in ["local@1.0.0", "acme.test/a@1.0.0", "x.example/a@1.0.0", "novafile.dev/meta/schema@0.3.4"] {
+    for never in ["local@1.0.0", "acme.test/a@1.0.0", "x.example/a@1.0.0", "novafile.dev/meta/schema@0.3.5"] {
         assert_eq!(at(never), None, "{never}");
     }
 

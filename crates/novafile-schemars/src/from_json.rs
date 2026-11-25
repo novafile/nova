@@ -1,7 +1,9 @@
 //! JSON Schema → NOVA schema. See the crate documentation for the mapping.
 
 use crate::{Conversion, Error};
-use novafile_schema::{Class, Constraints, Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef, Version};
+use novafile_schema::{
+    Class, Constraints, Def, FieldDef, IntKind, LenUnit, Num, RecordDef, RecordRule, RuleKind, Schema, TypeKind, TypeRef, VariantDef, Version,
+};
 use novafile_value::{Decimal, Value};
 use serde_json::{Map, Value as Json};
 use std::collections::{HashMap, HashSet};
@@ -357,19 +359,10 @@ impl Conv<'_> {
         out
     }
 
-    /// A record definition from an object schema (or a tagged union).
-    fn record(&mut self, o: &Obj, at: &str, name: &str) -> RecordDef {
-        if let Some((tag, alts)) = tagged_alternatives(o) {
-            return self.tagged_record(o, &tag, &alts, at, name);
-        }
-
-        let empty = Obj::new();
-        let props = o.get("properties").and_then(Json::as_object).unwrap_or(&empty);
-        let required: Vec<&str> = o
-            .get("required")
-            .and_then(Json::as_array)
-            .map(|r| r.iter().filter_map(Json::as_str).collect())
-            .unwrap_or_default();
+    /// Whether a record schema accepts fields it does not declare, with a warning
+    /// for each keyword on extra fields that NOVA does not enforce, and for each
+    /// keyword that the record drops.
+    fn record_openness(&mut self, o: &Obj, at: &str) -> bool {
         let mut open = false;
         for k in ["additionalProperties", "unevaluatedProperties"] {
             match o.get(k) {
@@ -393,21 +386,38 @@ impl Conv<'_> {
             }
         }
 
-        self.unsupported(
-            o,
-            at,
-            &[
-                "type",
-                "properties",
-                "required",
-                "additionalProperties",
-                "unevaluatedProperties",
-                "patternProperties",
-                "minProperties",
-                "maxProperties",
-                "propertyNames",
-            ],
-        );
+        // `allOf` holds the record rules when `x-nova-rules` keeps them (proposal 0010).
+        let rules: &[&str] = if o.contains_key("x-nova-rules") { &["allOf", "x-nova-rules"] } else { &[] };
+        let handled = [
+            "type",
+            "properties",
+            "required",
+            "additionalProperties",
+            "unevaluatedProperties",
+            "patternProperties",
+            "minProperties",
+            "maxProperties",
+            "propertyNames",
+        ];
+        self.unsupported(o, at, &[&handled[..], rules].concat());
+
+        open
+    }
+
+    /// A record definition from an object schema (or a tagged union).
+    fn record(&mut self, o: &Obj, at: &str, name: &str) -> RecordDef {
+        if let Some((tag, alts)) = tagged_alternatives(o) {
+            return self.tagged_record(o, &tag, &alts, at, name);
+        }
+
+        let empty = Obj::new();
+        let props = o.get("properties").and_then(Json::as_object).unwrap_or(&empty);
+        let required: Vec<&str> = o
+            .get("required")
+            .and_then(Json::as_array)
+            .map(|r| r.iter().filter_map(Json::as_str).collect())
+            .unwrap_or_default();
+        let mut open = self.record_openness(o, at);
 
         // Declared order: x-nova-order, else `required` order, then the rest alphabetically.
         let mut order: Vec<String> = Vec::new();
@@ -472,7 +482,38 @@ impl Conv<'_> {
             fields.push(f);
         }
 
-        RecordDef { fields, open }
+        let mut r = RecordDef {
+            fields,
+            open,
+            rules: Vec::new(),
+        };
+        r.rules = self.rules(o, at, &r);
+        r
+    }
+
+    /// The record rules in `"x-nova-rules"` (proposal 0010). A rule that is
+    /// malformed or names a field that is missing, required or has a default
+    /// is dropped with a warning. JSON Schema's own `dependentRequired`,
+    /// `oneOf` and `anyOf` are not read back into rules.
+    fn rules(&mut self, o: &Obj, at: &str, r: &RecordDef) -> Vec<RecordRule> {
+        let mut out = Vec::new();
+        for (i, j) in o.get("x-nova-rules").and_then(Json::as_array).into_iter().flatten().enumerate() {
+            let kind = j.get("kind").and_then(Json::as_str).and_then(RuleKind::from_name);
+            let fields: Option<Vec<String>> = j
+                .get("fields")
+                .and_then(Json::as_array)
+                .map(|fs| fs.iter().filter_map(|f| f.as_str().map(str::to_owned)).collect());
+            let usable = |fs: &[String]| fs.len() >= 2 && fs.iter().all(|f| r.field(f).is_some_and(|d| d.optional && d.default.is_none() && !d.key));
+            match (kind, fields) {
+                (Some(kind), Some(fields)) if usable(&fields) => out.push(RecordRule { kind, fields }),
+                _ => self.warn(
+                    &format!("{at}/x-nova-rules/{i}"),
+                    "record rule dropped: it must name two or more optional fields of the record",
+                ),
+            }
+        }
+
+        out
     }
 
     /// Internally or adjacently tagged enums: one record holding the tag and
@@ -539,7 +580,11 @@ impl Conv<'_> {
             }
         }
 
-        RecordDef { fields, open }
+        RecordDef {
+            fields,
+            open,
+            rules: Vec::new(),
+        }
     }
 
     /// Warn about keywords that are dropped. `handled` lists the keywords

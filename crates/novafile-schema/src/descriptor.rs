@@ -2,11 +2,11 @@
 //!
 //! [`Schema::to_value`] produces the *descriptor* of a schema: an ordinary
 //! NOVA value described by the meta-schema [`meta_schema`]
-//! (`novafile.dev/meta/schema@0.3.4`). [`Schema::from_value`] turns a descriptor back
+//! (`novafile.dev/meta/schema@0.3.5`). [`Schema::from_value`] turns a descriptor back
 //! into a schema by rendering its canonical text and parsing that, so
 //! descriptors are validated exactly like hand-written schemas.
 
-use crate::model::{Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
+use crate::model::{Def, FieldDef, IntKind, LenUnit, Num, RecordDef, RecordRule, RuleKind, Schema, TypeKind, TypeRef, VariantDef};
 use novafile_value::{Record, Value};
 
 /// Source of the meta-schema.
@@ -64,6 +64,38 @@ fn s(x: &str) -> Value {
 /// A variant value without payload, as used for enum tags such as `kind`.
 fn tag(x: &str) -> Value {
     Value::Variant(x.to_owned(), None)
+}
+
+/// The descriptor of a record rule (meta-schema record `RecordRule`).
+fn rule_value(r: &RecordRule) -> Value {
+    rec(vec![
+        ("kind", tag(r.kind.name())),
+        ("fields", Value::List(r.fields.iter().map(|f| s(f)).collect())),
+    ])
+}
+
+/// The record rules of a `RecordDef` descriptor, in order; none without `rules`.
+fn value_rules(rd: &Record) -> Result<Vec<RecordRule>, String> {
+    rd.get("rules").and_then(Value::as_list).into_iter().flatten().map(value_rule).collect()
+}
+
+/// The record rule of a descriptor that the meta-schema has accepted.
+fn value_rule(v: &Value) -> Result<RecordRule, String> {
+    let r = v.as_record().ok_or("rule must be a record")?;
+    let kind = match r.get("kind") {
+        Some(Value::Variant(k, None)) => RuleKind::from_name(k),
+        _ => None,
+    }
+    .ok_or("rule without a valid kind")?;
+    let fields = r
+        .get("fields")
+        .and_then(Value::as_list)
+        .into_iter()
+        .flatten()
+        .map(|f| f.as_str().map(str::to_owned).ok_or("rule fields must be strings"))
+        .collect::<Result<_, _>>()?;
+
+    Ok(RecordRule { kind, fields })
 }
 
 /// The descriptor of a type expression (meta-schema record `Type`).
@@ -226,6 +258,10 @@ impl Schema {
                         }
 
                         e.push(("fields", Value::List(fields)));
+                        if !r.rules.is_empty() {
+                            e.push(("rules", Value::List(r.rules.iter().map(rule_value).collect())));
+                        }
+
                         ("record", rec(e))
                     }
                 };
@@ -348,6 +384,7 @@ impl Schema {
                 Def::Record(RecordDef {
                     fields,
                     open: flag(rd, "open"),
+                    rules: value_rules(rd).map_err(|e| at(&e))?,
                 })
             };
 

@@ -202,6 +202,10 @@ enum Cmd {
         /// Print the resolved document instead of a status line.
         #[arg(long)]
         resolve: bool,
+        /// Validate one layer of a layered configuration: every field may be absent, and
+        /// `@together`/`@one_of`/`@any_of` are not checked; defaults are not filled in.
+        #[arg(long)]
+        partial: bool,
         /// Show classified values in the resolved document: all of them (no value), `personal`,
         /// or a comma-separated list of paths.
         #[arg(long, num_args = 0..=1, default_missing_value = "", require_equals = true, value_name = "personal|PATHS")]
@@ -391,7 +395,7 @@ enum SchemaCmd {
         #[arg(long)]
         pin: bool,
     },
-    /// Print the meta-schema `novafile.dev/meta/schema@0.3.4`, which describes schema descriptors.
+    /// Print the meta-schema `novafile.dev/meta/schema@0.3.5`, which describes schema descriptors.
     Meta,
     /// Print a JSON Schema (2020-12) describing the JSON form of valid documents.
     JsonSchema {
@@ -504,7 +508,7 @@ fn load_as(p: &Path, from: InputFormat) -> R<Loaded> {
 }
 
 /// Schema reference of the meta-schema that describes schema descriptors.
-const META_REF: &str = "novafile.dev/meta/schema@0.3.4";
+const META_REF: &str = "novafile.dev/meta/schema@0.3.5";
 
 /// Loads a document in the given input format.
 ///
@@ -1561,6 +1565,7 @@ fn run(cli: Cli) -> R<ExitCode> {
             catalog,
             fetch,
             resolve,
+            partial,
             reveal,
         } => {
             let reveal = reveal_mode(reveal.as_deref())?;
@@ -1583,7 +1588,8 @@ fn run(cli: Cli) -> R<ExitCode> {
                 s.accepts_reference(r).map_err(|e| format!("{}: {e}", file.display()))?;
             }
 
-            match s.classify(&l.value) {
+            let checked = if partial { s.classify_partial(&l.value) } else { s.classify(&l.value) };
+            match checked {
                 Ok((v, marks)) => {
                     if resolve {
                         let key = (!marks.is_empty() && reveal != Reveal::All).then(redact_key).flatten();
@@ -1594,7 +1600,8 @@ fn run(cli: Cli) -> R<ExitCode> {
 
                         out(&render_as(&resolved, Format::Nova, false)?, None)?;
                     } else {
-                        eprintln!("ok: valid against {}", s.fingerprint());
+                        let layer = if partial { " (partial)" } else { "" };
+                        eprintln!("ok: valid{layer} against {}", s.fingerprint());
                     }
                 }
                 Err(i) => {

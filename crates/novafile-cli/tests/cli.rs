@@ -717,3 +717,25 @@ fn output_writes_through_a_dangling_symlink() {
     assert!(std::fs::symlink_metadata(d.join("link.json")).unwrap().file_type().is_symlink());
     assert!(std::fs::read_to_string(d.join("sub/target.json")).unwrap().contains("\"a\""));
 }
+
+/// `validate --partial` accepts one layer of a layered configuration, which full
+/// validation rejects (proposal 0010).
+#[test]
+fn validate_partial_accepts_a_layer() {
+    let d = scratch("partial");
+    std::fs::write(
+        d.join("s.novs"),
+        "@root Db\n\nrecord Db @one_of(url, url_file):\n  host: string\n  port: u16 = 5432\n  url?: string\n  url_file?: string\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("layer.nova"), "port: 6543\n").unwrap();
+    std::fs::write(d.join("bad.nova"), "port: x\n").unwrap();
+
+    assert!(!nvf(&d, &["validate", "layer.nova", "--schema", "s.novs"], "").status.success());
+    let o = nvf(&d, &["validate", "layer.nova", "--schema", "s.novs", "--partial"], "");
+    assert!(o.status.success(), "{o:?}");
+    // No defaults are filled in for a layer.
+    let layer = ok(&d, &["validate", "layer.nova", "--schema", "s.novs", "--partial", "--resolve"]);
+    assert!(layer.contains("port: 6543") && !layer.contains("host"), "{layer}");
+    assert!(!nvf(&d, &["validate", "bad.nova", "--schema", "s.novs", "--partial"], "").status.success());
+}

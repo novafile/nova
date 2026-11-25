@@ -297,6 +297,24 @@ fn record_changes(schemas: (&Schema, &Schema), name: &str, a: &RecordDef, b: &Re
             }
         }
     }
+
+    rule_changes(name, a, b, push);
+}
+
+/// Changes of the record rules from `a` to `b` (proposal 0010). Rules match
+/// by kind and field names, in any order. A new rule rejects old data that
+/// breaks it; a removed rule only accepts more.
+fn rule_changes(name: &str, a: &RecordDef, b: &RecordDef, push: &mut impl FnMut(bool, &str, String)) {
+    let same =
+        |x: &crate::RecordRule, y: &crate::RecordRule| x.kind == y.kind && x.fields.len() == y.fields.len() && x.fields.iter().all(|f| y.fields.contains(f));
+
+    for r in b.rules.iter().filter(|r| !a.rules.iter().any(|o| same(o, r))) {
+        push(true, name, format!("record rule {r} added; old data may break it"));
+    }
+
+    for r in a.rules.iter().filter(|r| !b.rules.iter().any(|n| same(n, r))) {
+        push(false, name, format!("record rule {r} removed"));
+    }
 }
 
 /// Changes between the old field `f` and the new field `g` it matches.

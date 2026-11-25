@@ -111,6 +111,36 @@ pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T, Error> {
 /// message), or if [`from_value`] fails.
 #[cfg(feature = "schema")]
 pub fn from_str_with_schema<T: DeserializeOwned>(s: &str, schema: &novafile_schema::Schema) -> Result<T, Error> {
+    from_value(resolved(s, schema, novafile_schema::Schema::resolve)?)
+}
+
+/// Deserialize one layer of a layered configuration after resolving it
+/// partially against a NOVA schema ([`novafile_schema::Schema::resolve_partial`],
+/// proposal 0010).
+///
+/// Every record field may be absent and record rules are not checked, but
+/// types, patterns, ranges and closed records are, and so is the `@schema`
+/// reference, as in [`from_str_with_schema`]. Defaults are not filled in, so
+/// `T` usually has `Option` fields or `#[serde(default)]`. Check the merged
+/// configuration against the schema in full afterwards.
+///
+/// # Errors
+///
+/// As [`from_str_with_schema`], with the partial checks.
+#[cfg(feature = "schema")]
+pub fn from_str_with_schema_partial<T: DeserializeOwned>(s: &str, schema: &novafile_schema::Schema) -> Result<T, Error> {
+    from_value(resolved(s, schema, novafile_schema::Schema::resolve_partial)?)
+}
+
+/// Parse `s`, check its `@schema` reference against `schema`, and resolve its
+/// value with `resolve`, for [`from_str_with_schema`] and [`from_str_with_schema_partial`].
+///
+/// # Errors
+///
+/// Fails if `s` is not valid NOVA text, its `@schema` reference does not match
+/// `schema`, or `resolve` reports issues (joined into one message).
+#[cfg(feature = "schema")]
+fn resolved(s: &str, schema: &novafile_schema::Schema, resolve: ResolveFn) -> Result<novafile_value::Value, Error> {
     let doc = novafile_text::parse_document(s).map_err(|e| Error::new(e.with_source(s)))?;
     if let Some(r) = doc.directive("schema")
         && schema.reference().is_some()
@@ -119,11 +149,12 @@ pub fn from_str_with_schema<T: DeserializeOwned>(s: &str, schema: &novafile_sche
     }
 
     let v = doc.value().map_err(|e| Error::new(e.with_source(s)))?;
-    let v = schema
-        .resolve(&v)
-        .map_err(|issues| Error::new(issues.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; ")))?;
-    from_value(v)
+    resolve(schema, &v).map_err(|issues| Error::new(issues.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; ")))
 }
+
+/// A resolution of a value against a schema: [`novafile_schema::Schema::resolve`] or its partial form.
+#[cfg(feature = "schema")]
+type ResolveFn = fn(&novafile_schema::Schema, &novafile_value::Value) -> Result<novafile_value::Value, Vec<novafile_schema::Issue>>;
 
 /// Serialize to a binary frame (spec §5.4).
 ///

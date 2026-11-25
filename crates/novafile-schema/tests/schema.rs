@@ -417,7 +417,7 @@ fn schemas_as_data() {
     let bad = novafile_text::parse("defs:\n  - name: A\n    alias: {kind: !named, ref: Missing}\n").unwrap();
     assert!(novafile_schema::Schema::from_value(&bad).unwrap_err().contains("unknown type Missing"));
     let bad = novafile_text::parse("defs:\n  - name: A\n").unwrap();
-    assert!(novafile_schema::Schema::from_value(&bad).unwrap_err().contains("exactly one"));
+    assert!(novafile_schema::Schema::from_value(&bad).unwrap_err().contains("@one_of(record, enum, alias)"));
     let bad = novafile_text::parse("defs:\n  - name: A\n    alias: {kind: !u17}\n").unwrap();
     assert!(novafile_schema::Schema::from_value(&bad).unwrap_err().contains("invalid schema descriptor"));
 }
@@ -802,4 +802,65 @@ fn doc_comments_are_kept_but_not_fingerprinted() {
     let bare = parse_schema(&s.to_canonical_text()).unwrap();
     assert_eq!(bare.fingerprint(), s.fingerprint());
     assert_eq!(check_versions(&bare, &s).unwrap().kind, ChangeKind::None);
+}
+
+/// Record rules on the head line and partial validation (proposal 0010).
+#[test]
+fn record_rules_and_partial_validation() {
+    let src = "@schema db@1.0.0\n@root Db\n\nrecord Db @open @together(user, password) @one_of(url, url_file) @any_of(host, socket) @secret:\n  name: string\n  port: u16 = 5432\n  user?: string\n  password?: string\n  url?: string\n  url_file?: string\n  host?: string\n  socket?: string?\n";
+    let s = parse_schema(src).unwrap();
+    assert!(
+        s.to_canonical_text()
+            .contains("record Db @open @together(user, password) @one_of(url, url_file) @any_of(host, socket) @secret:\n")
+    );
+    let issues = |doc: &str| match s.resolve(&novafile_text::parse(doc).unwrap()) {
+        Ok(_) => Vec::new(),
+        Err(i) => i.iter().map(ToString::to_string).collect(),
+    };
+
+    assert_eq!(issues("name: a\nurl: x\nhost: h\n"), Vec::<String>::new());
+    assert_eq!(
+        issues("name: a\nurl: x\nurl_file: y\nhost: h\n"),
+        [".: @one_of(url, url_file): 2 present (url, url_file); expected exactly 1"]
+    );
+    assert_eq!(
+        issues("name: a\nurl_file: y\nsocket: null\n"),
+        [".: @any_of(host, socket): 0 present; expected at least 1"]
+    );
+    assert_eq!(
+        issues("name: a\nurl: x\nhost: h\nuser: u\n"),
+        [".: @together(user, password): 1 present (user); expected all or none"]
+    );
+
+    // A layer: every field may be absent, rules and defaults do not apply, the rest does.
+    let layer = |doc: &str| s.resolve_partial(&novafile_text::parse(doc).unwrap());
+    assert_eq!(layer("url: x\nurl_file: y\n").unwrap(), novafile_text::parse("url: x\nurl_file: y\n").unwrap());
+    assert!(layer("port: x\n").is_err());
+    assert!(layer("url: 1\n").is_err());
+
+    // The descriptor carries the rules, and adding a rule is breaking.
+    let back = novafile_schema::Schema::from_value(&s.to_value()).unwrap();
+    assert_eq!(back.fingerprint(), s.fingerprint());
+    let plain = parse_schema(&src.replace(" @one_of(url, url_file)", "")).unwrap();
+    assert!(check_compatibility(&plain, &s).iter().any(|c| c.breaking));
+    assert!(check_compatibility(&s, &plain).iter().all(|c| !c.breaking));
+
+    for (bad, why) in [
+        ("@one_of(url)", "at least two fields"),
+        ("@one_of(url, url)", "named twice"),
+        ("@one_of(url, nope)", "no field \"nope\""),
+        ("@one_of(url, name)", "must be optional"),
+        ("@one_of(url, port)", "must be optional"),
+        ("@one_of url", "unexpected"),
+    ] {
+        let e = parse_schema(&src.replace("@one_of(url, url_file)", bad)).unwrap_err();
+        assert!(e.message.contains(why), "{bad}: {}", e.message);
+    }
+
+    assert!(
+        parse_schema("enum E @one_of(a, b):\n  a\n  b\n")
+            .unwrap_err()
+            .message
+            .contains("records, not enums")
+    );
 }

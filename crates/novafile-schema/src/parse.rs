@@ -1,6 +1,6 @@
 //! Schema language parser (spec §6.1).
 
-use crate::model::{Class, Def, FieldDef, Import, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
+use crate::model::{Class, Def, FieldDef, Import, IntKind, LenUnit, Num, RecordDef, RecordRule, RuleKind, Schema, TypeKind, TypeRef, VariantDef};
 use novafile_text::Parser;
 use std::cell::Cell;
 
@@ -507,10 +507,9 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("enum ") {
             if let Some((head, alts)) = rest.split_once('=') {
-                let (name, open, class) = def_head(head).map_err(|m| err(i, m))?;
-                if open {
-                    return Err(err(i, "@open applies to records, not enums".into()));
-                }
+                let h = def_head(head).map_err(|m| err(i, m))?;
+                h.enum_only().map_err(|m| err(i, m))?;
+                let (name, class) = (h.name, h.class);
 
                 let mut vs = Vec::new();
                 for alt in split_top(alts, b'|') {
@@ -525,10 +524,9 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
                 let head = rest
                     .strip_suffix(':')
                     .ok_or_else(|| err(i, "expected `enum Name:` or `enum Name = a | b`".into()))?;
-                let (name, open, class) = def_head(head).map_err(|m| err(i, m))?;
-                if open {
-                    return Err(err(i, "@open applies to records, not enums".into()));
-                }
+                let h = def_head(head).map_err(|m| err(i, m))?;
+                h.enum_only().map_err(|m| err(i, m))?;
+                let (name, class) = (h.name, h.class);
 
                 let doc = doc_above(&lines, i);
                 i += 1;
@@ -557,7 +555,7 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
             }
         } else if let Some(rest) = raw.strip_prefix("record ") {
             let head = rest.strip_suffix(':').ok_or_else(|| err(i, "expected `record Name:`".into()))?;
-            let (name, open, class) = def_head(head).map_err(|m| err(i, m))?;
+            let DefHead { name, open, class, rules } = def_head(head).map_err(|m| err(i, m))?;
 
             let doc = doc_above(&lines, i);
             let start = i;
@@ -582,7 +580,9 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
                 i += 1;
             }
 
-            push_def(&mut schema, name, Def::Record(RecordDef { fields, open })).map_err(|m| err(start, m))?;
+            let record = RecordDef { fields, open, rules };
+            check_rules(name, &record).map_err(|m| err(start, m))?;
+            push_def(&mut schema, name, Def::Record(record)).map_err(|m| err(start, m))?;
             push_class(&mut schema, name, class);
             push_doc(&mut schema, name, doc);
         } else if let Some(d) = raw.strip_prefix('@') {
@@ -616,23 +616,132 @@ fn parse_import(rest: &str, schema: &Schema) -> Result<Import, String> {
     })
 }
 
-/// Split a definition head such as `Name @open @secret` into the name,
-/// whether it has `@open`, and its class. Fails on any other attribute,
-/// a repeated attribute, or two classes.
-fn def_head(head: &str) -> Result<(&str, bool, Option<Class>), String> {
-    let mut words = head.split_whitespace();
-    let name = words.next().ok_or("expected a definition name")?;
-    let (mut open, mut class) = (false, None);
-    for w in words {
-        match (w, Class::from_name(w.trim_start_matches('@'))) {
-            ("@open", _) if !open => open = true,
-            (_, Some(c)) if w.starts_with('@') && class.is_none() => class = Some(c),
-            (_, Some(_)) if w.starts_with('@') => return Err("a definition has at most one class".into()),
-            _ => return Err(format!("unexpected {w:?} after definition name {name}")),
+/// The head of a definition after `record` or `enum`: its name and attributes.
+struct DefHead<'a> {
+    /// The definition name.
+    name: &'a str,
+    /// `@open` is written.
+    open: bool,
+    /// `@personal` or `@secret`, if written.
+    class: Option<Class>,
+    /// `@together`, `@one_of` and `@any_of`, in the order written.
+    rules: Vec<RecordRule>,
+}
+
+impl DefHead<'_> {
+    /// Fail if the head has a record attribute (`@open` or a rule), which an
+    /// enum cannot carry.
+    fn enum_only(&self) -> Result<(), String> {
+        if self.open {
+            return Err("@open applies to records, not enums".into());
+        }
+
+        if !self.rules.is_empty() {
+            return Err("record rules apply to records, not enums".into());
+        }
+
+        Ok(())
+    }
+}
+
+/// Split a definition head such as `Name @open @one_of(a, b) @secret` into
+/// its parts. Fails on any other attribute, a repeated `@open`, two classes,
+/// or a malformed rule.
+fn def_head(head: &str) -> Result<DefHead<'_>, String> {
+    let head = head.trim();
+    let end = head.find(char::is_whitespace).unwrap_or(head.len());
+    let name = &head[..end];
+    if name.is_empty() {
+        return Err("expected a definition name".into());
+    }
+
+    let mut h = DefHead {
+        name,
+        open: false,
+        class: None,
+        rules: Vec::new(),
+    };
+    let mut rest = head[end..].trim_start();
+    while !rest.is_empty() {
+        let attr = rest
+            .strip_prefix('@')
+            .ok_or_else(|| format!("unexpected {rest:?} after definition name {name}"))?;
+        let word_end = attr.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(attr.len());
+        let (word, after) = attr.split_at(word_end);
+        let (arg, after) = match after.strip_prefix('(') {
+            Some(_) => {
+                let close = close_paren(after).ok_or_else(|| format!("unclosed @{word}("))?;
+                (Some(&after[1..close]), &after[close + 1..])
+            }
+            None => (None, after),
+        };
+
+        head_attr(&mut h, word, arg)?;
+        if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+            return Err(format!("unexpected {after:?} after @{word}"));
+        }
+
+        rest = after.trim_start();
+    }
+
+    Ok(h)
+}
+
+/// Apply one attribute of a definition head, `@word` or `@word(arg)`, to `h`.
+fn head_attr(h: &mut DefHead<'_>, word: &str, arg: Option<&str>) -> Result<(), String> {
+    match (word, arg) {
+        ("open", None) if !h.open => h.open = true,
+        (w, None) if Class::from_name(w).is_some() => {
+            if h.class.is_some() {
+                return Err("a definition has at most one class".into());
+            }
+
+            h.class = Class::from_name(w);
+        }
+        (w, Some(arg)) if RuleKind::from_name(w).is_some() => {
+            let kind = RuleKind::from_name(w).expect("checked by the match guard");
+            let fields = arg.split(',').map(|f| f.trim().to_owned()).collect();
+            h.rules.push(RecordRule { kind, fields });
+        }
+        (w, _) => return Err(format!("unexpected @{w} after definition name {}", h.name)),
+    }
+
+    Ok(())
+}
+
+/// Check the record rules of the record `name` (proposal 0010): each names
+/// two or more distinct, declared, optional fields without a default or `@key`,
+/// by names that need no quotes.
+///
+/// # Errors
+///
+/// Returns a message for the first rule that breaks one of these conditions.
+pub(crate) fn check_rules(name: &str, r: &RecordDef) -> Result<(), String> {
+    for rule in &r.rules {
+        if rule.fields.len() < 2 {
+            return Err(format!("{name} {rule}: a record rule names at least two fields"));
+        }
+
+        for (i, f) in rule.fields.iter().enumerate() {
+            if rule.fields[..i].contains(f) {
+                return Err(format!("{name} {rule}: field {f} is named twice"));
+            }
+
+            if check_name(f).is_err() {
+                return Err(format!("{name} {rule}: {f:?} is not a field name without quotes"));
+            }
+
+            let Some(fd) = r.field(f) else {
+                return Err(format!("{name} {rule}: no field {f:?}"));
+            };
+
+            if !fd.optional || fd.default.is_some() || fd.key {
+                return Err(format!("{name} {rule}: field {f} must be optional (`{f}?:`), without a default or @key"));
+            }
         }
     }
 
-    Ok((name, open, class))
+    Ok(())
 }
 
 /// Record the class written on the definition `name`, if any.
@@ -897,6 +1006,8 @@ pub(crate) fn check_defs(s: &Schema) -> Result<(), String> {
                         .and_then(|()| check_key_field(f))
                         .map_err(|m| format!("record {name}: {m}"))?;
                 }
+
+                check_rules(name, r)?;
             }
             _ => {}
         }
