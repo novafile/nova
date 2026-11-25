@@ -449,3 +449,28 @@ fn rename_rules_match_serde_for_variants() {
         b: E::GrpcServer { inner_field: "b".into() },
     });
 }
+
+/// `not_null` keeps an `Option` field optional but rejects `null` (#33).
+#[test]
+fn not_null_options_are_optional_but_not_nullable() {
+    #[derive(NovaSchema, Serialize)]
+    #[allow(dead_code)]
+    struct Db {
+        #[nova(not_null)]
+        url: Option<String>,
+        #[nova(not_null, type = "string @len(1..)")]
+        dsn: Option<Foreign>,
+        backup: Option<String>,
+    }
+
+    let s = Db::novafile_schema();
+    let text = s.to_canonical_text();
+    for line in ["  url?: string\n", "  dsn?: string @len(1..)\n", "  backup?: string?\n"] {
+        assert!(text.contains(line), "{line:?} missing in\n{text}");
+    }
+
+    let check = |src: &str| s.validate(&novafile_text::parse(src).unwrap());
+    check("backup: null\n").unwrap();
+    check("url: \"postgres://db\"\n").unwrap();
+    assert!(check("url: null\n").is_err());
+}
