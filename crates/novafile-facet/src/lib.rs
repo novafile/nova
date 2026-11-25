@@ -70,6 +70,8 @@
 //!
 //! - facet requires enums to declare a `repr` (`#[repr(u8)]`, `#[repr(C)]`, …).
 //! - `Vec<u8>` is bytes (serde, without `serde_bytes`, sees a sequence).
+//! - Arrays (`[T; N]`) are lists; serde writes them as tuples. Each crate reads
+//!   the other's form, and a derived schema (a tuple) accepts both.
 //! - Sets are native, so there is no `with::set` helper; `std::time::Duration`
 //!   maps to a duration without a helper.
 //! - facet 0.46 has no `Facet` impl for `std::time::SystemTime`, so it has no

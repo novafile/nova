@@ -123,6 +123,10 @@ impl std::error::Error for FrameError {}
 /// Bounds the work a corrupt length can cause: the payload is checksummed
 /// before it is decoded, and a recovering [`FrameReader`] retries at every
 /// `NOVA` marker inside a rejected frame.
+///
+/// It does not bound memory. A decoded [`Value`] takes about 80 bytes per
+/// element, so a full payload of 1-byte nulls decodes to about 5 GiB. Services
+/// that read frames from untrusted peers should check the length first.
 pub const MAX_PAYLOAD: usize = 64 << 20;
 
 /// Slicing-by-8 tables for [`crc32`]: `CRC_TABLES[j][b]` is the CRC

@@ -1176,6 +1176,27 @@ mod tests {
         }
     }
 
+    /// Each decimal and rational has one encoding: other forms are rejected.
+    #[test]
+    fn non_normalized_numbers_are_rejected() {
+        let mut huge_exp = vec![tag::DECIMAL, 2];
+        put_varint(&mut huge_exp, 1 << 40);
+        let cases: [(&[u8], &str); 4] = [
+            // 10 * 10^0 normalizes to 1 * 10^1.
+            (&[tag::DECIMAL, 20, 0], "not normalized"),
+            (&huge_exp, "exponent out of range"),
+            // 2/4 normalizes to 1/2.
+            (&[tag::RATIONAL, 4, 4], "not normalized"),
+            (&[tag::RATIONAL, 2, 0], "invalid rational denominator"),
+        ];
+        for (bytes, want) in cases {
+            let e = decode(bytes).unwrap_err();
+            assert!(e.message.contains(want), "{bytes:02x?}: {e:?}");
+        }
+
+        assert_eq!(decode(&[tag::DECIMAL, 2, 2]).unwrap(), Value::Decimal(Decimal::new(1, 1)));
+    }
+
     #[test]
     fn record_list_without_fields_is_rejected() {
         // A list holding a record list of 3 rows, 0 fields, dense, then filler bytes.

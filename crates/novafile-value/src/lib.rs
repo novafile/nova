@@ -30,6 +30,22 @@ pub fn is_variant_tag(s: &str) -> bool {
     cs.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && cs.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// `s` as an owned variant tag, or the error bindings report when it is not one.
+///
+/// A tag that is not an identifier cannot be written as text, and decoders
+/// reject it, e.g. a `#[serde(rename = "at start")]` variant.
+///
+/// # Errors
+///
+/// Returns a message naming `s` if [`is_variant_tag`] rejects it.
+pub fn variant_tag(s: &str) -> Result<String, String> {
+    if is_variant_tag(s) {
+        Ok(s.to_owned())
+    } else {
+        Err(format!("variant tag {s:?} is not an identifier"))
+    }
+}
+
 pub use codec::{DecodeError, EncodeOptions, Limits, canonical_bytes, decode, decode_prefix, decode_ref, decode_ref_prefix, encode, put_varint, read_varint};
 pub use decimal::Decimal;
 pub use numeric::{f32_to_f64, numeric_cmp};
