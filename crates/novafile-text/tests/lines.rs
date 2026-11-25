@@ -168,3 +168,27 @@ fn invalid_header_skips_only_its_segment() {
     assert_eq!(r.records, [v("{a: 2}")], "{:?}", r.errors);
     assert_eq!(r.segments.len(), 2);
 }
+
+/// A quoted `@key` reads back with its escapes resolved, also when it contains ` #`.
+#[test]
+fn quoted_key_round_trips() {
+    for key in ["a\"b", "a\\b", "x #y", "my id"] {
+        let records = [Value::Record(
+            novafile_value::Record::from_entries(vec![(key.to_owned(), Value::Int(1))]).unwrap(),
+        )];
+        let text = write_string(&records, WriteMode::Values, None, None, Some(key)).unwrap();
+        let read = read_str(&text, None);
+        assert!(read.errors.is_empty(), "{key:?}: {:?}\n{text}", read.errors);
+        assert_eq!(read.records, records, "{key:?}:\n{text}");
+    }
+}
+
+/// Strings that start or end with Unicode whitespace survive a Lines round trip.
+#[test]
+fn unicode_whitespace_round_trips() {
+    let records: Vec<Value> = ["\u{2028}", "\u{a0}#x", "a\u{a0}"].iter().map(|s| Value::String((*s).into())).collect();
+    let text = write_string(&records, WriteMode::Values, None, None, None).unwrap();
+    let read = read_str(&text, None);
+    assert!(read.errors.is_empty(), "{:?}\n{text}", read.errors);
+    assert_eq!(read.records, records, "{text}");
+}

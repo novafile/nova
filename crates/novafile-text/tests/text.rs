@@ -527,3 +527,27 @@ fn control_characters_in_flow_words_are_errors() {
     assert!(novafile_text::parse_row("\u{f}2").is_err());
     assert!(parse("a: [\"\\u000f2\"]\n").is_ok());
 }
+
+/// Deeply nested filters fail with an error instead of a stack overflow.
+#[test]
+fn deep_filters_are_rejected() {
+    assert!(Path::parse(&"[?".repeat(1000)).is_err());
+    let src = format!("@template\nx: $a{}", "[?a".repeat(5000));
+    assert!(parse_document(&src).is_err());
+}
+
+/// A string key that contains `=` displays quoted, so it parses back as a key.
+#[test]
+fn key_with_equals_round_trips() {
+    let p = Path(vec![novafile_text::Segment::Key(Value::String("a=b".into()))]);
+    assert_eq!(Path::parse(&p.to_string()).unwrap(), p);
+}
+
+/// Table cells keep Unicode whitespace at their ends.
+#[test]
+fn table_cells_keep_unicode_whitespace() {
+    let row = || rec(vec![("a\u{a0}", Value::String("a\u{a0}".into())), ("k", Value::String("\u{2028}".into()))]);
+    let doc = Value::List(vec![row(), row()]);
+    let text = to_text(&doc, Profile::Compact);
+    assert_eq!(parse(&text).unwrap(), doc, "{text}");
+}

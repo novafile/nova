@@ -1,8 +1,9 @@
 //! NOVA Lines (`.novl`, spec §4.13): one record per line, in value, table or positional mode.
 
 use crate::columns::{Column, Columns, decode_row, encode_row, infer_columns, row_line};
+use crate::parser::Parser;
 use crate::version::LangVersion;
-use crate::{flow_string, key_text, parse_columns, parse_flow, parse_row};
+use crate::{ParseError, flow_string, key_text, parse_columns, parse_flow, parse_row};
 use novafile_value::{Value, canonical_bytes};
 use std::collections::HashSet;
 use std::fmt;
@@ -232,11 +233,15 @@ impl<'s, R: BufRead> Reader<'s, R> {
             }
             "schema" => self.header.schema = Some(arg.to_owned()),
             "key" => {
-                if arg.is_empty() || arg.contains(['.', '[', ']', ' ']) && !arg.starts_with('"') {
+                let key = if arg.starts_with('"') {
+                    quoted_arg(arg).map_err(|e| self.error(e.message))?
+                } else if arg.is_empty() || arg.contains(['.', '[', ']', ' ']) {
                     return Err(self.error(format!("@key needs a top-level field name, found {arg:?}")));
-                }
+                } else {
+                    arg.to_owned()
+                };
 
-                self.header.key = Some(arg.trim_matches('"').to_owned());
+                self.header.key = Some(key);
             }
             "columns" => {
                 if self.header.mode == Mode::Positional {
@@ -331,6 +336,23 @@ impl<'s, R: BufRead> Reader<'s, R> {
     }
 }
 
+/// The text of the quoted string literal that fills all of `arg`, with escapes resolved.
+/// A trailing comment is allowed.
+///
+/// # Errors
+///
+/// Returns a [`ParseError`] if `arg` is not one well-formed string literal.
+fn quoted_arg(arg: &str) -> Result<String, ParseError> {
+    let mut p = Parser::new(arg, false);
+    let text = p.parse_quoted_literal()?;
+    p.end_line()?;
+    if !p.at_eof() {
+        return Err(p.error_at(p.pos, "unexpected content after the quoted argument"));
+    }
+
+    Ok(text)
+}
+
 /// The directive on `line`, if it is one: `@` at column 1, a directive name, then a space or
 /// the end of the line. Returns the name (without `@`) and the trimmed argument.
 fn directive_of(line: &str) -> Option<(&str, &str)> {
@@ -339,9 +361,10 @@ fn directive_of(line: &str) -> Option<(&str, &str)> {
     let name = &rest[..end];
     let known = matches!(name, "nova" | "schema" | "key" | "columns" | "mode" | "end") || name.starts_with("x-");
     let arg = rest[end..].trim();
-    // A column spec may quote names containing ` #`; its parser handles comments itself.
+    // A column spec or a quoted key may contain ` #`; their parsers handle comments themselves.
+    let own_comments = name == "columns" || name == "key" && arg.starts_with('"');
     let arg = match arg.find(" #") {
-        Some(i) if name != "columns" => arg[..i].trim_end(),
+        Some(i) if !own_comments => arg[..i].trim_end(),
         _ => arg,
     };
     known.then_some((name, arg))

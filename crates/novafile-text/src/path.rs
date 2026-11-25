@@ -11,8 +11,8 @@
 //! projection = "{" name ("," name)* "}"      (last segment only)
 //! ```
 
-use crate::parser::Parser;
-use crate::writer::{flow_string, key_text};
+use crate::parser::{MAX_DEPTH, Parser};
+use crate::writer::{flow_string, key_text, quote};
 use novafile_value::Value;
 use std::fmt;
 
@@ -222,13 +222,31 @@ impl Path {
     ///
     /// # Errors
     ///
-    /// Returns a message if a segment is malformed or a projection is not the
-    /// last segment.
+    /// Returns a message if a segment is malformed, a projection is not the
+    /// last segment, or filters nest deeper than [`MAX_DEPTH`].
+    pub fn parse_prefix(s: &str) -> Result<(Path, usize), String> {
+        Self::parse_prefix_at(s, 0)
+    }
+
+    /// Parse a path prefix like [`Path::parse_prefix`], with `depth` filters
+    /// already open around it.
+    ///
+    /// A filter (`[?a...]`) holds a path of its own, so the two functions
+    /// recurse. The depth bound keeps hostile input off the stack limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if a segment is malformed, a projection is not the
+    /// last segment, or filters nest deeper than [`MAX_DEPTH`].
     #[expect(
         clippy::many_single_char_names,
         reason = "byte-scanner convention: s source, b bytes, i cursor, c byte, n length"
     )]
-    pub fn parse_prefix(s: &str) -> Result<(Path, usize), String> {
+    fn parse_prefix_at(s: &str, depth: usize) -> Result<(Path, usize), String> {
+        if depth > MAX_DEPTH {
+            return Err(format!("filters nest deeper than {MAX_DEPTH} levels"));
+        }
+
         let b = s.as_bytes();
         let mut i = 0;
         let mut segs = Vec::new();
@@ -239,7 +257,7 @@ impl Path {
             match c {
                 Some(b'[') => {
                     i += 1;
-                    let (seg, n) = parse_selector(&s[i..])?;
+                    let (seg, n) = parse_selector(&s[i..], depth)?;
                     i += n;
                     segs.push(seg);
                 }
@@ -419,12 +437,12 @@ fn parse_name(s: &str) -> Result<(String, usize), String> {
 }
 
 /// Parse a selector after `[` through the closing `]`; returns the segment and the number of bytes
-/// consumed.
+/// consumed. `depth` is the number of filters already open around it.
 #[expect(
     clippy::many_single_char_names,
     reason = "byte-scanner convention: s source, b bytes, j/k cursors, n length, p parser, v value"
 )]
-fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
+fn parse_selector(s: &str, depth: usize) -> Result<(Segment, usize), String> {
     let b = s.as_bytes();
     let close = |i: usize| -> Result<usize, String> {
         let mut j = i;
@@ -455,7 +473,7 @@ fn parse_selector(s: &str) -> Result<(Segment, usize), String> {
             j += 1;
         }
 
-        let (lhs, n) = Path::parse_prefix(&s[j..])?;
+        let (lhs, n) = Path::parse_prefix_at(&s[j..], depth + 1)?;
         if lhs.is_root() || !lhs.is_singular() {
             return Err("a filter needs a field path, e.g. [?replicas>3]".into());
         }
@@ -561,6 +579,8 @@ impl fmt::Display for Path {
                 }
                 Segment::Index(n) => write!(f, "[{n}]")?,
                 Segment::Match(k, v) => write!(f, "[{}={}]", key_text(k), flow_string(v))?,
+                // A bare `a=b` would read back as a match selector.
+                Segment::Key(Value::String(k)) if k.contains('=') => write!(f, "[{}]", quote(k))?,
                 Segment::Key(v) => write!(f, "[{}]", flow_string(v))?,
                 Segment::All => f.write_str("[*]")?,
                 Segment::Filter(p, CmpOp::Exists, _) => write!(f, "[?{p}]")?,
