@@ -68,7 +68,7 @@ pub fn check_fingerprint(declared: Option<&str>, schema: &dyn Positional) -> Res
         Ok(())
     } else {
         Err(format!(
-            "positional mode needs @schema with exactly this schema's fingerprint, {expected}; found {declared:?}"
+            "@mode positional needs @schema with exactly this schema's fingerprint, {expected}; found {declared:?}"
         ))
     }
 }
