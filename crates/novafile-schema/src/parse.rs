@@ -569,16 +569,7 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
                 }
 
                 let f = parse_field(body, &budget).map_err(|m| err(i, m))?;
-                if fields.iter().any(|g| g.name == f.name) {
-                    return Err(err(i, format!("duplicate field {:?}", f.name)));
-                }
-
-                if let Some(id) = f.id
-                    && fields.iter().any(|g| g.id == Some(id))
-                {
-                    return Err(err(i, format!("duplicate field id {id}")));
-                }
-
+                check_unique_field(&fields, &f).map_err(|m| err(i, m))?;
                 fields.push(f);
                 i += 1;
             }
@@ -807,6 +798,16 @@ fn parse_field(body: &str, budget: &Cell<usize>) -> Result<FieldDef, String> {
         return Err(format!("unexpected {rest:?} in field definition"));
     }
 
+    check_key_field(&f)?;
+    Ok(f)
+}
+
+/// Check the `@key` rules on one field: a key is required, non-null and an identifier.
+///
+/// # Errors
+///
+/// Returns a message for the first rule that `f` breaks.
+fn check_key_field(f: &FieldDef) -> Result<(), String> {
     if f.key && (f.optional || f.ty.nullable) {
         return Err("@key fields must be required and non-null".into());
     }
@@ -818,7 +819,52 @@ fn parse_field(body: &str, budget: &Cell<usize>) -> Result<FieldDef, String> {
         ));
     }
 
-    Ok(f)
+    Ok(())
+}
+
+/// Check that `f` repeats neither the name nor the id of a field in `before`.
+///
+/// # Errors
+///
+/// Returns a message that names the repeated name or id.
+fn check_unique_field(before: &[FieldDef], f: &FieldDef) -> Result<(), String> {
+    if before.iter().any(|g| g.name == f.name) {
+        return Err(format!("duplicate field {:?}", f.name));
+    }
+
+    if let Some(id) = f.id
+        && before.iter().any(|g| g.id == Some(id))
+    {
+        return Err(format!("duplicate field id {id}"));
+    }
+
+    Ok(())
+}
+
+/// Check the rules the parser applies line by line to every definition of `s`.
+///
+/// Parsed schemas pass by construction. Derived schemas are built in code, so
+/// they need this check to reject what the parser rejects.
+///
+/// # Errors
+///
+/// Returns a message that names the definition and the broken rule.
+pub(crate) fn check_defs(s: &Schema) -> Result<(), String> {
+    for (name, d) in &s.defs {
+        match d {
+            Def::Enum(vs) if vs.is_empty() => return Err(format!("enum {name} has no variants")),
+            Def::Record(r) => {
+                for (i, f) in r.fields.iter().enumerate() {
+                    check_unique_field(&r.fields[..i], f)
+                        .and_then(|()| check_key_field(f))
+                        .map_err(|m| format!("record {name}: {m}"))?;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
 }
 
 /// If any record member of the union `t` has `@key`, every record member
