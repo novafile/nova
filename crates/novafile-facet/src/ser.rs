@@ -75,7 +75,7 @@ pub(crate) fn value(p: Peek<'_, '_>) -> R {
                 entries.push((k, value(v).map_err(|e| e.at(seg))?));
             }
 
-            return map_or_record(entries);
+            return Value::record_or_map(entries).map_err(Error::new);
         }
         Def::DynamicValue(_) => return Err(Error::new(format!("dynamic value type {shape} is not supported"))),
         _ => {}
@@ -168,21 +168,6 @@ fn scalar(p: Peek<'_, '_>, st: ScalarType) -> R {
         _ if p.shape().vtable.has_display() => Value::String(p.to_string()),
         _ => return Err(Error::new(format!("cannot serialize a value of type {}", p.shape()))),
     })
-}
-
-/// String-keyed maps become records; any other key type makes a map.
-fn map_or_record(entries: Vec<(Value, Value)>) -> R {
-    if entries.iter().all(|(k, _)| matches!(k, Value::String(_))) {
-        let mut r = Record::new();
-        for (k, v) in entries {
-            let Value::String(k) = k else { unreachable!() };
-            r.insert(k, v).map_err(|e| Error::new(e.to_string()))?;
-        }
-
-        Ok(Value::Record(r))
-    } else {
-        Value::map(entries).map_err(Error::new)
-    }
 }
 
 /// A field's value, honoring a field-level `#[facet(proxy = X)]`.

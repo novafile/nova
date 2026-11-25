@@ -60,7 +60,7 @@
 //! keys. Set elements are sorted the same way, so equal NOVA values always
 //! produce identical bytes.
 
-use novafile_value::{Decimal, Rational, Record, Timestamp, Value};
+use novafile_value::{Decimal, Rational, Timestamp, Value};
 
 use crate::{MAX_DEPTH, Reporter, Warning};
 
@@ -295,17 +295,7 @@ impl Decoder<'_> {
             4 => Value::List(self.array(ai)?),
             5 => {
                 let entries = self.map_entries(ai)?;
-                if entries.iter().all(|(k, _)| matches!(k, Value::String(_))) {
-                    let mut r = Record::new();
-                    for (k, v) in entries {
-                        let Value::String(k) = k else { unreachable!() };
-                        r.insert(k, v).map_err(|e| format!("CBOR: {e}"))?;
-                    }
-
-                    Value::Record(r)
-                } else {
-                    Value::Map(entries)
-                }
+                Value::record_or_map(entries).map_err(|e| format!("CBOR: {e}"))?
             }
             6 => {
                 let tag = self.definite(ai)?;
