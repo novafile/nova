@@ -224,6 +224,11 @@ fn cache_round_trip_and_immutable_versions() {
     let other = parse_schema(&schema("acme.dev/a@1.0.0", "string")).unwrap();
     assert_eq!(r.store(&other, &schema("acme.dev/a@1.0.0", "string")).unwrap_err().kind(), "conflict");
     assert!(std::fs::read_to_string(&path).unwrap().contains("a: int"));
+    // Build metadata names the same version, so it cannot bring other content either.
+    let meta = schema("acme.dev/a@1.0.0+b", "string");
+    let other = parse_schema(&meta).unwrap();
+    assert_eq!(r.store(&other, &meta).unwrap_err().kind(), "conflict");
+    assert!(!cache.join("acme.dev/a/1.0.0+b.novs").exists());
 }
 
 #[test]

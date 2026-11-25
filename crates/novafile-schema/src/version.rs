@@ -173,19 +173,40 @@ impl Version {
     }
 
     /// The smallest release that permits a change of the given kind after `self`.
+    ///
+    /// A part at `u64::MAX` carries into the next higher part, so `1.0.MAX`
+    /// needs at least `1.1.0`. Past `MAX.MAX.MAX` no release exists; the result
+    /// is then `MAX.MAX.MAX`, which no new version can exceed.
     #[must_use]
     pub fn required_bump(&self, kind: ChangeKind) -> Version {
-        let v = |a, b, c| Version::new(a, b, c);
-        match (kind, self.major, self.minor) {
-            (ChangeKind::None, ..) => v(self.major, self.minor, self.patch + 1),
+        let (ma, mi, pa) = (self.major, self.minor, self.patch);
+        match (kind, ma, mi) {
+            (ChangeKind::None, ..) => next_patch(ma, mi, pa),
             // In 0.0.z every release is potentially breaking.
-            (_, 0, 0) => v(0, 0, self.patch + 1),
-            (ChangeKind::Breaking, 0, m) => v(0, m + 1, 0),
-            (ChangeKind::Compatible, 0, m) => v(0, m, self.patch + 1),
-            (ChangeKind::Breaking, ma, _) => v(ma + 1, 0, 0),
-            (ChangeKind::Compatible, ma, mi) => v(ma, mi + 1, 0),
+            (_, 0, 0) => next_patch(0, 0, pa),
+            (ChangeKind::Breaking, 0, m) => next_minor(0, m),
+            (ChangeKind::Compatible, 0, m) => next_patch(0, m, pa),
+            (ChangeKind::Breaking, ma, _) => next_major(ma),
+            (ChangeKind::Compatible, ma, mi) => next_minor(ma, mi),
         }
     }
+}
+
+/// The smallest version after `major.minor.patch` in the same minor series, or the next minor.
+fn next_patch(major: u64, minor: u64, patch: u64) -> Version {
+    patch.checked_add(1).map_or_else(|| next_minor(major, minor), |p| Version::new(major, minor, p))
+}
+
+/// The smallest version after every `major.minor.*`, or the next major.
+fn next_minor(major: u64, minor: u64) -> Version {
+    minor.checked_add(1).map_or_else(|| next_major(major), |m| Version::new(major, m, 0))
+}
+
+/// The smallest version after every `major.*.*`, saturated at `MAX.MAX.MAX`.
+fn next_major(major: u64) -> Version {
+    major
+        .checked_add(1)
+        .map_or_else(|| Version::new(u64::MAX, u64::MAX, u64::MAX), |m| Version::new(m, 0, 0))
 }
 
 /// Classification of the difference between two schema versions.
@@ -457,6 +478,12 @@ mod tests {
         assert_eq!(v("0.2.3").required_bump(ChangeKind::Breaking).to_string(), "0.3.0");
         assert_eq!(v("0.2.3").required_bump(ChangeKind::Compatible).to_string(), "0.2.4");
         assert_eq!(v("0.0.3").required_bump(ChangeKind::Breaking).to_string(), "0.0.4");
+        // A part at u64::MAX carries into the next part instead of overflowing.
+        let max = u64::MAX;
+        assert_eq!(v(&format!("1.0.{max}")).required_bump(ChangeKind::None).to_string(), "1.1.0");
+        assert_eq!(v(&format!("1.{max}.0")).required_bump(ChangeKind::Compatible).to_string(), "2.0.0");
+        let top = format!("{max}.{max}.{max}");
+        assert_eq!(v(&format!("{max}.0.0")).required_bump(ChangeKind::Breaking).to_string(), top);
     }
 
     #[test]
