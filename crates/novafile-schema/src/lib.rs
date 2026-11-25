@@ -32,17 +32,12 @@ pub use version::{ChangeKind, NameKind, PreId, SchemaRef, Version, schema_name_k
 pub use warn::UnionWarning;
 
 impl Schema {
-    /// Canonical rendering used for fingerprints.
-    #[must_use]
-    pub fn to_canonical_text(&self) -> String {
-        self.to_string()
-    }
-
-    /// The canonical text with the `@x-…` extension directives kept after the
-    /// `@schema` line: what tools write when they put a schema back in a file.
+    /// The canonical text with the documentation comments and the `@x-…`
+    /// extension directives kept after the `@schema` line: what tools write
+    /// when they put a schema back in a file.
     #[must_use]
     pub fn to_source_text(&self) -> String {
-        let canon = self.to_canonical_text();
+        let canon = self.to_string();
         let ext: String = self.extensions.iter().flat_map(|e| ["@", e.as_str(), "\n"]).collect();
         match canon.split_once('\n') {
             Some((first, rest)) if first.starts_with("@schema ") => format!("{first}\n{ext}{rest}"),

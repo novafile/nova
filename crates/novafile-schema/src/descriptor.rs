@@ -313,6 +313,7 @@ impl Schema {
                                     Some(Value::Int(id)) => Some(u32::try_from(*id).map_err(|_| "id out of range")?),
                                     _ => None,
                                 },
+                                doc: None,
                             })
                         })
                         .collect::<Result<_, String>>()
@@ -339,6 +340,7 @@ impl Schema {
                                 _ => None,
                             },
                             deprecated: flag(f, "deprecated"),
+                            doc: None,
                         })
                     })
                     .collect::<Result<_, String>>()

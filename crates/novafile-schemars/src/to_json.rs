@@ -54,6 +54,8 @@ pub fn to_json_schema(schema: &Schema) -> Json {
             classify(&mut s, schema.def_class(name));
         }
 
+        describe(&mut s, schema.def_doc(name));
+
         if let Some(std) = std_type(schema, name) {
             mark_std(&mut s, std);
         }
@@ -187,9 +189,27 @@ fn record(schema: &Schema, r: &RecordDef) -> Json {
     Json::Object(o)
 }
 
-/// The schema of a field, with its default, deprecation, `@id` and `@key` attached.
+/// The `description` that marks a `@key` field. A field's own documentation
+/// comes before it, separated by a blank line.
+pub(crate) const KEY_NOTE: &str = "Key field (@key): values must be unique among the elements of a list (not checked by JSON Schema).";
+
+/// Set `doc` as the `description` of `s`, if there is one. A schema that is
+/// not an object (`true`) becomes `{"description": …}`, which accepts the same values.
+fn describe(s: &mut Json, doc: Option<&str>) {
+    let Some(doc) = doc else { return };
+    if !s.is_object() {
+        *s = Json::Object(Map::new());
+    }
+
+    if let Json::Object(o) = s {
+        o.insert("description".into(), doc.into());
+    }
+}
+
+/// The schema of a field, with its documentation, default, deprecation, `@id` and `@key` attached.
 fn field(schema: &Schema, f: &FieldDef) -> Json {
-    let s = ty(schema, &f.ty);
+    let mut s = ty(schema, &f.ty);
+    describe(&mut s, f.doc.as_deref());
     if f.default.is_none() && !f.deprecated && f.id.is_none() && !f.key {
         return s;
     }
@@ -213,10 +233,11 @@ fn field(schema: &Schema, f: &FieldDef) -> Json {
 
     if f.key {
         o.insert("x-nova-key".into(), true.into());
-        o.insert(
-            "description".into(),
-            "Key field (@key): values must be unique among the elements of a list (not checked by JSON Schema).".into(),
-        );
+        let note = match f.doc.as_deref() {
+            Some(doc) => format!("{doc}\n\n{KEY_NOTE}"),
+            None => KEY_NOTE.to_owned(),
+        };
+        o.insert("description".into(), note.into());
     }
 
     Json::Object(o)
@@ -241,12 +262,14 @@ fn variants(schema: &Schema, vs: &[VariantDef]) -> Json {
                 flush(&mut units, &mut alts);
                 let mut props = Map::new();
                 props.insert(v.name.clone(), ty(schema, p));
-                alts.push(json!({
+                let mut alt = json!({
                     "type": "object",
                     "properties": props,
                     "required": [v.name],
                     "additionalProperties": false
-                }));
+                });
+                describe(&mut alt, v.doc.as_deref());
+                alts.push(alt);
             }
         }
     }

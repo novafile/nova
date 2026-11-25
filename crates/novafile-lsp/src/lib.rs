@@ -757,6 +757,13 @@ impl Server<'_> {
                 let _ = write!(md, " · `@{c}`");
             }
 
+            // The documentation of the field, then of its named type (#34).
+            let type_doc = match &ty.kind {
+                novafile_schema::TypeKind::Named(n) => s.def_doc(n),
+                _ => None,
+            };
+            let docs: Vec<String> = field.iter().filter_map(|f| f.doc.clone()).chain(type_doc.map(str::to_owned)).collect();
+
             if let Some(f) = field {
                 let mut notes = Vec::new();
                 if f.optional {
@@ -788,6 +795,10 @@ impl Server<'_> {
                     let _ = write!(md, "\n\n{}", notes.join(" · "));
                 }
             }
+
+            for d in docs {
+                let _ = write!(md, "\n\n---\n\n{d}");
+            }
         }
 
         Some(Hover {
@@ -800,7 +811,7 @@ impl Server<'_> {
     }
 
     /// The definition of the type name under the cursor in a schema file, as
-    /// canonical text. Names of imported definitions (`std.Uuid`) work too. There is
+    /// source text with its documentation comments. Names of imported definitions (`std.Uuid`) work too. There is
     /// no go-to-definition: a bundled schema, such as the standard library, has no
     /// file to go to.
     fn schema_hover(&self, uri: &Uri, pos: Position) -> Option<Hover> {
@@ -816,6 +827,7 @@ impl Server<'_> {
         let one = Schema {
             defs: vec![(name.to_owned(), def.clone())],
             def_classes: schema.def_classes.iter().filter(|(n, _)| n == name).cloned().collect(),
+            def_docs: schema.def_docs.iter().filter(|(n, _)| n == name).cloned().collect(),
             ..Schema::default()
         };
         let mut md = format!("```novs\n{}\n```", one.to_string().trim());

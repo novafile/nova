@@ -9,10 +9,16 @@
 //! attribute.
 //!
 //! Attributes — container: `#[nova(name = "…", version = "…", rename = "TypeName", rename_all = "…",
-//! rename_all_fields = "…", open)]`;
+//! rename_all_fields = "…", open, doc = "…")]`;
 //! field: `#[nova(rename = "…", key, id = N, range = "1..65535", len = "..64, utf8",
-//! default = "flow literal", secret, personal, type = "string @len(1..)", not_null, deprecated, skip)]`;
-//! variant: `#[nova(rename = "…", id = N, rename_all = "…")]`.
+//! default = "flow literal", secret, personal, type = "string @len(1..)", not_null, deprecated, skip,
+//! doc = "…")]`;
+//! variant: `#[nova(rename = "…", id = N, rename_all = "…", doc = "…")]`.
+//!
+//! Doc comments (`///`) on the type, its fields and its variants become the documentation of
+//! the definitions, fields and variants: `#` comments in the schema text, hover text in
+//! editors and `description` in JSON Schema. `doc = "…"` replaces that text, for example to
+//! leave out Rust intra-doc links; `doc = ""` gives no documentation.
 //!
 //! `secret` and `personal` classify the field's type (`@secret` / `@personal`, proposal 0009).
 //! `type` replaces the field type's `NovaSchema` impl with a schema type expression, for
@@ -89,6 +95,8 @@ struct Container {
     rename_all_fields: Option<String>,
     /// Emit the record as `@open`, accepting unknown fields.
     open: bool,
+    /// The documentation of the definition: `#[nova(doc)]`, else the doc comments.
+    doc: Option<String>,
 }
 
 /// Settings of a field or enum variant, from `#[nova(...)]`, `#[serde(...)]` and `#[deprecated]`.
@@ -121,6 +129,44 @@ struct FieldAttrs {
     skip: bool,
     /// On a struct variant: the `rename_all` rule for its fields.
     rename_all: Option<String>,
+    /// The documentation: `#[nova(doc)]`, else the doc comments.
+    doc: Option<String>,
+}
+
+/// The text of the doc comments (`#[doc = "…"]`) in `attrs`, or `None` if there are none.
+/// Each line loses one leading space, which `/// text` adds. Doc attributes that are not
+/// string literals (`#[doc = include_str!(…)]`) are left out.
+fn doc_comments(attrs: &[Attribute]) -> Option<String> {
+    let mut lines = Vec::new();
+    for a in attrs.iter().filter(|a| a.path().is_ident("doc")) {
+        if let syn::Meta::NameValue(nv) = &a.meta
+            && let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value
+        {
+            let text = s.value();
+            lines.extend(text.lines().map(|l| l.strip_prefix(' ').unwrap_or(l).trim_end().to_owned()));
+        }
+    }
+
+    non_empty(&lines.join("\n"))
+}
+
+/// `text` without leading and trailing blank lines, or `None` if nothing is left.
+fn non_empty(text: &str) -> Option<String> {
+    let text = text.trim_matches('\n');
+    (!text.trim().is_empty()).then(|| text.to_owned())
+}
+
+/// The documentation from `#[nova(doc = "…")]` if given, else from the doc comments.
+fn doc_of(attrs: &[Attribute], nova_doc: Option<String>) -> Option<String> {
+    match nova_doc {
+        Some(d) => non_empty(&d),
+        None => doc_comments(attrs),
+    }
+}
+
+/// Code for an `Option<String>` holding `doc`.
+fn doc_tokens(doc: Option<&str>) -> Ts {
+    if let Some(d) = doc { quote!(Some(#d.to_owned())) } else { quote!(None) }
 }
 
 /// The string literal of a `key = "..."` attribute.
@@ -145,6 +191,7 @@ fn ignore(meta: &syn::meta::ParseNestedMeta) -> syn::Result<()> {
 /// representations other than external tagging are errors; other serde keys are ignored.
 fn container_attrs(attrs: &[Attribute]) -> syn::Result<Container> {
     let mut c = Container::default();
+    let mut nova_doc = None;
     for a in attrs {
         if a.path().is_ident("nova") {
             a.parse_nested_meta(|m| {
@@ -160,8 +207,10 @@ fn container_attrs(attrs: &[Attribute]) -> syn::Result<Container> {
                     c.rename_all_fields = Some(str_lit(&m)?);
                 } else if m.path.is_ident("open") {
                     c.open = true;
+                } else if m.path.is_ident("doc") {
+                    nova_doc = Some(str_lit(&m)?);
                 } else {
-                    return Err(m.error("unknown #[nova] container attribute (name, version, rename, rename_all, rename_all_fields, open)"));
+                    return Err(m.error("unknown #[nova] container attribute (name, version, rename, rename_all, rename_all_fields, open, doc)"));
                 }
 
                 Ok(())
@@ -183,6 +232,7 @@ fn container_attrs(attrs: &[Attribute]) -> syn::Result<Container> {
         }
     }
 
+    c.doc = doc_of(attrs, nova_doc);
     Ok(c)
 }
 
@@ -190,6 +240,7 @@ fn container_attrs(attrs: &[Attribute]) -> syn::Result<Container> {
 /// `#[serde(flatten)]` are errors; other serde keys are ignored.
 fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
     let mut f = FieldAttrs::default();
+    let mut nova_doc = None;
     for a in attrs {
         if a.path().is_ident("deprecated") {
             f.deprecated = true;
@@ -224,9 +275,11 @@ fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                     f.skip = true;
                 } else if p.is_ident("rename_all") {
                     f.rename_all = Some(str_lit(&m)?);
+                } else if p.is_ident("doc") {
+                    nova_doc = Some(str_lit(&m)?);
                 } else {
                     return Err(m.error(
-                        "unknown #[nova] field attribute (rename, key, id, range, len, default, secret, personal, type, not_null, deprecated, skip, rename_all)",
+                        "unknown #[nova] field attribute (rename, key, id, range, len, default, secret, personal, type, not_null, deprecated, skip, rename_all, doc)",
                     ));
                 }
 
@@ -259,6 +312,7 @@ fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
         }
     }
 
+    f.doc = doc_of(attrs, nova_doc);
     Ok(f)
 }
 
@@ -419,6 +473,7 @@ fn record_fields(krate: &Ts, owner: &str, fields: &syn::FieldsNamed, rule: Optio
         let key = a.key;
         let deprecated = a.deprecated;
         let id = if let Some(n) = a.id { quote!(Some(#n)) } else { quote!(None) };
+        let doc = doc_tokens(a.doc.as_deref());
         out.push(quote! {{
             #ty
             let optional = !#has_default && (#serde_default || #field_optional);
@@ -430,6 +485,7 @@ fn record_fields(krate: &Ts, owner: &str, fields: &syn::FieldsNamed, rule: Optio
                 key: #key,
                 id: #id,
                 deprecated: #deprecated,
+                doc: #doc,
             });
         }});
     }
@@ -519,12 +575,18 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
                 };
 
                 let id = if let Some(n) = a.id { quote!(Some(#n)) } else { quote!(None) };
-                variants.push(quote!(#krate::VariantDef { name: #name.to_owned(), payload: #payload, id: #id }));
+                let doc = doc_tokens(a.doc.as_deref());
+                variants.push(quote!(#krate::VariantDef { name: #name.to_owned(), payload: #payload, id: #id, doc: #doc }));
             }
 
             quote!(#krate::Def::Enum(vec![#(#variants),*]))
         }
         Data::Union(u) => return Err(Error::new(u.union_token.span, "NovaSchema cannot be derived for unions")),
+    };
+
+    let doc = match &c.doc {
+        Some(d) => quote!(generator.doc(#def_name, #d);),
+        None => quote!(),
     };
 
     let id = match (&c.name, &c.version) {
@@ -540,7 +602,10 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
     Ok(quote! {
         impl #krate::NovaSchema for #ident {
             fn nova_type(generator: &mut #krate::derive::SchemaGen) -> #krate::TypeRef {
-                generator.named(#def_name, ::std::any::type_name::<Self>(), |generator| #body)
+                generator.named(#def_name, ::std::any::type_name::<Self>(), |generator| {
+                    #doc
+                    #body
+                })
             }
 
             #id

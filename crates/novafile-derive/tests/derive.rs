@@ -474,3 +474,43 @@ fn not_null_options_are_optional_but_not_nullable() {
     check("url: \"postgres://db\"\n").unwrap();
     assert!(check("url: null\n").is_err());
 }
+
+/// Doc comments become documentation; `#[nova(doc)]` replaces or removes it (#34).
+#[test]
+fn doc_comments_document_the_schema() {
+    /// Which database to use.
+    ///
+    /// See [`Db::url`].
+    #[derive(NovaSchema, Serialize)]
+    #[nova(doc = "Which database to use.")]
+    #[allow(dead_code)]
+    struct Db {
+        /// The database to connect to,
+        /// as a PostgreSQL URL.
+        url: Option<String>,
+        /// Rust-only detail.
+        #[nova(doc = "")]
+        pool: u8,
+        mode: Mode,
+    }
+
+    /// How to open the database.
+    #[derive(NovaSchema, Serialize)]
+    #[allow(dead_code)]
+    enum Mode {
+        /// Read only.
+        Ro,
+        Rw,
+    }
+
+    let s = Db::novafile_schema();
+    let text = s.to_string();
+    for part in [
+        "# Which database to use.\nrecord Db:\n  # The database to connect to,\n  # as a PostgreSQL URL.\n  url?: string?\n  pool: u8\n",
+        "# How to open the database.\nenum Mode:\n  # Read only.\n  Ro\n  Rw\n",
+    ] {
+        assert!(text.contains(part), "{part:?} missing in\n{text}");
+    }
+
+    assert_eq!(parse_schema(&text).unwrap().to_string(), text);
+}
