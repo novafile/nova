@@ -10,7 +10,14 @@
 //!
 //! Attributes — container: `#[nova(name = "…", version = "…", rename = "TypeName", open)]`;
 //! field: `#[nova(rename = "…", key, id = N, range = "1..65535", len = "..64, utf8",
-//! default = "flow literal", deprecated, skip)]`; variant: `#[nova(rename = "…", id = N)]`.
+//! default = "flow literal", secret, personal, type = "string @len(1..)", deprecated, skip)]`;
+//! variant: `#[nova(rename = "…", id = N)]`.
+//!
+//! `secret` and `personal` classify the field's type (`@secret` / `@personal`, proposal 0009).
+//! `type` replaces the field type's `NovaSchema` impl with a schema type expression, for
+//! foreign types that have none (`url::Url`, `secrecy::SecretString`, …); on an `Option<…>`
+//! field it gives the inner type, which stays optional and nullable. `range`, `len` and the
+//! class apply on top of it.
 //! Serde attributes are honoured so the schema matches `novafile-serde`'s output:
 //! `rename`, `rename_all`, `default`, `skip`, `skip_serializing`/`skip_deserializing`.
 
@@ -84,6 +91,10 @@ struct FieldAttrs {
     range: Option<String>,
     /// Body of an `@len(...)` constraint, inserted verbatim.
     len: Option<String>,
+    /// Class attribute name (`secret` or `personal`), emitted as `@secret` / `@personal`.
+    class: Option<&'static str>,
+    /// Schema type expression used instead of the field type's `NovaSchema` impl.
+    ty: Option<String>,
     /// Default value as a NOVA flow literal; makes the field non-optional.
     default: Option<String>,
     /// `#[serde(default)]` is present, so the field may be absent (optional).
@@ -179,12 +190,20 @@ fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                     f.len = Some(str_lit(&m)?);
                 } else if p.is_ident("default") {
                     f.default = Some(str_lit(&m)?);
+                } else if p.is_ident("secret") || p.is_ident("personal") {
+                    if f.class.is_some() {
+                        return Err(m.error("a field has at most one class (secret or personal)"));
+                    }
+
+                    f.class = Some(if p.is_ident("secret") { "secret" } else { "personal" });
+                } else if p.is_ident("type") {
+                    f.ty = Some(str_lit(&m)?);
                 } else if p.is_ident("deprecated") {
                     f.deprecated = true;
                 } else if p.is_ident("skip") {
                     f.skip = true;
                 } else {
-                    return Err(m.error("unknown #[nova] field attribute (rename, key, id, range, len, default, deprecated, skip)"));
+                    return Err(m.error("unknown #[nova] field attribute (rename, key, id, range, len, default, secret, personal, type, deprecated, skip)"));
                 }
 
                 Ok(())
@@ -256,6 +275,48 @@ fn rename(name: &str, rule: Option<&str>, is_variant: bool) -> syn::Result<Strin
     })
 }
 
+/// Whether `ty` is written as `Option<…>` (any path ending in `Option`).
+fn is_option(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == "Option"))
+}
+
+/// Code binding `ty` to the schema type of a field of Rust type `rust_ty`, and an expression
+/// telling whether the field may be absent. Honours `type`, `range`, `len` and the class.
+fn field_type(krate: &Ts, a: &FieldAttrs, rust_ty: &syn::Type, at: &str) -> (Ts, Ts) {
+    let mut attr_text = String::new();
+    if let Some(r) = &a.range {
+        let _ = write!(attr_text, " @range({r})");
+    }
+
+    if let Some(l) = &a.len {
+        let _ = write!(attr_text, " @len({l})");
+    }
+
+    if let Some(c) = a.class {
+        let _ = write!(attr_text, " @{c}");
+    }
+
+    let with = if attr_text.is_empty() {
+        quote!()
+    } else {
+        quote!(let ty = #krate::derive::__with_attrs(ty, #attr_text, #at);)
+    };
+
+    // With `type`, never name `<rust_ty as NovaSchema>`: the point is that it has no impl.
+    let (base, optional) = match &a.ty {
+        Some(t) => {
+            let option = is_option(rust_ty);
+            (quote!(#krate::derive::__type(#t, #at, #option)), quote!(#option))
+        }
+        None => (
+            quote!(<#rust_ty as #krate::NovaSchema>::nova_type(generator)),
+            quote!(<#rust_ty as #krate::NovaSchema>::nova_field_optional()),
+        ),
+    };
+
+    (quote!(let ty = #base; #with), optional)
+}
+
 /// Code building a `Vec<FieldDef>` from named fields.
 fn record_fields(krate: &Ts, owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> syn::Result<Ts> {
     let mut out = Vec::new();
@@ -272,22 +333,12 @@ fn record_fields(krate: &Ts, owner: &str, fields: &syn::FieldsNamed, rule: Optio
             None => rename(&ident, rule, false)?,
         };
 
-        let ty = &f.ty;
+        if a.key && a.class.is_some() {
+            return Err(Error::new(f.span(), "a @key field cannot be secret or personal, since keys appear in paths"));
+        }
+
         let at = format!("{owner}.{name}");
-        let mut attr_text = String::new();
-        if let Some(r) = &a.range {
-            let _ = write!(attr_text, " @range({r})");
-        }
-
-        if let Some(l) = &a.len {
-            let _ = write!(attr_text, " @len({l})");
-        }
-
-        let with = if attr_text.is_empty() {
-            quote!()
-        } else {
-            quote!(let ty = #krate::derive::__with_attrs(ty, #attr_text, #at);)
-        };
+        let (ty, field_optional) = field_type(krate, &a, &f.ty, &at);
 
         let default = if let Some(d) = &a.default {
             quote!(Some(#krate::derive::__default(#d, #at)))
@@ -301,9 +352,8 @@ fn record_fields(krate: &Ts, owner: &str, fields: &syn::FieldsNamed, rule: Optio
         let deprecated = a.deprecated;
         let id = if let Some(n) = a.id { quote!(Some(#n)) } else { quote!(None) };
         out.push(quote! {{
-            let ty = <#ty as #krate::NovaSchema>::nova_type(generator);
-            #with
-            let optional = !#has_default && (#serde_default || <#ty as #krate::NovaSchema>::nova_field_optional());
+            #ty
+            let optional = !#has_default && (#serde_default || #field_optional);
             fields.push(#krate::FieldDef {
                 name: #name.to_owned(),
                 ty,
@@ -345,25 +395,9 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
             Fields::Unnamed(u) if u.unnamed.len() == 1 => {
                 // Newtype structs are transparent in serde: an alias of the inner type.
                 let a = field_attrs(&u.unnamed[0].attrs)?;
-                let ty = &u.unnamed[0].ty;
-                let mut attr_text = String::new();
-                if let Some(r) = &a.range {
-                    let _ = write!(attr_text, " @range({r})");
-                }
-
-                if let Some(l) = &a.len {
-                    let _ = write!(attr_text, " @len({l})");
-                }
-
-                let with = if attr_text.is_empty() {
-                    quote!()
-                } else {
-                    quote!(let ty = #krate::derive::__with_attrs(ty, #attr_text, #def_name);)
-                };
-
+                let (ty, _) = field_type(&krate, &a, &u.unnamed[0].ty, &def_name);
                 quote!({
-                    let ty = <#ty as #krate::NovaSchema>::nova_type(generator);
-                    #with
+                    #ty
                     #krate::Def::Alias(ty)
                 })
             }

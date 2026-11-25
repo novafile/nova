@@ -219,3 +219,59 @@ fn root_alias_does_not_collide_with_a_type_named_root() {
     let doc = novafile_text::parse("- a: 1\n").unwrap();
     assert!(s.resolve(&doc).is_ok(), "{s}");
 }
+
+/// A foreign type with serde support but no `NovaSchema` impl (like `url::Url`).
+#[derive(serde::Serialize)]
+struct Foreign(String);
+
+/// `secret`/`personal` (#29), std types and `type` overrides (#30).
+#[derive(NovaSchema, Serialize)]
+#[nova(name = "example.org/app", version = "1.0.0")]
+struct Database {
+    #[nova(secret)]
+    url: String,
+    #[nova(personal, len = "1..")]
+    contact_email: String,
+    #[nova(type = "string @len(1..)", secret)]
+    dsn: Foreign,
+    #[nova(type = "string")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backup: Option<Foreign>,
+    data_dir: std::path::PathBuf,
+    listen: std::net::SocketAddr,
+    peers: Vec<std::net::IpAddr>,
+}
+
+#[test]
+fn classes_std_types_and_type_overrides() {
+    let s = Database::novafile_schema();
+    let text = s.to_canonical_text();
+    for line in [
+        "  url: string @secret\n",
+        "  contact_email: string @len(1..) @personal\n",
+        "  dsn: string @len(1..) @secret\n",
+        "  backup?: string?\n",
+        "  data_dir: string\n",
+        "  listen: string\n",
+        "  peers: list<string>\n",
+    ] {
+        assert!(text.contains(line), "{line:?} missing in\n{text}");
+    }
+
+    // The derived schema passes the checks a hand-written one does.
+    parse_schema(&text).unwrap();
+
+    let db = Database {
+        url: "postgres://u:hunter2@db".into(),
+        contact_email: "ada@example.org".into(),
+        dsn: Foreign("host=db".into()),
+        backup: None,
+        data_dir: "/var/lib/app".into(),
+        listen: "127.0.0.1:8080".parse().unwrap(),
+        peers: vec!["::1".parse().unwrap()],
+    };
+    let v = novafile_serde::to_value(&db).unwrap();
+    let (_, marks) = s.classify(&v).unwrap();
+    let classified: Vec<String> = marks.iter().map(|(p, c)| format!("{p} {c}")).collect();
+    assert_eq!(classified.len(), 3, "{classified:?}");
+}

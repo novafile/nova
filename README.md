@@ -122,6 +122,8 @@ let schema = Infrastructure::novafile_schema();             // == the hand-writt
 
 Put `#[nova(name = …, version = …)]` on the root type. It gives the schema its identity (`@schema infrastructure@1.0.0`), which documents name in their `@schema` line and which version checks use. Without it the schema is anonymous: it still validates, but cannot check a document's `@schema` reference. Other types need no attribute.
 
+Fields take `#[nova(secret)]` / `#[nova(personal)]` to classify them for redaction, and `#[nova(type = "string @len(1..)")]` to give a schema type for foreign types without a `NovaSchema` impl (`url::Url`, `secrecy::SecretString`, …). `PathBuf` and the `std::net` address types map to `string`.
+
 ## Workspace
 
 | Crate | Purpose |

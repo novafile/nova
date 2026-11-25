@@ -131,6 +131,16 @@ pub fn __with_attrs(mut ty: TypeRef, attrs: &str, field: &str) -> TypeRef {
     ty
 }
 
+/// Parse a `#[nova(type = "…")]` type expression; `nullable` for an `Option<…>` field.
+/// Used by the derive macro; panics with a clear message on invalid input.
+#[doc(hidden)]
+#[must_use]
+pub fn __type(text: &str, field: &str, nullable: bool) -> TypeRef {
+    let mut ty = crate::parse::parse_type(text).unwrap_or_else(|e| panic!("#[nova(type)] on {field}: {e}"));
+    ty.nullable |= nullable;
+    ty
+}
+
 /// Parse a `#[nova(default = "…")]` flow literal.
 #[doc(hidden)]
 #[must_use]
@@ -160,6 +170,10 @@ simple! {
     novafile_value::Decimal => TypeKind::Decimal, novafile_value::Rational => TypeKind::Rational,
     novafile_value::Value => TypeKind::Any,
     () => TypeKind::Null,
+    // Serde writes these as strings (human-readable form, which novafile-serde uses).
+    std::path::PathBuf => TypeKind::String, std::path::Path => TypeKind::String,
+    std::net::IpAddr => TypeKind::String, std::net::Ipv4Addr => TypeKind::String, std::net::Ipv6Addr => TypeKind::String,
+    std::net::SocketAddr => TypeKind::String, std::net::SocketAddrV4 => TypeKind::String, std::net::SocketAddrV6 => TypeKind::String,
 }
 
 impl NovaSchema for u128 {
