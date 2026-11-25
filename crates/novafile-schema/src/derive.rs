@@ -94,6 +94,11 @@ pub trait NovaSchema {
 }
 
 /// The complete schema for `T`, with `T` as the root type.
+///
+/// # Panics
+///
+/// Panics if the schema fails the checks [`crate::parse_schema`] applies: a `#[nova(type)]`
+/// naming an unknown type, an alias cycle, a class on a `@key` field, or an invalid default.
 #[must_use]
 pub fn schema_for<T: NovaSchema>() -> Schema {
     let mut generator = SchemaGen::default();
@@ -113,7 +118,9 @@ pub fn schema_for<T: NovaSchema>() -> Schema {
     };
 
     let (name, version) = T::nova_schema_id().map_or((None, None), |(n, v)| (Some(n), Some(v)));
-    generator.into_schema(Some(root), name, version)
+    let schema = generator.into_schema(Some(root), name, version);
+    crate::parse::check_refs(&schema).unwrap_or_else(|e| panic!("#[derive(NovaSchema)]: {e}"));
+    schema
 }
 
 /// Apply schema-syntax attributes (`@range(1..10) @len(..64, utf8)`) to a type.
@@ -128,6 +135,16 @@ pub fn __with_attrs(mut ty: TypeRef, attrs: &str, field: &str) -> TypeRef {
         panic!("#[nova] on {field}: @{a} is not a type attribute");
     }
 
+    ty
+}
+
+/// Parse a `#[nova(type = "…")]` type expression; `nullable` for an `Option<…>` field.
+/// Used by the derive macro; panics with a clear message on invalid input.
+#[doc(hidden)]
+#[must_use]
+pub fn __type(text: &str, field: &str, nullable: bool) -> TypeRef {
+    let mut ty = crate::parse::parse_type(text).unwrap_or_else(|e| panic!("#[nova(type)] on {field}: {e}"));
+    ty.nullable |= nullable;
     ty
 }
 
@@ -160,6 +177,10 @@ simple! {
     novafile_value::Decimal => TypeKind::Decimal, novafile_value::Rational => TypeKind::Rational,
     novafile_value::Value => TypeKind::Any,
     () => TypeKind::Null,
+    // Serde writes these as strings (human-readable form, which novafile-serde uses).
+    std::path::PathBuf => TypeKind::String, std::path::Path => TypeKind::String,
+    std::net::IpAddr => TypeKind::String, std::net::Ipv4Addr => TypeKind::String, std::net::Ipv6Addr => TypeKind::String,
+    std::net::SocketAddr => TypeKind::String, std::net::SocketAddrV4 => TypeKind::String, std::net::SocketAddrV6 => TypeKind::String,
 }
 
 impl NovaSchema for u128 {

@@ -426,4 +426,26 @@ impl Document {
     pub fn is_template(&self) -> bool {
         self.template.is_some()
     }
+
+    /// The value of a data document. Template documents are rejected; render
+    /// them with `novafile-template` instead.
+    ///
+    /// # Errors
+    ///
+    /// Fails if this is a `@template` document or contains template constructs.
+    pub fn value(&self) -> Result<Value, crate::ParseError> {
+        let err = |message: String| crate::ParseError {
+            line: 1,
+            col: 1,
+            offset: 0,
+            message,
+            fix: None,
+        };
+
+        if self.is_template() {
+            return Err(err("this is a @template document; render it first".into()));
+        }
+
+        self.body.to_value().map_err(err)
+    }
 }

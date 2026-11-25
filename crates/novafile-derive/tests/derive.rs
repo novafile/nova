@@ -185,10 +185,10 @@ fn recursive_types() {
 struct Chain(Option<Box<Chain>>);
 
 #[test]
+#[should_panic(expected = "cycle")]
 fn recursive_aliases_fail_instead_of_hanging() {
-    // `type Chain = Chain?` never reaches a type; resolving reports it.
-    let issues = Chain::novafile_schema().resolve(&novafile_value::Value::Int(1)).unwrap_err();
-    assert!(issues[0].message.contains("cycle"), "{issues:?}");
+    // `type Chain = Chain?` never reaches a type, like the same alias in a `.novs`.
+    let _ = Chain::novafile_schema();
 }
 
 #[derive(NovaSchema)]
@@ -218,4 +218,88 @@ fn root_alias_does_not_collide_with_a_type_named_root() {
     assert_eq!(s.defs.iter().filter(|(n, _)| n == "Root").count(), 1, "{s}");
     let doc = novafile_text::parse("- a: 1\n").unwrap();
     assert!(s.resolve(&doc).is_ok(), "{s}");
+}
+
+/// A foreign type with serde support but no `NovaSchema` impl (like `url::Url`).
+#[derive(serde::Serialize)]
+struct Foreign(String);
+
+/// `secret`/`personal` (#29), std types and `type` overrides (#30).
+#[derive(NovaSchema, Serialize)]
+#[nova(name = "example.org/app", version = "1.0.0")]
+struct Database {
+    #[nova(secret)]
+    url: String,
+    #[nova(personal, len = "1..")]
+    contact_email: String,
+    #[nova(type = "string @len(1..)", secret)]
+    dsn: Foreign,
+    #[nova(type = "string")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backup: Option<Foreign>,
+    data_dir: std::path::PathBuf,
+    listen: std::net::SocketAddr,
+    peers: Vec<std::net::IpAddr>,
+}
+
+#[test]
+fn classes_std_types_and_type_overrides() {
+    let s = Database::novafile_schema();
+    let text = s.to_canonical_text();
+    for line in [
+        "  url: string @secret\n",
+        "  contact_email: string @len(1..) @personal\n",
+        "  dsn: string @len(1..) @secret\n",
+        "  backup?: string?\n",
+        "  data_dir: string\n",
+        "  listen: string\n",
+        "  peers: list<string>\n",
+    ] {
+        assert!(text.contains(line), "{line:?} missing in\n{text}");
+    }
+
+    // The derived schema passes the checks a hand-written one does.
+    parse_schema(&text).unwrap();
+
+    let db = Database {
+        url: "postgres://u:hunter2@db".into(),
+        contact_email: "ada@example.org".into(),
+        dsn: Foreign("host=db".into()),
+        backup: None,
+        data_dir: "/var/lib/app".into(),
+        listen: "127.0.0.1:8080".parse().unwrap(),
+        peers: vec!["::1".parse().unwrap()],
+    };
+    let v = novafile_serde::to_value(&db).unwrap();
+    let (_, marks) = s.classify(&v).unwrap();
+    let classified: Vec<String> = marks.iter().map(|(p, c)| format!("{p} {c}")).collect();
+    assert_eq!(classified.len(), 3, "{classified:?}");
+}
+
+#[derive(NovaSchema)]
+#[allow(dead_code)]
+struct SecretKey {
+    #[nova(key, type = "string @secret")]
+    id: Foreign,
+}
+
+/// A classified key, which `#[nova(key, secret)]` rejects at compile time, is also caught
+/// when the class comes from a `type` override.
+#[test]
+#[should_panic(expected = "@key field cannot have a @secret type")]
+fn classified_keys_are_rejected() {
+    let _ = SecretKey::novafile_schema();
+}
+
+#[derive(NovaSchema)]
+#[allow(dead_code)]
+struct Dangling {
+    #[nova(type = "Endpoint")]
+    endpoint: Foreign,
+}
+
+#[test]
+#[should_panic(expected = "unknown type Endpoint")]
+fn type_overrides_must_name_known_types() {
+    let _ = Dangling::novafile_schema();
 }
