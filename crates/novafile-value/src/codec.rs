@@ -397,14 +397,6 @@ pub fn canonical_bytes(v: &Value) -> Vec<u8> {
     )
 }
 
-/// How many bytes of reused text the decoder hands out per input byte.
-///
-/// String back-references and record-list field names reuse text that appears
-/// once in the input. Each use costs a copy in an owned [`Value`]. Without a
-/// bound, a 2-byte back-reference to a long string makes a small input decode
-/// to gigabytes. Real data reuses short keys and tags, far below this factor.
-const COPY_FACTOR: usize = 64;
-
 /// Resource bounds the decoder enforces on untrusted input.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -412,6 +404,14 @@ pub struct Limits {
     pub max_depth: usize,
     /// Maximum number of literal strings in the back-reference table.
     pub max_strings: usize,
+    /// Maximum bytes of reused text an owned decode copies.
+    ///
+    /// String back-references and record-list field names reuse text that
+    /// appears once in the input, and an owned [`Value`] copies it on every
+    /// use. Without a bound, a 2-byte back-reference to a long string makes a
+    /// small input decode to gigabytes. Borrowed decodes ([`decode_ref`])
+    /// copy nothing, so this limit does not apply to them.
+    pub max_copied: usize,
 }
 
 impl Default for Limits {
@@ -419,6 +419,7 @@ impl Default for Limits {
         Limits {
             max_depth: 128,
             max_strings: 1 << 20,
+            max_copied: 256 << 20,
         }
     }
 }
@@ -454,8 +455,9 @@ struct Decoder<'a> {
     strings: Vec<&'a str>,
     /// Interned canonical identities of the subtrees that duplicate checks need.
     ids: HashMap<Node<'a>, usize>,
-    /// Bytes of reused text the decoder can still hand out, see [`COPY_FACTOR`].
-    copy_budget: usize,
+    /// Bytes of reused text the decoder can still copy, see [`Limits::max_copied`].
+    /// `None` when the values borrow from the input, so reuse copies nothing.
+    copy_budget: Option<usize>,
 }
 
 /// A subtree's canonical form, with its children as interned ids: two subtrees
@@ -574,12 +576,12 @@ impl<'a> Decoder<'a> {
     ///
     /// # Errors
     ///
-    /// Returns a [`DecodeError`] when the budget is spent: the input reuses
-    /// text far more often than real data does.
+    /// Returns a [`DecodeError`] when the budget is spent.
     fn charge(&mut self, n: usize) -> Result<(), DecodeError> {
-        match self.copy_budget.checked_sub(n) {
+        let Some(budget) = self.copy_budget else { return Ok(()) };
+        match budget.checked_sub(n) {
             Some(left) => {
-                self.copy_budget = left;
+                self.copy_budget = Some(left);
                 Ok(())
             }
             None => self.err("input reuses too much text: decoded size limit exceeded"),
@@ -876,6 +878,9 @@ pub(crate) trait Build<'a>: Sized {
     /// A record under construction.
     type Record;
 
+    /// Whether reused text is copied on every use, which [`Limits::max_copied`] bounds.
+    const COPIES_TEXT: bool;
+
     /// A value of a kind without heap data.
     fn scalar(v: Scalar) -> Self;
     /// A string borrowed from the input.
@@ -899,6 +904,7 @@ pub(crate) trait Build<'a>: Sized {
 }
 
 impl<'a> Build<'a> for Value {
+    const COPIES_TEXT: bool = true;
     type Record = Record;
 
     fn scalar(v: Scalar) -> Self {
@@ -965,6 +971,7 @@ impl<'a> Build<'a> for Value {
 pub(crate) type RecordRef<'a> = (Vec<(&'a str, ValueRef<'a>)>, Option<Box<HashSet<&'a str>>>);
 
 impl<'a> Build<'a> for ValueRef<'a> {
+    const COPIES_TEXT: bool = false;
     type Record = RecordRef<'a>;
 
     fn scalar(v: Scalar) -> Self {
@@ -1062,7 +1069,7 @@ fn decode_any<'a, T: Build<'a>>(buf: &'a [u8], limits: Limits) -> Result<(T, usi
         limits,
         strings: Vec::new(),
         ids: HashMap::new(),
-        copy_budget: buf.len().saturating_mul(COPY_FACTOR),
+        copy_budget: T::COPIES_TEXT.then_some(limits.max_copied),
     };
 
     let (v, _) = d.value(false)?;
@@ -1156,6 +1163,20 @@ mod tests {
         bytes.resize(bytes.len() + 4000, tag::NULL);
         let e = decode(&bytes).unwrap_err();
         assert!(e.message.contains("reuses too much text"), "{e:?}");
+    }
+
+    /// The encoder's own output always decodes, even for long, often repeated strings.
+    #[test]
+    fn long_repeated_strings_decode() {
+        let v = Value::List(vec![Value::String("x".repeat(300)); 10_000]);
+        let opts = EncodeOptions {
+            canonical: false,
+            dedupe_strings: true,
+            tables: false,
+        };
+        let bytes = encode(&v, opts);
+        assert_eq!(decode(&bytes).unwrap(), v);
+        assert!(decode_ref(&bytes).is_ok());
     }
 
     /// Normal reuse of short keys stays well within the budget.
