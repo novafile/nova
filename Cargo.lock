@@ -1289,6 +1289,7 @@ dependencies = [
  "novafile-value",
  "proc-macro-crate",
  "proc-macro2",
+ "proptest",
  "quote",
  "serde",
  "syn 3.0.10",
@@ -1410,6 +1411,7 @@ dependencies = [
  "novafile-schema",
  "novafile-text",
  "novafile-value",
+ "proptest",
  "serde",
  "serde_json",
 ]

@@ -51,7 +51,7 @@ tasks:
         msg: "systemd-run not found — the bounded tasks need systemd with a user manager"
     cmds:
       - mkdir -p target/tmp
-      - '{{.BOUNDED}} cargo test -p novafile-value -p novafile-binary -p novafile-text -p novafile-patch --test prop -- --test-threads={{.JOBS}} {{.CLI_ARGS}}'
+      - '{{.BOUNDED}} cargo test -p novafile-value -p novafile-binary -p novafile-text -p novafile-patch -p novafile-serde -p novafile-derive --test prop -- --test-threads={{.JOBS}} {{.CLI_ARGS}}'
 
   kani:
     desc: Prove the Kani harnesses in novafile-value under the memory and CPU caps

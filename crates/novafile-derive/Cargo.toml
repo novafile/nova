@@ -28,6 +28,7 @@ novafile-schema = { path = "../novafile-schema", features = ["derive"] }
 novafile-value = { path = "../novafile-value" }
 novafile-text = { path = "../novafile-text" }
 novafile-serde = { path = "../novafile-serde" }
+proptest.workspace = true
 serde.workspace = true
 
 [lints]
