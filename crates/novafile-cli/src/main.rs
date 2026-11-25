@@ -765,7 +765,15 @@ fn schema_fetch(reference: &str, catalogs: &[PathBuf], pin: bool) -> R<()> {
 
     // Trust on first use, then pinned (spec §6.9): add the pin, keeping the catalog's comments.
     let catalog = project_catalog(&cwd).unwrap_or_else(|| cwd.join(CATALOG_FILE));
-    let src = std::fs::read_to_string(&catalog).unwrap_or_else(|_| format!("@schema {}@0.1.0\n", novafile_schema::META_CATALOG_NAME));
+    // Held until the pin is written, so two `--pin` runs cannot drop each other's pin.
+    // shortcut: a catalog that does not exist yet is created without a lock; two first pins at once can race.
+    let _lock = catalog.exists().then(|| lock(&catalog)).transpose()?;
+    // Only a missing catalog starts fresh: on any other read error, overwriting would lose its pins.
+    let src = match std::fs::read_to_string(&catalog) {
+        Ok(src) => src,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => format!("@schema {}@0.1.0\n", novafile_schema::META_CATALOG_NAME),
+        Err(e) => return Err(format!("{}: {e}", catalog.display()).into()),
+    };
     let value = novafile_text::parse(&src).map_err(|e| format!("{}: {e}", catalog.display()))?;
     let key = format!("{}@{}", sr.name, sr.version);
     let pins = value.as_record().and_then(|r| r.get("pins")).and_then(Value::as_list);
@@ -961,8 +969,12 @@ fn out(bytes: &[u8], to: Option<&Path>) -> R<()> {
 /// copy them here if `nvf` ever edits files owned by another user (e.g. run as root).
 fn write_atomic(p: &Path, bytes: &[u8]) -> R<()> {
     let err = |e: std::io::Error| format!("{}: {e}", p.display());
-    // Write through a symlink to its target instead of replacing the link.
-    let p = &std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    // Write through a symlink to its target instead of replacing the link,
+    // also when the target does not exist yet (then `canonicalize` fails).
+    let p = &std::fs::canonicalize(p).unwrap_or_else(|_| match std::fs::read_link(p) {
+        Ok(target) => p.parent().unwrap_or(Path::new("")).join(target),
+        Err(_) => p.to_path_buf(),
+    });
     let name = p.file_name().ok_or_else(|| format!("{}: not a file name", p.display()))?;
     let mut tmp_name = std::ffi::OsString::from(".");
     tmp_name.push(name);
@@ -1417,7 +1429,17 @@ fn run(cli: Cli) -> R<ExitCode> {
             };
 
             if file.extension().is_some_and(|e| e == "novs") && matches!(to, Format::Nova | Format::Canonical) {
-                out(load_schema(&file)?.to_source_text().as_bytes(), write.then_some(file.as_path()))?;
+                // The schema writer drops comments and reorders definitions, license headers included.
+                if write {
+                    return Err(format!(
+                        "{}: -w does not rewrite schemas, as their comments would be lost; print with `nvf fmt {}` and review",
+                        file.display(),
+                        file.display()
+                    )
+                    .into());
+                }
+
+                out(load_schema(&file)?.to_source_text().as_bytes(), None)?;
                 return Ok(ExitCode::SUCCESS);
             }
 
@@ -1425,6 +1447,8 @@ fn run(cli: Cli) -> R<ExitCode> {
                 return Err("-w needs a file to rewrite, not stdin".into());
             }
 
+            // Hold the lock from read to write, as `patch -w` does, so no concurrent edit is undone.
+            let _lock = write.then(|| lock(&file)).transpose()?;
             let mut input = read_bytes(&file)?;
             let detected = detect(&file, &input, InputFormat::Auto);
             if !matches!(detected, InputFormat::Auto | InputFormat::Nova) {
@@ -1668,6 +1692,10 @@ fn run(cli: Cli) -> R<ExitCode> {
                 return Err("-w needs a file to rewrite, not stdin".into());
             }
 
+            if file.as_os_str() == "-" && patch.as_os_str() == "-" {
+                return Err("the document and the patch cannot both come from stdin".into());
+            }
+
             // Held until the patched file is written, so a concurrent patch sees this one's result.
             let _lock = write.then(|| lock(&file)).transpose()?;
             let bytes = read_bytes(&file)?;
@@ -1755,6 +1783,11 @@ fn run(cli: Cli) -> R<ExitCode> {
                     };
                     if write && to.is_none() {
                         return Err(format!("{}: cannot write this format back; omit -w to print NOVA text", file.display()).into());
+                    }
+
+                    // These formats are rendered again from the value, so their comments are lost.
+                    if write && matches!(to, Some(Format::Yaml | Format::Toml)) {
+                        eprintln!("note: {} is rewritten from its values (comments are not kept)", file.display());
                     }
 
                     let result = Loaded {
