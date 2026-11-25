@@ -108,6 +108,29 @@ fn table_shape(items: &[Value]) -> Option<Vec<&str>> {
     (fields.len() <= 256 && present * 2 >= fields.len() * items.len()).then_some(fields)
 }
 
+/// Why [`read_varint`] rejected its input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VarintError {
+    /// The input ends inside the varint.
+    Truncated,
+    /// The value does not fit `u128`.
+    Overflow,
+    /// The encoding has a trailing zero byte, so it is not the only encoding of its value.
+    NonMinimal,
+}
+
+impl fmt::Display for VarintError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            VarintError::Truncated => "unexpected end of input",
+            VarintError::Overflow => "varint overflow",
+            VarintError::NonMinimal => "non-minimal varint",
+        })
+    }
+}
+
+impl std::error::Error for VarintError {}
+
 /// Append `v` as an unsigned LEB128 varint.
 pub fn put_varint(out: &mut Vec<u8>, mut v: u128) {
     loop {
@@ -152,13 +175,12 @@ fn unzigzag(v: u128) -> i128 {
 ///
 /// # Errors
 ///
-/// Returns `"unexpected end of input"` when `buf` ends inside the varint, and
-/// a message for an overflow or a non-minimal encoding.
-pub fn read_varint(buf: &[u8], pos: &mut usize) -> Result<u128, &'static str> {
+/// Returns the [`VarintError`] that names the problem.
+pub fn read_varint(buf: &[u8], pos: &mut usize) -> Result<u128, VarintError> {
     let mut v: u128 = 0;
     let mut shift = 0;
     loop {
-        let b = *buf.get(*pos).ok_or("unexpected end of input")?;
+        let b = *buf.get(*pos).ok_or(VarintError::Truncated)?;
         *pos += 1;
         // Fast path: most lengths, counts and small integers fit one byte.
         if shift == 0 && b & 0x80 == 0 {
@@ -167,13 +189,13 @@ pub fn read_varint(buf: &[u8], pos: &mut usize) -> Result<u128, &'static str> {
 
         // The 19th byte holds bits 126-127 and must be the last.
         if shift == 126 && (b & 0x7F > 0x03 || b & 0x80 != 0) {
-            return Err("varint overflow");
+            return Err(VarintError::Overflow);
         }
 
         v |= u128::from(b & 0x7F) << shift;
         if b & 0x80 == 0 {
             if b == 0 && shift > 0 {
-                return Err("non-minimal varint");
+                return Err(VarintError::NonMinimal);
             }
 
             return Ok(v);
@@ -514,7 +536,7 @@ impl<'a> Decoder<'a> {
 
     /// Read an unsigned LEB128 varint; see [`read_varint`].
     fn varint(&mut self) -> Result<u128, DecodeError> {
-        read_varint(self.buf, &mut self.pos).or_else(|msg| self.err(msg))
+        read_varint(self.buf, &mut self.pos).or_else(|e| self.err(e.to_string()))
     }
 
     /// Read an element count, rejecting counts larger than the remaining input

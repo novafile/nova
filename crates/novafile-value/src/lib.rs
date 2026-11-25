@@ -46,7 +46,9 @@ pub fn variant_tag(s: &str) -> Result<String, String> {
     }
 }
 
-pub use codec::{DecodeError, EncodeOptions, Limits, canonical_bytes, decode, decode_prefix, decode_ref, decode_ref_prefix, encode, put_varint, read_varint};
+pub use codec::{
+    DecodeError, EncodeOptions, Limits, VarintError, canonical_bytes, decode, decode_prefix, decode_ref, decode_ref_prefix, encode, put_varint, read_varint,
+};
 pub use decimal::Decimal;
 pub use numeric::{f32_to_f64, numeric_cmp};
 pub use rational::Rational;
