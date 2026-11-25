@@ -514,3 +514,67 @@ fn doc_comments_document_the_schema() {
 
     assert_eq!(parse_schema(&text).unwrap().to_string(), text);
 }
+
+/// Layered configuration (#35): each layer is checked partially, the merged value in
+/// full, with the record rules of `together`, `one_of` and `any_of`.
+#[test]
+fn layered_configuration_with_record_rules() {
+    // `#[serde(default)]` on the struct lets a layer leave `name` out, while the
+    // schema still requires it in the merged value.
+    #[derive(NovaSchema, Serialize, serde::Deserialize, Default)]
+    #[serde(default)]
+    #[nova(one_of = "url, url_file", together = "user, password")]
+    struct Db {
+        name: String,
+        #[nova(not_null)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[nova(not_null, rename = "url-file")]
+        #[serde(skip_serializing_if = "Option::is_none", rename = "url-file")]
+        url_file: Option<String>,
+        user: Option<String>,
+        password: Option<String>,
+    }
+
+    let s = Db::novafile_schema();
+    assert!(s.to_canonical_text().contains("record Db @one_of(url, url-file) @together(user, password):\n"));
+
+    // A file layer without `name` (it comes from the environment) passes the partial check only.
+    let file = "url: \"postgres://db\"\nuser: ada\npassword: pw\n";
+    assert!(novafile_serde::from_str_with_schema::<Db>(file, &s).is_err());
+    let layer: Db = novafile_serde::from_str_with_schema_partial(file, &s).unwrap();
+    assert!(novafile_serde::from_str_with_schema_partial::<Db>("url: 1\n", &s).is_err());
+
+    // The merged value is checked in full, through `to_value`. `None` written as
+    // `null` counts as absent, so `user`/`password` need no `skip_serializing_if`.
+    let merged = Db { name: "app".into(), ..layer };
+    s.resolve(&novafile_serde::to_value(&merged).unwrap()).unwrap();
+    let both = Db {
+        url_file: Some("/run/db".into()),
+        ..merged
+    };
+    let issues = s.resolve(&novafile_serde::to_value(&both).unwrap()).unwrap_err();
+    assert_eq!(issues[0].message, "@one_of(url, url-file): 2 present (url, url-file); expected exactly 1");
+    let half = Db {
+        name: "app".into(),
+        url: Some("x".into()),
+        user: Some("ada".into()),
+        ..Db::default()
+    };
+    assert!(s.resolve(&novafile_serde::to_value(&half).unwrap()).is_err());
+}
+
+/// A rule that names a required field fails like it does in schema text.
+#[test]
+#[should_panic(expected = "must be optional")]
+fn record_rules_need_optional_fields() {
+    #[derive(NovaSchema)]
+    #[nova(any_of = "a, b")]
+    #[allow(dead_code)]
+    struct R {
+        a: String,
+        b: Option<String>,
+    }
+
+    let _ = R::novafile_schema();
+}

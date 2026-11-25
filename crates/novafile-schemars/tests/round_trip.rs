@@ -222,3 +222,16 @@ fn docs_round_trip_through_description() {
     let back = from_json_schema(&j, None, None).unwrap().schema;
     assert_eq!(back.to_string(), s.to_string());
 }
+
+/// Record rules become `allOf` constraints and come back from `x-nova-rules` (proposal 0010).
+#[test]
+fn record_rules_map_to_json_schema() {
+    let s = parse_schema("@schema rules@1.0.0\n@root Db\n\nrecord Db @together(user, password) @one_of(url, url_file):\n  user?: string\n  password?: string\n  url?: string\n  url_file?: string\n").unwrap();
+    let j = to_json_schema(&s);
+    let all = &j["$defs"]["Db"]["allOf"];
+    assert_eq!(all[0]["dependentRequired"]["user"], serde_json::json!(["password"]));
+    assert_eq!(all[1]["oneOf"], serde_json::json!([{"required": ["url"]}, {"required": ["url_file"]}]));
+    let back = from_json_schema(&j, None, None).unwrap();
+    assert_eq!(back.schema.fingerprint(), s.fingerprint());
+    assert_eq!(back.warnings, Vec::<String>::new());
+}

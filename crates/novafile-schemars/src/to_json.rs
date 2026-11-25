@@ -1,6 +1,6 @@
 //! NOVA schema → JSON Schema (2020-12). See the crate documentation for the mapping.
 
-use novafile_schema::{Class, Constraints, Def, FieldDef, IntKind, LenUnit, Num, RecordDef, Schema, TypeKind, TypeRef, VariantDef};
+use novafile_schema::{Class, Constraints, Def, FieldDef, IntKind, LenUnit, Num, RecordDef, RecordRule, RuleKind, Schema, TypeKind, TypeRef, VariantDef};
 use novafile_value::Value;
 use novafile_value::schemars_support::patterns;
 use serde_json::{Map, Value as Json, json};
@@ -180,6 +180,12 @@ fn record(schema: &Schema, r: &RecordDef) -> Json {
     }
 
     o.insert("additionalProperties".into(), Json::Bool(r.open));
+    if !r.rules.is_empty() {
+        o.insert("allOf".into(), r.rules.iter().map(rule).collect());
+        let kept: Vec<Json> = r.rules.iter().map(|x| json!({"kind": x.kind.name(), "fields": x.fields})).collect();
+        o.insert("x-nova-rules".into(), Json::Array(kept));
+    }
+
     let names: Vec<&str> = r.fields.iter().map(|f| f.name.as_str()).collect();
     if names.windows(2).any(|w| w[0] > w[1]) {
         // JSON objects are unordered; keep the declared order for the round trip.
@@ -203,6 +209,24 @@ fn describe(s: &mut Json, doc: Option<&str>) {
 
     if let Json::Object(o) = s {
         o.insert("description".into(), doc.into());
+    }
+}
+
+/// A record rule (proposal 0010) as JSON Schema. JSON Schema counts a `null`
+/// property as present, where NOVA counts it as absent.
+fn rule(r: &RecordRule) -> Json {
+    let each = |f: &String| json!({"required": [f]});
+    match r.kind {
+        RuleKind::Together => {
+            let deps: Map<String, Json> = r
+                .fields
+                .iter()
+                .map(|f| (f.clone(), json!(r.fields.iter().filter(|g| *g != f).collect::<Vec<_>>())))
+                .collect();
+            json!({"dependentRequired": deps})
+        }
+        RuleKind::OneOf => json!({"oneOf": r.fields.iter().map(each).collect::<Vec<_>>()}),
+        RuleKind::AnyOf => json!({"anyOf": r.fields.iter().map(each).collect::<Vec<_>>()}),
     }
 }
 

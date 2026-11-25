@@ -37,12 +37,8 @@ struct Ctx<'s> {
     /// Indices into `issues` of `@key` duplicates, which do not take part in
     /// choosing a union member (spec §6.3).
     keyed: Vec<usize>,
-    /// Whether absent fields get their default (resolution) or stay absent
-    /// (validation).
-    apply_defaults: bool,
-    /// Whether the lossless conversions of spec §6.3 apply; without them a value
-    /// must already have the kind its type names.
-    convert: bool,
+    /// How this pass treats defaults, conversions, class paths and required fields.
+    pass: Pass,
     /// Nesting of [`Self::check`] calls, capped at [`MAX_CHECK_DEPTH`].
     depth: usize,
     /// Calls to [`Self::check`] left. Overlapping union members can retry the
@@ -55,9 +51,54 @@ struct Ctx<'s> {
     /// The strongest class of the value being checked or any value that
     /// contains it. Issues then leave the value out of their messages.
     inside: Option<Class>,
-    /// Whether `classes` follow sets into their resolved order. Otherwise
-    /// they keep the source order, as the stored value has it.
+}
+
+/// How one pass treats defaults, conversions, class paths and required fields.
+#[derive(Clone, Copy)]
+#[expect(clippy::struct_excessive_bools, reason = "one flag per independent aspect of a pass")]
+struct Pass {
+    /// Absent fields get their default (resolution), or stay absent (validation).
+    apply_defaults: bool,
+    /// The lossless conversions of spec §6.3 apply; without them a value must
+    /// already have the kind its type names.
+    convert: bool,
+    /// Class paths follow sets into their resolved order. Otherwise they keep
+    /// the source order, as the stored value has it.
     resolved_paths: bool,
+    /// Partial validation of one configuration layer (proposal 0010): every
+    /// record field is optional and record rules are not checked.
+    partial: bool,
+}
+
+impl Pass {
+    /// Resolution: conversions and defaults (spec §6.3).
+    const RESOLVE: Pass = Pass {
+        apply_defaults: true,
+        convert: true,
+        resolved_paths: true,
+        partial: false,
+    };
+    /// Validation: conversions, no defaults (spec §6.4).
+    const VALIDATE: Pass = Pass {
+        apply_defaults: false,
+        ..Pass::RESOLVE
+    };
+    /// A check of a value as it is: no conversions, no defaults.
+    const CHECK: Pass = Pass {
+        convert: false,
+        ..Pass::VALIDATE
+    };
+    /// Classification in the coordinates of the stored value.
+    const SOURCE: Pass = Pass {
+        resolved_paths: false,
+        ..Pass::VALIDATE
+    };
+    /// Partial resolution of a layer: conversions, but no defaults, since a
+    /// default would override the value of a lower layer when merged.
+    const PARTIAL: Pass = Pass {
+        partial: true,
+        ..Pass::VALIDATE
+    };
 }
 
 impl<'s> Ctx<'s> {
@@ -286,7 +327,7 @@ impl<'s> Ctx<'s> {
     #[expect(clippy::cast_precision_loss, reason = "the int-to-float arm only takes integers up to 2^53, exact in f64")]
     #[expect(clippy::too_many_lines, reason = "one arm per kind and conversion")]
     fn structural(&mut self, v: Value, kind: &'s TypeKind) -> Value {
-        if !self.convert && converts(kind, &v) {
+        if !self.pass.convert && converts(kind, &v) {
             self.mismatch(&TypeRef::new(kind.clone()).to_string(), &v);
             return v;
         }
@@ -338,7 +379,7 @@ impl<'s> Ctx<'s> {
                 let items = self.elements(items, et);
                 match Value::set(items.clone()) {
                     Ok(s) => {
-                        if self.resolved_paths {
+                        if self.pass.resolved_paths {
                             self.reindex_classes(cmark, &items, &s);
                         }
 
@@ -519,17 +560,21 @@ impl<'s> Ctx<'s> {
                     out.set(k, v);
                 }
                 None => match &f.default {
-                    Some(d) if self.apply_defaults => {
+                    Some(d) if self.pass.apply_defaults => {
                         let d = self.check(d.clone(), &f.ty);
                         out.set(f.name.clone(), d);
                     }
                     Some(_) => {}
-                    None if f.optional => {}
+                    None if f.optional || self.pass.partial => {}
                     None => self.issue("missing required field"),
                 },
             }
 
             self.path.pop();
+        }
+
+        if !self.pass.partial {
+            self.rules(&out, def);
         }
 
         for (k, v) in entries {
@@ -545,12 +590,33 @@ impl<'s> Ctx<'s> {
         Value::Record(out)
     }
 
+    /// Report each record rule of `def` that the fields of `r` break
+    /// (proposal 0010). A field counts as present unless it is absent or `null`.
+    fn rules(&mut self, r: &Record, def: &RecordDef) {
+        for rule in &def.rules {
+            let present: Vec<&str> = rule
+                .fields
+                .iter()
+                .filter(|f| r.get(f).is_some_and(|v| !matches!(v, Value::Null)))
+                .map(String::as_str)
+                .collect();
+            if !rule.kind.allows(present.len(), rule.fields.len()) {
+                let which = if present.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", present.join(", "))
+                };
+                self.issue(format!("{rule}: {} present{which}; expected {}", present.len(), rule.kind.expected()));
+            }
+        }
+    }
+
     /// Resolve an enum value given as a bare tag string, a variant, or a
     /// single-entry `{tag: payload}` record.
     fn variant(&mut self, v: Value, vs: &'s [VariantDef]) -> Value {
         // `{tag: payload}` — how JSON and other formats spell a variant (§6.3).
         let v = match v {
-            Value::Record(r) if self.convert && r.len() == 1 && vs.iter().any(|d| d.payload.is_some() && r.contains_key(&d.name)) => {
+            Value::Record(r) if self.pass.convert && r.len() == 1 && vs.iter().any(|d| d.payload.is_some() && r.contains_key(&d.name)) => {
                 let (tag, payload) = r.into_entries().pop().unwrap();
                 Value::Variant(tag, Some(Box::new(payload)))
             }
@@ -558,7 +624,7 @@ impl<'s> Ctx<'s> {
         };
 
         match v {
-            Value::String(s) if self.convert => match vs.iter().find(|d| d.name == s) {
+            Value::String(s) if self.pass.convert => match vs.iter().find(|d| d.name == s) {
                 Some(d) if d.payload.is_none() => Value::Variant(s, None),
                 Some(_) => {
                     let shown = self.shown(|| s.clone());
@@ -712,7 +778,7 @@ impl Schema {
     ///
     /// Returns every issue found if `v` does not conform to `t`.
     pub fn resolve_as(&self, v: &Value, t: &TypeRef) -> Result<Value, Vec<Issue>> {
-        let (out, issues, _) = self.run(v, t, true, true);
+        let (out, issues, _) = self.run(v, t, Pass::RESOLVE);
         if issues.is_empty() { Ok(out) } else { Err(issues) }
     }
 
@@ -724,29 +790,22 @@ impl Schema {
     ///
     /// Returns every issue found if `v` does not conform to `t`.
     pub fn check_as(&self, v: &Value, t: &TypeRef) -> Result<(), Vec<Issue>> {
-        let (_, issues, _) = self.run(v, t, false, false);
+        let (_, issues, _) = self.run(v, t, Pass::CHECK);
         if issues.is_empty() { Ok(()) } else { Err(issues) }
     }
 
     /// One resolution or validation pass of `v` against `t`.
-    fn run(&self, v: &Value, t: &TypeRef, apply_defaults: bool, convert: bool) -> (Value, Vec<Issue>, Vec<ClassMark>) {
-        self.run_with(v, t, apply_defaults, convert, true)
-    }
-
-    /// [`Self::run`], with class paths in resolved or in source order.
-    fn run_with(&self, v: &Value, t: &TypeRef, apply_defaults: bool, convert: bool, resolved_paths: bool) -> (Value, Vec<Issue>, Vec<ClassMark>) {
+    fn run(&self, v: &Value, t: &TypeRef, pass: Pass) -> (Value, Vec<Issue>, Vec<ClassMark>) {
         let mut c = Ctx {
             schema: self,
             path: Vec::new(),
             issues: Vec::new(),
             keyed: Vec::new(),
             depth: 0,
-            apply_defaults,
-            convert,
+            pass,
             fuel: nodes(v).saturating_mul(256).saturating_add(4096),
             classes: Vec::new(),
             inside: None,
-            resolved_paths,
         };
 
         let out = c.check(v.clone(), t);
@@ -761,6 +820,24 @@ impl Schema {
         (out, c.issues, classes)
     }
 
+    /// One pass of `v` against the `@root` type.
+    ///
+    /// # Errors
+    ///
+    /// Returns every issue found if `v` does not conform, or a single issue if
+    /// the schema has no `@root`.
+    fn run_root(&self, v: &Value, pass: Pass) -> Result<(Value, Vec<ClassMark>), Vec<Issue>> {
+        let t = self.root_type().ok_or_else(|| {
+            vec![Issue {
+                path: Path::root(),
+                message: "schema has no @root".into(),
+            }]
+        })?;
+
+        let (out, issues, classes) = self.run(v, &t, pass);
+        if issues.is_empty() { Ok((out, classes)) } else { Err(issues) }
+    }
+
     /// Resolve against the `@root` type.
     ///
     /// # Errors
@@ -768,13 +845,7 @@ impl Schema {
     /// Returns every issue found if `v` does not conform, or a single issue if
     /// the schema has no `@root`.
     pub fn resolve(&self, v: &Value) -> Result<Value, Vec<Issue>> {
-        let t = self.root_type().ok_or_else(|| {
-            vec![Issue {
-                path: Path::root(),
-                message: "schema has no @root".into(),
-            }]
-        })?;
-        self.resolve_as(v, &t)
+        self.run_root(v, Pass::RESOLVE).map(|(out, _)| out)
     }
 
     /// Validate without materializing defaults.
@@ -784,15 +855,26 @@ impl Schema {
     /// Returns every issue found if `v` does not conform, or a single issue if
     /// the schema has no `@root`.
     pub fn validate(&self, v: &Value) -> Result<(), Vec<Issue>> {
-        let t = self.root_type().ok_or_else(|| {
-            vec![Issue {
-                path: Path::root(),
-                message: "schema has no @root".into(),
-            }]
-        })?;
+        self.run_root(v, Pass::VALIDATE).map(|_| ())
+    }
 
-        let (_, issues, _) = self.run(v, &t, false, true);
-        if issues.is_empty() { Ok(()) } else { Err(issues) }
+    /// Resolve one layer of a layered configuration against the `@root` type
+    /// (proposal 0010). Every record field is optional, as in TypeScript's
+    /// `Partial<T>` applied deeply, and record rules (`@together`, `@one_of`,
+    /// `@any_of`) are not checked. Types, patterns, ranges, lengths and closed
+    /// records are checked as usual, and conversions apply. Defaults are not
+    /// filled in, since they would override lower layers when the layers are
+    /// merged. Resolve the merged value with [`Schema::resolve`].
+    ///
+    /// A union of records takes the first member that the present fields fit,
+    /// since no member fails for a missing field.
+    ///
+    /// # Errors
+    ///
+    /// Returns every issue found if `v` does not conform, or a single issue if
+    /// the schema has no `@root`.
+    pub fn resolve_partial(&self, v: &Value) -> Result<Value, Vec<Issue>> {
+        self.run_root(v, Pass::PARTIAL).map(|(out, _)| out)
     }
 
     /// Resolve `v` against the `@root` type like [`Schema::resolve`], and also
@@ -804,15 +886,17 @@ impl Schema {
     ///
     /// As [`Schema::resolve`].
     pub fn classify(&self, v: &Value) -> Result<(Value, Vec<ClassMark>), Vec<Issue>> {
-        let t = self.root_type().ok_or_else(|| {
-            vec![Issue {
-                path: Path::root(),
-                message: "schema has no @root".into(),
-            }]
-        })?;
+        self.run_root(v, Pass::RESOLVE)
+    }
 
-        let (out, issues, classes) = self.run(v, &t, true, true);
-        if issues.is_empty() { Ok((out, classes)) } else { Err(issues) }
+    /// [`Schema::classify`] for one layer of a layered configuration: the
+    /// value as [`Schema::resolve_partial`] gives it, and its classified values.
+    ///
+    /// # Errors
+    ///
+    /// As [`Schema::resolve_partial`].
+    pub fn classify_partial(&self, v: &Value) -> Result<(Value, Vec<ClassMark>), Vec<Issue>> {
+        self.run_root(v, Pass::PARTIAL)
     }
 
     /// The classified paths of `v` in its own coordinates, as stored: set
@@ -825,14 +909,6 @@ impl Schema {
     ///
     /// As [`Schema::resolve`].
     pub fn classify_source(&self, v: &Value) -> Result<Vec<ClassMark>, Vec<Issue>> {
-        let t = self.root_type().ok_or_else(|| {
-            vec![Issue {
-                path: Path::root(),
-                message: "schema has no @root".into(),
-            }]
-        })?;
-
-        let (_, issues, classes) = self.run_with(v, &t, false, true, false);
-        if issues.is_empty() { Ok(classes) } else { Err(issues) }
+        self.run_root(v, Pass::SOURCE).map(|(_, classes)| classes)
     }
 }

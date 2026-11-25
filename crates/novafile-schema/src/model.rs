@@ -353,6 +353,78 @@ pub struct FieldDef {
     pub doc: Option<String>,
 }
 
+/// How many fields of a [`RecordRule`] must be present (proposal 0010).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuleKind {
+    /// `@together(…)`: all of the fields or none of them.
+    Together,
+    /// `@one_of(…)`: exactly one of the fields.
+    OneOf,
+    /// `@any_of(…)`: at least one of the fields.
+    AnyOf,
+}
+
+impl RuleKind {
+    /// The attribute name without `@`: `together`, `one_of` or `any_of`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            RuleKind::Together => "together",
+            RuleKind::OneOf => "one_of",
+            RuleKind::AnyOf => "any_of",
+        }
+    }
+
+    /// The kind for an attribute name, or `None` if `s` names none.
+    #[must_use]
+    pub fn from_name(s: &str) -> Option<RuleKind> {
+        match s {
+            "together" => Some(RuleKind::Together),
+            "one_of" => Some(RuleKind::OneOf),
+            "any_of" => Some(RuleKind::AnyOf),
+            _ => None,
+        }
+    }
+
+    /// Whether `present` of `total` fields satisfy the rule.
+    #[must_use]
+    pub fn allows(self, present: usize, total: usize) -> bool {
+        match self {
+            RuleKind::Together => present == 0 || present == total,
+            RuleKind::OneOf => present == 1,
+            RuleKind::AnyOf => present >= 1,
+        }
+    }
+
+    /// What the rule expects, for issue messages: `exactly 1`, ….
+    #[must_use]
+    pub fn expected(self) -> &'static str {
+        match self {
+            RuleKind::Together => "all or none",
+            RuleKind::OneOf => "exactly 1",
+            RuleKind::AnyOf => "at least 1",
+        }
+    }
+}
+
+/// A record rule on the record's head line, such as `@one_of(url, url_file)`
+/// (proposal 0010). It counts the named fields that are present and not
+/// `null`. Strict validation checks it; partial validation does not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordRule {
+    /// How many of the fields must be present.
+    pub kind: RuleKind,
+    /// The names of two or more distinct optional fields of the record, in
+    /// the order written.
+    pub fields: Vec<String>,
+}
+
+impl fmt::Display for RecordRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "@{}({})", self.kind.name(), self.fields.join(", "))
+    }
+}
+
 /// A `record` definition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordDef {
@@ -360,6 +432,8 @@ pub struct RecordDef {
     pub fields: Vec<FieldDef>,
     /// `@open`: undeclared fields are accepted and kept instead of reported.
     pub open: bool,
+    /// `@together`, `@one_of` and `@any_of` in the order written (proposal 0010).
+    pub rules: Vec<RecordRule>,
 }
 
 impl RecordDef {

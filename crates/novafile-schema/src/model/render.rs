@@ -204,7 +204,12 @@ impl fmt::Display for Text<'_> {
                     self.variants(f, vs)?;
                 }
                 Def::Record(r) => {
-                    writeln!(f, "record {name}{}{class}:", if r.open { " @open" } else { "" })?;
+                    write!(f, "record {name}{}", if r.open { " @open" } else { "" })?;
+                    for rule in &r.rules {
+                        write!(f, " {rule}")?;
+                    }
+
+                    writeln!(f, "{class}:")?;
                     self.fields(f, r)?;
                 }
             }

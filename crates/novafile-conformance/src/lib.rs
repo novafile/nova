@@ -90,6 +90,33 @@ fn expect_path(input: &Path) -> PathBuf {
     input.with_file_name(format!("{stem}.expect.json"))
 }
 
+/// A resolution of a value against a schema: [`novafile_schema::Schema::resolve`] or its partial form.
+type ResolveFn = fn(&novafile_schema::Schema, &Value) -> Result<Value, Vec<novafile_schema::Issue>>;
+
+/// Expectations for the documents in `{prefix}valid/` and `{prefix}invalid/` of the
+/// schema case `d`, resolved with `resolve`: the resolved value, or the issue paths
+/// and messages.
+///
+/// # Panics
+///
+/// Panics if a document does not parse, a valid one does not resolve, or an
+/// invalid one does.
+fn resolutions(d: &Path, prefix: &str, schema: &novafile_schema::Schema, resolve: ResolveFn, out: &mut Vec<(PathBuf, J)>) {
+    for f in files(&d.join(format!("{prefix}valid")), "nova") {
+        let v = novafile_text::parse(&read(&f)).unwrap();
+        let r = resolve(schema, &v).unwrap_or_else(|e| panic!("{}: {e:?}", f.display()));
+        out.push((expect_path(&f), value_expect(&r)));
+    }
+
+    for f in files(&d.join(format!("{prefix}invalid")), "nova") {
+        let v = novafile_text::parse(&read(&f)).unwrap();
+        let issues = resolve(schema, &v).err().unwrap_or_else(|| panic!("{} should not resolve", f.display()));
+        let paths: Vec<String> = issues.iter().map(|i| i.path.to_string()).collect();
+        let msgs: Vec<String> = issues.iter().map(|i| i.message.clone()).collect();
+        out.push((expect_path(&f), json!({"error": true, "issue_paths": paths, "messages": msgs})));
+    }
+}
+
 /// Every `(expectation file, expected JSON)` pair under `root`.
 ///
 /// # Panics
@@ -148,19 +175,9 @@ pub fn expectations(root: &Path) -> Vec<(PathBuf, J)> {
     // schema: resolution of valid documents, issue paths of invalid ones.
     for d in dirs(&root.join("schema")) {
         let schema = novafile_schema::parse_schema(&read(&d.join("schema.novs"))).unwrap_or_else(|e| panic!("{}: {e}", d.display()));
-        for f in files(&d.join("valid"), "nova") {
-            let v = novafile_text::parse(&read(&f)).unwrap();
-            let r = schema.resolve(&v).unwrap_or_else(|e| panic!("{}: {e:?}", f.display()));
-            out.push((expect_path(&f), value_expect(&r)));
-        }
-
-        for f in files(&d.join("invalid"), "nova") {
-            let v = novafile_text::parse(&read(&f)).unwrap();
-            let issues = schema.resolve(&v).err().unwrap_or_else(|| panic!("{} should not resolve", f.display()));
-            let paths: Vec<String> = issues.iter().map(|i| i.path.to_string()).collect();
-            let msgs: Vec<String> = issues.iter().map(|i| i.message.clone()).collect();
-            out.push((expect_path(&f), json!({"error": true, "issue_paths": paths, "messages": msgs})));
-        }
+        resolutions(&d, "", &schema, novafile_schema::Schema::resolve, &mut out);
+        // Layers of a layered configuration (proposal 0010).
+        resolutions(&d, "partial-", &schema, novafile_schema::Schema::resolve_partial, &mut out);
     }
 
     // invalid schemas: parsing must fail.

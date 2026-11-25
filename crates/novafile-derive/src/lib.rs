@@ -9,7 +9,7 @@
 //! attribute.
 //!
 //! Attributes — container: `#[nova(name = "…", version = "…", rename = "TypeName", rename_all = "…",
-//! rename_all_fields = "…", open, doc = "…")]`;
+//! rename_all_fields = "…", open, doc = "…", together = "a, b", one_of = "a, b", any_of = "a, b")]`;
 //! field: `#[nova(rename = "…", key, id = N, range = "1..65535", len = "..64, utf8",
 //! default = "flow literal", secret, personal, type = "string @len(1..)", not_null, deprecated, skip,
 //! doc = "…")]`;
@@ -19,6 +19,11 @@
 //! the definitions, fields and variants: `#` comments in the schema text, hover text in
 //! editors and `description` in JSON Schema. `doc = "…"` replaces that text, for example to
 //! leave out Rust intra-doc links; `doc = ""` gives no documentation.
+//!
+//! `together`, `one_of` and `any_of` on a struct add record rules (proposal 0010): all or none,
+//! exactly one, or at least one of the named fields is present (not `null`). They name Rust
+//! fields, which must be `Option<…>` or `#[serde(default)]` and have no `default`; each may
+//! be given more than once. Partial validation of a configuration layer skips them.
 //!
 //! `secret` and `personal` classify the field's type (`@secret` / `@personal`, proposal 0009).
 //! `type` replaces the field type's `NovaSchema` impl with a schema type expression, for
@@ -97,6 +102,9 @@ struct Container {
     open: bool,
     /// The documentation of the definition: `#[nova(doc)]`, else the doc comments.
     doc: Option<String>,
+    /// Record rules: the rule name (`together`, `one_of`, `any_of`) and the Rust
+    /// field names it lists, in the order written.
+    rules: Vec<(String, Vec<String>, proc_macro2::Span)>,
 }
 
 /// Settings of a field or enum variant, from `#[nova(...)]`, `#[serde(...)]` and `#[deprecated]`.
@@ -209,8 +217,14 @@ fn container_attrs(attrs: &[Attribute]) -> syn::Result<Container> {
                     c.open = true;
                 } else if m.path.is_ident("doc") {
                     nova_doc = Some(str_lit(&m)?);
+                } else if let Some(rule) = ["together", "one_of", "any_of"].into_iter().find(|r| m.path.is_ident(r)) {
+                    let span = m.path.span();
+                    let fields = str_lit(&m)?.split(',').map(|f| f.trim().to_owned()).collect();
+                    c.rules.push((rule.to_owned(), fields, span));
                 } else {
-                    return Err(m.error("unknown #[nova] container attribute (name, version, rename, rename_all, rename_all_fields, open, doc)"));
+                    return Err(m.error(
+                        "unknown #[nova] container attribute (name, version, rename, rename_all, rename_all_fields, open, doc, together, one_of, any_of)",
+                    ));
                 }
 
                 Ok(())
@@ -289,13 +303,12 @@ fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
             a.parse_nested_meta(|m| {
                 let p = &m.path;
                 if p.is_ident("rename") && m.input.peek(syn::Token![=]) {
-                    if f.rename.is_none() {
-                        f.rename = Some(str_lit(&m)?);
-                    }
+                    // Read the value even when `#[nova(rename)]` wins, so the next key parses.
+                    let r = str_lit(&m)?;
+                    f.rename.get_or_insert(r);
                 } else if p.is_ident("rename_all") && m.input.peek(syn::Token![=]) {
-                    if f.rename_all.is_none() {
-                        f.rename_all = Some(str_lit(&m)?);
-                    }
+                    let r = str_lit(&m)?;
+                    f.rename_all.get_or_insert(r);
                 } else if p.is_ident("default") {
                     f.serde_default = true;
                     ignore(&m)?;
@@ -439,9 +452,11 @@ fn field_type(krate: &Ts, a: &FieldAttrs, rust_ty: &syn::Type, at: &str) -> (Ts,
     (quote!(let ty = #base; #with #not_null), optional)
 }
 
-/// Code building a `Vec<FieldDef>` from named fields.
-fn record_fields(krate: &Ts, owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> syn::Result<Ts> {
+/// Code building a `Vec<FieldDef>` from named fields, and the schema name of each
+/// field that is not skipped, by Rust field name.
+fn record_fields(krate: &Ts, owner: &str, fields: &syn::FieldsNamed, rule: Option<&str>) -> syn::Result<(Ts, Vec<(String, String)>)> {
     let mut out = Vec::new();
+    let mut names = Vec::new();
     for f in &fields.named {
         let a = field_attrs(&f.attrs)?;
         if a.skip {
@@ -459,6 +474,7 @@ fn record_fields(krate: &Ts, owner: &str, fields: &syn::FieldsNamed, rule: Optio
             return Err(Error::new(f.span(), "a @key field cannot be secret or personal, since keys appear in paths"));
         }
 
+        names.push((ident, name.clone()));
         let at = format!("{owner}.{name}");
         let (ty, field_optional) = field_type(krate, &a, &f.ty, &at);
 
@@ -490,11 +506,89 @@ fn record_fields(krate: &Ts, owner: &str, fields: &syn::FieldsNamed, rule: Optio
         }});
     }
 
-    Ok(quote! {{
+    let code = quote! {{
         let mut fields: Vec<#krate::FieldDef> = Vec::new();
         #(#out)*
         fields
-    }})
+    }};
+
+    Ok((code, names))
+}
+
+/// Code building the `Vec<RecordRule>` of a struct's `together`, `one_of` and
+/// `any_of` attributes. Each Rust field name becomes its schema name; a name that
+/// is not a field, or a skipped one, is an error. `novafile_schema()` rejects rules
+/// that name required fields or fields with a default.
+fn record_rules(krate: &Ts, c: &Container, names: &[(String, String)]) -> syn::Result<Ts> {
+    let mut rules = Vec::new();
+    for (rule, fields, span) in &c.rules {
+        let mut mapped = Vec::new();
+        for f in fields {
+            let (_, name) = names
+                .iter()
+                .find(|(ident, _)| ident == f)
+                .ok_or_else(|| Error::new(*span, format!("#[nova({rule})]: {f:?} is not a field of this struct")))?;
+            mapped.push(name.clone());
+        }
+
+        let kind = match rule.as_str() {
+            "together" => quote!(#krate::RuleKind::Together),
+            "one_of" => quote!(#krate::RuleKind::OneOf),
+            _ => quote!(#krate::RuleKind::AnyOf),
+        };
+        rules.push(quote!(#krate::RecordRule { kind: #kind, fields: vec![#(#mapped.to_owned()),*] }));
+    }
+
+    Ok(quote!(vec![#(#rules),*]))
+}
+
+/// Code building the `Def::Enum` of an enum: one variant per Rust variant that is not
+/// skipped. Struct variants get a record definition of their own, `{def_name}{Variant}`.
+fn enum_def(krate: &Ts, c: &Container, def_name: &str, rule: Option<&str>, e: &syn::DataEnum) -> syn::Result<Ts> {
+    let mut variants = Vec::new();
+    for v in &e.variants {
+        let a = field_attrs(&v.attrs)?;
+        if a.class.is_some() || a.ty.is_some() || a.not_null {
+            return Err(Error::new(v.span(), "secret, personal, type and not_null apply to fields, not enum variants"));
+        }
+
+        if a.skip {
+            continue;
+        }
+
+        let name = match &a.rename {
+            Some(r) => r.clone(),
+            None => rename(&v.ident.to_string(), rule, true)?,
+        };
+
+        let payload = match &v.fields {
+            Fields::Unit => quote!(None),
+            Fields::Unnamed(u) if u.unnamed.len() == 1 => {
+                let ty = &u.unnamed[0].ty;
+                quote!(Some(<#ty as #krate::NovaSchema>::nova_type(generator)))
+            }
+            Fields::Unnamed(u) => {
+                let tys = u.unnamed.iter().map(|f| &f.ty);
+                quote!(Some(#krate::TypeRef::new(#krate::TypeKind::Tuple(
+                    vec![#(<#tys as #krate::NovaSchema>::nova_type(generator)),*]
+                ))))
+            }
+            Fields::Named(named) => {
+                // Struct variants get a record definition of their own.
+                let rec = format!("{def_name}{}", v.ident);
+                let vname = v.ident.to_string();
+                let field_rule = a.rename_all.as_deref().or(c.rename_all_fields.as_deref());
+                let (fields, _) = record_fields(krate, &rec, named, field_rule)?;
+                quote!(Some(generator.named(#rec, &::std::format!("{}::{}", ::std::any::type_name::<Self>(), #vname), |generator| #krate::Def::Record(#krate::RecordDef { fields: #fields, open: false, rules: ::std::vec::Vec::new() }))))
+            }
+        };
+
+        let id = if let Some(n) = a.id { quote!(Some(#n)) } else { quote!(None) };
+        let doc = doc_tokens(a.doc.as_deref());
+        variants.push(quote!(#krate::VariantDef { name: #name.to_owned(), payload: #payload, id: #id, doc: #doc }));
+    }
+
+    Ok(quote!(#krate::Def::Enum(vec![#(#variants),*])))
 }
 
 /// Generate the `NovaSchema` impl: the type registers itself as a named
@@ -513,8 +607,9 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
     let body = match &input.data {
         Data::Struct(s) => match &s.fields {
             Fields::Named(named) => {
-                let fields = record_fields(&krate, &def_name, named, rule)?;
-                quote!(#krate::Def::Record(#krate::RecordDef { fields: #fields, open: #open }))
+                let (fields, field_names) = record_fields(&krate, &def_name, named, rule)?;
+                let rules = record_rules(&krate, &c, &field_names)?;
+                quote!(#krate::Def::Record(#krate::RecordDef { fields: #fields, open: #open, rules: #rules }))
             }
             Fields::Unnamed(u) if u.unnamed.len() == 1 => {
                 // Newtype structs are transparent in serde: an alias of the inner type.
@@ -535,52 +630,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
                 #krate::TypeKind::Null
             ))),
         },
-        Data::Enum(e) => {
-            let mut variants = Vec::new();
-            for v in &e.variants {
-                let a = field_attrs(&v.attrs)?;
-                if a.class.is_some() || a.ty.is_some() || a.not_null {
-                    return Err(Error::new(v.span(), "secret, personal, type and not_null apply to fields, not enum variants"));
-                }
-
-                if a.skip {
-                    continue;
-                }
-
-                let name = match &a.rename {
-                    Some(r) => r.clone(),
-                    None => rename(&v.ident.to_string(), rule, true)?,
-                };
-
-                let payload = match &v.fields {
-                    Fields::Unit => quote!(None),
-                    Fields::Unnamed(u) if u.unnamed.len() == 1 => {
-                        let ty = &u.unnamed[0].ty;
-                        quote!(Some(<#ty as #krate::NovaSchema>::nova_type(generator)))
-                    }
-                    Fields::Unnamed(u) => {
-                        let tys = u.unnamed.iter().map(|f| &f.ty);
-                        quote!(Some(#krate::TypeRef::new(#krate::TypeKind::Tuple(
-                            vec![#(<#tys as #krate::NovaSchema>::nova_type(generator)),*]
-                        ))))
-                    }
-                    Fields::Named(named) => {
-                        // Struct variants get a record definition of their own.
-                        let rec = format!("{def_name}{}", v.ident);
-                        let vname = v.ident.to_string();
-                        let field_rule = a.rename_all.as_deref().or(c.rename_all_fields.as_deref());
-                        let fields = record_fields(&krate, &rec, named, field_rule)?;
-                        quote!(Some(generator.named(#rec, &::std::format!("{}::{}", ::std::any::type_name::<Self>(), #vname), |generator| #krate::Def::Record(#krate::RecordDef { fields: #fields, open: false }))))
-                    }
-                };
-
-                let id = if let Some(n) = a.id { quote!(Some(#n)) } else { quote!(None) };
-                let doc = doc_tokens(a.doc.as_deref());
-                variants.push(quote!(#krate::VariantDef { name: #name.to_owned(), payload: #payload, id: #id, doc: #doc }));
-            }
-
-            quote!(#krate::Def::Enum(vec![#(#variants),*]))
-        }
+        Data::Enum(e) => enum_def(&krate, &c, &def_name, rule, e)?,
         Data::Union(u) => return Err(Error::new(u.union_token.span, "NovaSchema cannot be derived for unions")),
     };
 
@@ -588,6 +638,10 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
         Some(d) => quote!(generator.doc(#def_name, #d);),
         None => quote!(),
     };
+
+    if let (Some((rule, _, span)), false) = (c.rules.first(), matches!(&input.data, Data::Struct(s) if matches!(s.fields, Fields::Named(_)))) {
+        return Err(Error::new(*span, format!("#[nova({rule})] applies to structs with named fields")));
+    }
 
     let id = match (&c.name, &c.version) {
         (Some(n), Some(v)) => quote! {
