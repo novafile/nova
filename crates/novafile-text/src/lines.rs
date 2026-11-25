@@ -52,6 +52,27 @@ pub trait Positional {
     fn decode_item(&self, v: &Value) -> Result<Value, String>;
 }
 
+/// Check that a positional segment declares exactly `schema`'s fingerprint.
+///
+/// Positional records only make sense with the schema they were written for, so
+/// NOVA Lines and binary streams both apply this check.
+///
+/// # Errors
+///
+/// Returns a message when `declared` is missing, has no fingerprint, or names
+/// another schema.
+pub fn check_fingerprint(declared: Option<&str>, schema: &dyn Positional) -> Result<(), String> {
+    let declared = declared.unwrap_or("");
+    let expected = schema.fingerprint();
+    if declared.contains('#') && declared == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "positional mode needs @schema with exactly this schema's fingerprint, {expected}; found {declared:?}"
+        ))
+    }
+}
+
 /// How record lines are read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
@@ -261,13 +282,7 @@ impl<'s, R: BufRead> Reader<'s, R> {
                 }
 
                 let schema = self.schema.ok_or_else(|| self.error("@mode positional needs the schema it was written for"))?;
-                let declared = self.header.schema.as_deref().unwrap_or("");
-                if !declared.contains('#') || declared != schema.fingerprint() {
-                    return Err(self.error(format!(
-                        "@mode positional needs @schema with exactly this schema's fingerprint, {}; found {declared:?}",
-                        schema.fingerprint()
-                    )));
-                }
+                check_fingerprint(self.header.schema.as_deref(), schema).map_err(|m| self.error(m))?;
 
                 self.header.mode = Mode::Positional;
             }
