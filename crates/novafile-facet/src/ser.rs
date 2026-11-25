@@ -297,12 +297,7 @@ fn enumeration(e: PeekEnum<'_, '_>) -> R {
     }
 }
 
-/// `tag` as a variant tag, or an error if it is not an identifier (§2.11):
-/// such a tag cannot be written as text, and decoders reject it.
+/// `tag` as a variant tag, or an error if it is not an identifier (§2.11).
 fn checked_tag(tag: &str) -> Result<String, Error> {
-    if novafile_value::is_variant_tag(tag) {
-        Ok(tag.to_owned())
-    } else {
-        Err(Error::new(format!("variant tag {tag:?} is not an identifier")))
-    }
+    novafile_value::variant_tag(tag).map_err(Error::new)
 }

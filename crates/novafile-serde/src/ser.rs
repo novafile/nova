@@ -20,15 +20,9 @@ fn text_of(v: Value, what: &str) -> Result<String, Error> {
     }
 }
 
-/// `variant` as a tag, or an error if it is not an identifier (§2.11): such a
-/// tag cannot be written as text, and decoders reject it, e.g. a
-/// `#[serde(rename = "at start")]` variant.
+/// `variant` as a tag, or an error if it is not an identifier (§2.11).
 fn tag(variant: &str) -> Result<String, Error> {
-    if novafile_value::is_variant_tag(variant) {
-        Ok(variant.to_owned())
-    } else {
-        Err(Error::new(format!("variant tag {variant:?} is not an identifier")))
-    }
+    novafile_value::variant_tag(variant).map_err(Error::new)
 }
 
 impl ser::Serializer for ValueSerializer {
