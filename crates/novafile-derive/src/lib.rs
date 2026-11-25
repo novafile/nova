@@ -11,7 +11,7 @@
 //! Attributes — container: `#[nova(name = "…", version = "…", rename = "TypeName", rename_all = "…",
 //! rename_all_fields = "…", open)]`;
 //! field: `#[nova(rename = "…", key, id = N, range = "1..65535", len = "..64, utf8",
-//! default = "flow literal", secret, personal, type = "string @len(1..)", deprecated, skip)]`;
+//! default = "flow literal", secret, personal, type = "string @len(1..)", not_null, deprecated, skip)]`;
 //! variant: `#[nova(rename = "…", id = N, rename_all = "…")]`.
 //!
 //! `secret` and `personal` classify the field's type (`@secret` / `@personal`, proposal 0009).
@@ -19,6 +19,12 @@
 //! foreign types that have none (`url::Url`, `secrecy::SecretString`, …); on a field written
 //! as `Option<…>` (not through an alias) it gives the inner type, which stays optional and
 //! nullable. `range`, `len` and the class apply on top of it.
+//!
+//! An `Option<…>` field derives `name?: T?`: it may be absent, and it may be `null`.
+//! `not_null` keeps the field optional but rejects `null`, so it derives `name?: T`. Serde
+//! still reads a missing key as `None`. `novafile-serde` writes `None` as `null`, so give such
+//! a field `#[serde(skip_serializing_if = "Option::is_none")]` when its serialized value
+//! must validate.
 //!
 //! The derived schema gets the checks a parsed `.novs` gets (references resolve, no alias
 //! cycles, no class on a `@key` field); `novafile_schema()` panics if one fails.
@@ -107,6 +113,8 @@ struct FieldAttrs {
     default: Option<String>,
     /// `#[serde(default)]` is present, so the field may be absent (optional).
     serde_default: bool,
+    /// Reject `null`: the field's type is not nullable, even for an `Option<…>` field.
+    not_null: bool,
     /// Mark the field as `@deprecated`.
     deprecated: bool,
     /// Leave the field or variant out of the schema, as serde does.
@@ -208,6 +216,8 @@ fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                     f.class = Some(if p.is_ident("secret") { "secret" } else { "personal" });
                 } else if p.is_ident("type") {
                     f.ty = Some(str_lit(&m)?);
+                } else if p.is_ident("not_null") {
+                    f.not_null = true;
                 } else if p.is_ident("deprecated") {
                     f.deprecated = true;
                 } else if p.is_ident("skip") {
@@ -216,7 +226,7 @@ fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                     f.rename_all = Some(str_lit(&m)?);
                 } else {
                     return Err(m.error(
-                        "unknown #[nova] field attribute (rename, key, id, range, len, default, secret, personal, type, deprecated, skip, rename_all)",
+                        "unknown #[nova] field attribute (rename, key, id, range, len, default, secret, personal, type, not_null, deprecated, skip, rename_all)",
                     ));
                 }
 
@@ -333,7 +343,7 @@ fn is_option(ty: &syn::Type) -> bool {
 }
 
 /// Code binding `ty` to the schema type of a field of Rust type `rust_ty`, and an expression
-/// telling whether the field may be absent. Honours `type`, `range`, `len` and the class.
+/// telling whether the field may be absent. Honours `type`, `range`, `len`, the class and `not_null`.
 fn field_type(krate: &Ts, a: &FieldAttrs, rust_ty: &syn::Type, at: &str) -> (Ts, Ts) {
     let mut attr_text = String::new();
     if let Some(r) = &a.range {
@@ -354,6 +364,12 @@ fn field_type(krate: &Ts, a: &FieldAttrs, rust_ty: &syn::Type, at: &str) -> (Ts,
         quote!(let ty = #krate::derive::__with_attrs(ty, #attr_text, #at);)
     };
 
+    let not_null = if a.not_null {
+        quote!(let ty = #krate::TypeRef { nullable: false, ..ty };)
+    } else {
+        quote!()
+    };
+
     // With `type`, never name `<rust_ty as NovaSchema>`: the point is that it has no impl.
     let (base, optional) = match &a.ty {
         Some(t) => {
@@ -366,7 +382,7 @@ fn field_type(krate: &Ts, a: &FieldAttrs, rust_ty: &syn::Type, at: &str) -> (Ts,
         ),
     };
 
-    (quote!(let ty = #base; #with), optional)
+    (quote!(let ty = #base; #with #not_null), optional)
 }
 
 /// Code building a `Vec<FieldDef>` from named fields.
@@ -467,8 +483,8 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
             let mut variants = Vec::new();
             for v in &e.variants {
                 let a = field_attrs(&v.attrs)?;
-                if a.class.is_some() || a.ty.is_some() {
-                    return Err(Error::new(v.span(), "secret, personal and type apply to fields, not enum variants"));
+                if a.class.is_some() || a.ty.is_some() || a.not_null {
+                    return Err(Error::new(v.span(), "secret, personal, type and not_null apply to fields, not enum variants"));
                 }
 
                 if a.skip {
