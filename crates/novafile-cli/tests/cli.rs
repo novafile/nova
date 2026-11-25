@@ -654,3 +654,66 @@ fn the_key_file_is_made_once_and_hash_needs_a_key() {
     assert!(stderr(&o).contains("NOVA_REDACT_KEY") && stderr(&o).contains("delete the file"), "{o:?}");
     assert!(stdout(&run(keyless().args(["hash", "--reveal", "doc.nova"]), "")).starts_with("sha256:"));
 }
+
+/// `fmt -w` takes the same lock as `patch -w`, so it never writes back a stale copy.
+#[cfg(unix)]
+#[test]
+fn fmt_in_place_waits_for_the_lock() {
+    let d = scratch("fmt-lock");
+    std::fs::write(d.join("doc.nova"), "a:   1\n").unwrap();
+    let held = std::fs::File::open(d.join("doc.nova")).unwrap();
+    held.lock().unwrap();
+    let mut fmt = command(&d).args(["fmt", "doc.nova", "-w"]).stderr(Stdio::null()).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(fmt.try_wait().unwrap().is_none(), "fmt -w wrote while another process held the lock");
+
+    drop(held);
+    assert!(fmt.wait().unwrap().success());
+    assert_eq!(std::fs::read_to_string(d.join("doc.nova")).unwrap(), "a: 1\n");
+}
+
+/// `fmt -w` refuses schemas, whose writer would drop their comments.
+#[test]
+fn fmt_refuses_to_rewrite_schemas() {
+    let d = scratch("fmt-novs");
+    let src = "# SPDX-License-Identifier: MIT\n@schema acme.dev/a@1.0.0\n@root A\n\nrecord A:\n  a: int\n";
+    std::fs::write(d.join("a.novs"), src).unwrap();
+    let o = nvf(&d, &["fmt", "a.novs", "-w"], "");
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert_eq!(std::fs::read_to_string(d.join("a.novs")).unwrap(), src);
+    assert!(nvf(&d, &["fmt", "a.novs"], "").status.success());
+}
+
+/// `patch -w` on YAML says that comments are not kept.
+#[test]
+fn patch_in_place_notes_lost_comments() {
+    let d = scratch("yaml-comments");
+    std::fs::write(d.join("x.yaml"), "# keep\na: 1\n").unwrap();
+    std::fs::write(d.join("set.patch"), "@patch\na: 1 -> 2\n").unwrap();
+    let o = nvf(&d, &["patch", "x.yaml", "set.patch", "-w"], "");
+    assert!(o.status.success(), "{o:?}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("comments are not kept"), "{o:?}");
+}
+
+/// A patch and its document cannot both be read from stdin.
+#[test]
+fn patch_rejects_two_stdins() {
+    let d = scratch("two-stdins");
+    let o = nvf(&d, &["patch", "-", "-"], "@patch\n+ a: 1\n");
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("both come from stdin"), "{o:?}");
+}
+
+/// Output goes through a symlink to its target, also when the target does not exist yet.
+#[cfg(unix)]
+#[test]
+fn output_writes_through_a_dangling_symlink() {
+    let d = scratch("dangling");
+    std::fs::create_dir(d.join("sub")).unwrap();
+    std::fs::write(d.join("a.nova"), "a: 1\n").unwrap();
+    std::os::unix::fs::symlink("sub/target.json", d.join("link.json")).unwrap();
+    let o = nvf(&d, &["convert", "a.nova", "--to", "json", "-o", "link.json"], "");
+    assert!(o.status.success(), "{o:?}");
+    assert!(std::fs::symlink_metadata(d.join("link.json")).unwrap().file_type().is_symlink());
+    assert!(std::fs::read_to_string(d.join("sub/target.json")).unwrap().contains("\"a\""));
+}
