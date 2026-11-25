@@ -5,7 +5,7 @@
 //! and a `.novl` file carry the same metadata, so either converts to the other.
 
 use crate::{Frame, FrameOptions, FrameReader, encode_frame};
-use novafile_text::lines::{Header, Mode, Positional, Segment, Status, WRITTEN_VERSION, check_version};
+use novafile_text::lines::{Header, Mode, Positional, Segment, Status, WRITTEN_VERSION, check_fingerprint, check_version};
 use novafile_text::{Column, validate_columns};
 use novafile_value::{Record, Value, canonical_bytes};
 use std::collections::HashSet;
@@ -138,13 +138,18 @@ fn header_of(v: Option<&Value>) -> Result<(Header, bool), String> {
 ///
 /// # Errors
 ///
-/// Fails if the header is positional without `positional`, or a record does not match it.
+/// Fails if the header is positional without `positional`, if its schema is not
+/// exactly `positional`'s fingerprint, or if a record does not match it.
 pub fn write_stream(records: &[Value], header: &Header, positional: Option<&dyn Positional>, opts: FrameOptions) -> Result<Vec<u8>, String> {
     let meta = |value| Frame {
         schema: None,
         value,
         meta: true,
     };
+    if let (Mode::Positional, Some(p)) = (&header.mode, positional) {
+        check_fingerprint(header.schema.as_deref(), p)?;
+    }
+
     let mut out = encode_frame(&meta(header_value(header, true)), opts);
     for batch in records.chunks(BATCH) {
         let items = match (&header.mode, positional) {
@@ -274,8 +279,9 @@ impl Current {
             return Err("data frame under an invalid !header".into());
         }
 
-        if self.header.mode == Mode::Positional && positional.is_none() {
-            return Err("this stream is positional; its schema is needed".into());
+        if self.header.mode == Mode::Positional {
+            let p = positional.ok_or("this stream is positional; its schema is needed")?;
+            check_fingerprint(self.header.schema.as_deref(), p)?;
         }
 
         self.started = true;
@@ -388,6 +394,45 @@ mod tests {
         assert_eq!(r.segments[0].status, Status::Complete);
         assert_eq!(r.segments[0].header.mode, header.mode);
         assert_eq!(r.segments[0].header.key.as_deref(), Some("id"));
+    }
+
+    /// A positional schema that passes records through and has a fixed fingerprint.
+    struct Fixed(&'static str);
+
+    impl Positional for Fixed {
+        fn fingerprint(&self) -> String {
+            self.0.into()
+        }
+
+        fn encode_item(&self, v: &Value) -> Result<Value, String> {
+            Ok(v.clone())
+        }
+
+        fn decode_item(&self, v: &Value) -> Result<Value, String> {
+            Ok(v.clone())
+        }
+    }
+
+    /// Positional streams need the exact fingerprint on write and on read, as NOVA Lines do.
+    #[test]
+    fn positional_streams_check_the_fingerprint() {
+        let header = |schema: Option<&str>| Header {
+            schema: schema.map(Into::into),
+            mode: Mode::Positional,
+            ..Header::default()
+        };
+        let (a, b) = (Fixed("x@1.0.0#aaaa"), Fixed("x@1.0.0#bbbb"));
+        let opts = FrameOptions::default();
+        assert!(write_stream(&records(1), &header(Some("x@1.0.0#bbbb")), Some(&a), opts).is_err());
+        assert!(write_stream(&records(1), &header(None), Some(&a), opts).is_err());
+
+        let bytes = write_stream(&records(1), &header(Some("x@1.0.0#aaaa")), Some(&a), opts).unwrap();
+        let good = read_stream(&bytes, false, Some(&a));
+        assert_eq!(good.records.len(), 1);
+        assert!(good.errors.is_empty(), "{:?}", good.errors);
+        let bad = read_stream(&bytes, false, Some(&b));
+        assert_eq!(bad.records, Vec::<Value>::new());
+        assert!(bad.errors.iter().any(|(_, m)| m.contains("fingerprint")), "{:?}", bad.errors);
     }
 
     #[test]
