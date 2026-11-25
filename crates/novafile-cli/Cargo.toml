@@ -33,7 +33,7 @@ ureq.workspace = true
 clap.workspace = true
 miette = { workspace = true, features = ["fancy"] }
 detect-coding-agent.workspace = true
-getrandom = "0.3"
+getrandom = "0.4"
 
 [lints]
 workspace = true
