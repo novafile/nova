@@ -223,7 +223,7 @@ impl Path {
     /// # Errors
     ///
     /// Returns a message if a segment is malformed, a projection is not the
-    /// last segment, or filters nest deeper than [`MAX_DEPTH`].
+    /// last segment, or filters nest deeper than the parser's nesting limit (128).
     pub fn parse_prefix(s: &str) -> Result<(Path, usize), String> {
         Self::parse_prefix_at(s, 0)
     }
