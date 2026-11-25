@@ -51,24 +51,7 @@ pub fn parse_document(src: &str) -> Result<Document, ParseError> {
 /// Returns a [`ParseError`] if `src` is malformed, is a `@template`
 /// document, or contains template constructs.
 pub fn parse(src: &str) -> Result<Value, ParseError> {
-    let doc = parse_document(src)?;
-    if doc.is_template() {
-        return Err(ParseError {
-            line: 1,
-            col: 1,
-            offset: 0,
-            message: "this is a @template document; render it first".into(),
-            fix: None,
-        });
-    }
-
-    doc.body.to_value().map_err(|m| ParseError {
-        line: 1,
-        col: 1,
-        offset: 0,
-        message: m,
-        fix: None,
-    })
+    parse_document(src)?.value()
 }
 
 /// Parse a data document and also return the source span of every value.

@@ -143,12 +143,24 @@ pub fn from_str<T: Facet<'static>>(s: &str) -> Result<T, Error> {
 
 /// Deserialize after resolving the document against a NOVA schema (spec §6.3).
 ///
+/// If the document has a `@schema` line and `schema` has a name and version,
+/// the reference must name the same schema at a version it can read (spec §6.7).
+/// Documents without `@schema`, and anonymous schemas, skip that check.
+///
 /// # Errors
 ///
-/// Fails if `s` is not valid NOVA text, does not conform to `schema`
-/// (all issues are joined into one message), or if [`from_value`] fails.
+/// Fails if `s` is not valid NOVA text, its `@schema` reference does not match
+/// `schema`, it does not conform to `schema` (all issues are joined into one
+/// message), or if [`from_value`] fails.
 pub fn from_str_with_schema<T: Facet<'static>>(s: &str, schema: &novafile_schema::Schema) -> Result<T, Error> {
-    let v = novafile_text::parse(s).map_err(|e| Error::new(e.with_source(s)))?;
+    let doc = novafile_text::parse_document(s).map_err(|e| Error::new(e.with_source(s)))?;
+    if let Some(r) = doc.directive("schema")
+        && schema.reference().is_some()
+    {
+        schema.accepts_reference(r).map_err(Error::new)?;
+    }
+
+    let v = doc.value().map_err(|e| Error::new(e.with_source(s)))?;
     let v = schema
         .resolve(&v)
         .map_err(|issues| Error::new(issues.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")))?;

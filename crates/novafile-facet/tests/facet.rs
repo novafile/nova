@@ -605,3 +605,25 @@ fn non_identifier_variant_tags_are_errors() {
     assert!(to_value(&Op::AtStart).unwrap_err().to_string().contains("not an identifier"));
     assert_eq!(to_value(&Op::AtEnd(1)).unwrap(), Value::Variant("at-end".into(), Some(Box::new(Value::Int(1)))));
 }
+
+/// `from_str_with_schema` checks the document's `@schema` line against a named schema (#28).
+#[test]
+fn with_schema_checks_the_schema_reference() {
+    #[derive(Debug, Facet)]
+    struct Settings {
+        name: Option<String>,
+    }
+
+    let named = novafile_schema::parse_schema("@schema example.org/app@2.1.0\n@root Settings\nrecord Settings:\n  name?: string\n").unwrap();
+    let load = |doc: &str| novafile_facet::from_str_with_schema::<Settings>(doc, &named);
+    let e = load("@schema example.org/other@1.0.0\nname: x\n").unwrap_err().to_string();
+    assert!(e.contains("example.org/other") && e.contains("example.org/app"), "{e}");
+    assert!(
+        load("@schema example.org/app@3.0.0\nname: x\n")
+            .unwrap_err()
+            .to_string()
+            .contains("cannot read")
+    );
+    assert_eq!(load("@schema example.org/app@2.0.0\nname: x\n").unwrap().name.as_deref(), Some("x"));
+    assert_eq!(load("name: x\n").unwrap().name.as_deref(), Some("x"));
+}

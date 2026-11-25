@@ -245,3 +245,34 @@ fn non_identifier_variant_tags_are_errors() {
     assert!(to_value(&Op::AtStart).unwrap_err().to_string().contains("not an identifier"));
     assert_eq!(to_value(&Op::AtEnd(1)).unwrap(), Value::Variant("at-end".into(), Some(Box::new(Value::Int(1)))));
 }
+
+/// `from_str_with_schema` checks the document's `@schema` line against a named schema (#28).
+#[cfg(feature = "schema")]
+#[test]
+fn with_schema_checks_the_schema_reference() {
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Settings {
+        name: Option<String>,
+    }
+
+    let named = novafile_schema::parse_schema("@schema example.org/app@2.1.0\n@root Settings\nrecord Settings:\n  name?: string\n").unwrap();
+    let load = |doc: &str| novafile_serde::from_str_with_schema::<Settings>(doc, &named);
+
+    let e = load("@schema example.org/other@1.0.0\nname: x\n").unwrap_err().to_string();
+    assert!(e.contains("example.org/other") && e.contains("example.org/app"), "{e}");
+    let e = load("@schema example.org/app@2.2.0\nname: x\n").unwrap_err().to_string();
+    assert!(e.contains("cannot read"), "{e}");
+    assert!(
+        load("@schema example.org/app@1.0.0\nname: x\n")
+            .unwrap_err()
+            .to_string()
+            .contains("cannot read")
+    );
+    load("@schema example.org/app@2.0.0\nname: x\n").unwrap();
+    load("name: x\n").unwrap();
+
+    // An anonymous schema has nothing to compare the reference with.
+    let anonymous = novafile_schema::parse_schema("@root Settings\nrecord Settings:\n  name?: string\n").unwrap();
+    novafile_serde::from_str_with_schema::<Settings>("@schema example.org/other@1.0.0\nname: x\n", &anonymous).unwrap();
+}
