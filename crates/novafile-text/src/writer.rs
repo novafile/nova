@@ -72,7 +72,8 @@ fn common_unsafe(s: &str) -> bool {
 /// Can `s` be written as a bare flow word?
 pub(crate) fn word_safe(s: &str) -> bool {
     // A bare `-` would open a list item where a flow word starts a line.
-    !common_unsafe(s) && s != "-" && !s.ends_with(':') && !s.bytes().any(|c| c.is_ascii_whitespace() || b",[]{}()\"".contains(&c))
+    // Readers trim Unicode whitespace at cell and line ends, so it must not border a bare word.
+    !common_unsafe(s) && s.trim() == s && s != "-" && !s.ends_with(':') && !s.bytes().any(|c| c.is_ascii_whitespace() || b",[]{}()\"".contains(&c))
 }
 
 /// Can `s` be written as a plain block scalar?
