@@ -204,3 +204,21 @@ fn wide_integer_bounds_round_outward_and_back() {
     let new = assert_round_trip(&old);
     assert_eq!(new.to_string(), old.to_string());
 }
+
+/// Documentation becomes `description` and comes back from it (#34).
+#[test]
+fn docs_round_trip_through_description() {
+    let s =
+        parse_schema("@schema docs@1.0.0\n@root Db\n\n# The database.\nrecord Db:\n  # Its URL.\n  url: string\n  # The key.\n  id: string @key\n").unwrap();
+    let j = to_json_schema(&s);
+    assert_eq!(j["$defs"]["Db"]["description"], "The database.");
+    assert_eq!(j["$defs"]["Db"]["properties"]["url"]["description"], "Its URL.");
+    assert!(
+        j["$defs"]["Db"]["properties"]["id"]["description"]
+            .as_str()
+            .unwrap()
+            .starts_with("The key.\n\nKey field (@key)")
+    );
+    let back = from_json_schema(&j, None, None).unwrap().schema;
+    assert_eq!(back.to_string(), s.to_string());
+}

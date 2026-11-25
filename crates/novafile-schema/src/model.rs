@@ -1,6 +1,8 @@
 //! The schema model (spec §6.1): type expressions, constraints and named
 //! definitions, plus their canonical text rendering.
 
+mod render;
+
 use novafile_value::Value;
 use std::fmt;
 
@@ -346,6 +348,9 @@ pub struct FieldDef {
     pub id: Option<u32>,
     /// `@deprecated`: informational only; validation ignores it.
     pub deprecated: bool,
+    /// The documentation: the `#` comment lines directly above the field,
+    /// without `#`. It is not part of the canonical text or the descriptor.
+    pub doc: Option<String>,
 }
 
 /// A `record` definition.
@@ -381,6 +386,9 @@ pub struct VariantDef {
     /// `@id(n)`: stable variant number (n >= 1), unique within the enum.
     /// Either every variant of an enum has one or none does.
     pub id: Option<u32>,
+    /// The documentation: the `#` comment lines directly above the variant,
+    /// without `#`. It is not part of the canonical text or the descriptor.
+    pub doc: Option<String>,
 }
 
 impl VariantDef {
@@ -440,6 +448,10 @@ pub struct Schema {
     /// `@personal` or `@secret` on record and enum definitions, imported
     /// ones included (proposal 0009).
     pub def_classes: Vec<(String, Class)>,
+    /// The documentation of definitions, imported ones included: the `#`
+    /// comment lines directly above them, without `#`. It is not part of the
+    /// canonical text or the descriptor.
+    pub def_docs: Vec<(String, String)>,
 }
 
 impl Schema {
@@ -455,6 +467,12 @@ impl Schema {
         self.def_classes.iter().find(|(n, _)| n == name).map(|(_, c)| *c)
     }
 
+    /// The documentation of the definition `name`, if it has any.
+    #[must_use]
+    pub fn def_doc(&self, name: &str) -> Option<&str> {
+        self.def_docs.iter().find(|(n, _)| n == name).map(|(_, d)| d.as_str())
+    }
+
     /// The `@root` type, if the schema has a root.
     #[must_use]
     pub fn root_type(&self) -> Option<TypeRef> {
@@ -468,155 +486,5 @@ impl Schema {
             TypeKind::Named(n) => Some(n),
             _ => None,
         }
-    }
-}
-
-// ----------------------------------------------------------------------
-// Canonical rendering (used for fingerprints and `nvf schema fmt`)
-// ----------------------------------------------------------------------
-
-impl fmt::Display for TypeRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
-            TypeKind::Any => f.write_str("any")?,
-            TypeKind::Null => f.write_str("null")?,
-            TypeKind::Bool => f.write_str("bool")?,
-            TypeKind::Int(k) => f.write_str(k.name())?,
-            TypeKind::Float => f.write_str("float")?,
-            TypeKind::Decimal => f.write_str("decimal")?,
-            TypeKind::Rational => f.write_str("rational")?,
-            TypeKind::String => f.write_str("string")?,
-            TypeKind::Bytes => f.write_str("bytes")?,
-            TypeKind::Timestamp => f.write_str("timestamp")?,
-            TypeKind::Duration => f.write_str("duration")?,
-            TypeKind::List(t) => write!(f, "list<{t}>")?,
-            TypeKind::Set(t) => write!(f, "set<{t}>")?,
-            TypeKind::Map(k, v) => write!(f, "map<{k}, {v}>")?,
-            TypeKind::Tuple(ts) => {
-                f.write_str("(")?;
-                for (i, t) in ts.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(", ")?;
-                    }
-
-                    write!(f, "{t}")?;
-                }
-
-                if ts.len() == 1 {
-                    f.write_str(",")?;
-                }
-
-                f.write_str(")")?;
-            }
-            TypeKind::Named(n) => f.write_str(n)?,
-            TypeKind::Literal(s) => f.write_str(&novafile_text::quote(s))?,
-            TypeKind::Union(ms) => {
-                for (i, m) in ms.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(" | ")?;
-                    }
-
-                    write!(f, "{m}")?;
-                }
-            }
-        }
-
-        if self.nullable {
-            f.write_str("?")?;
-        }
-
-        let b = |o: Option<String>| o.unwrap_or_default();
-        if let Some((lo, hi)) = &self.constraints.range {
-            write!(
-                f,
-                " @range({}..{})",
-                b(lo.as_ref().map(std::string::ToString::to_string)),
-                b(hi.as_ref().map(std::string::ToString::to_string))
-            )?;
-        }
-
-        if let Some((lo, hi)) = &self.constraints.len {
-            write!(f, " @len({}..{}", b(lo.map(|n| n.to_string())), b(hi.map(|n| n.to_string())))?;
-            if self.constraints.len_unit != LenUnit::Scalars {
-                write!(f, ", {}", self.constraints.len_unit.name())?;
-            }
-
-            f.write_str(")")?;
-        }
-
-        if let Some(p) = &self.constraints.pattern {
-            write!(f, " @pattern({})", novafile_text::quote(p.as_str()))?;
-        }
-
-        if let Some(c) = self.constraints.class {
-            write!(f, " @{c}")?;
-        }
-
-        Ok(())
-    }
-}
-
-impl fmt::Display for Schema {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let (Some(n), Some(v)) = (&self.name, &self.version) {
-            writeln!(f, "@schema {n}@{v}")?;
-        }
-
-        for i in &self.imports {
-            writeln!(f, "@import {} as {}", i.reference, i.alias)?;
-        }
-
-        if let Some(r) = &self.root {
-            writeln!(f, "@root {r}")?;
-        }
-
-        let mut defs: Vec<_> = self.defs.iter().collect();
-        defs.sort_by(|a, b| a.0.cmp(&b.0));
-        for (name, def) in defs {
-            writeln!(f)?;
-            let class = self.def_class(name).map(|c| format!(" @{c}")).unwrap_or_default();
-            match def {
-                Def::Alias(t) => writeln!(f, "type {name} = {t}")?,
-                Def::Enum(vs) => {
-                    writeln!(f, "enum {name}{class}:")?;
-                    for v in vs {
-                        match &v.payload {
-                            Some(t) => write!(f, "  {}({t})", v.name)?,
-                            None => write!(f, "  {}", v.name)?,
-                        }
-
-                        match v.id {
-                            Some(id) => writeln!(f, " @id({id})")?,
-                            None => writeln!(f)?,
-                        }
-                    }
-                }
-                Def::Record(r) => {
-                    writeln!(f, "record {name}{}{class}:", if r.open { " @open" } else { "" })?;
-                    for fd in &r.fields {
-                        write!(f, "  {}{}: {}", novafile_text::key_text(&fd.name), if fd.optional { "?" } else { "" }, fd.ty)?;
-                        if fd.key {
-                            f.write_str(" @key")?;
-                        }
-
-                        if let Some(id) = fd.id {
-                            write!(f, " @id({id})")?;
-                        }
-
-                        if fd.deprecated {
-                            f.write_str(" @deprecated")?;
-                        }
-
-                        if let Some(d) = &fd.default {
-                            write!(f, " = {}", novafile_text::flow_string(d))?;
-                        }
-
-                        writeln!(f)?;
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 }

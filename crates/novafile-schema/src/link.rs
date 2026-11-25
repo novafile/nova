@@ -78,6 +78,7 @@ impl Schema {
         let fail = |message: String| SchemaError { line: 0, message };
         self.imported.clear();
         self.def_classes.retain(|(n, _)| !n.contains('.'));
+        self.def_docs.retain(|(n, _)| !n.contains('.'));
         for idx in 0..self.imports.len() {
             let import = &self.imports[idx];
             let dep = match bundled(&import.reference) {
@@ -101,7 +102,7 @@ impl Schema {
         check_refs(self).map_err(fail)
     }
 
-    /// Copy the definitions and definition classes of `dep`, its own imports
+    /// Copy the definitions, definition classes and definition docs of `dep`, its own imports
     /// included, under `alias.`.
     fn copy_definitions(&mut self, alias: &str, dep: &Schema) {
         for (name, def) in dep.defs.iter().chain(&dep.imported) {
@@ -112,6 +113,10 @@ impl Schema {
 
         for (name, class) in &dep.def_classes {
             self.def_classes.push((format!("{alias}.{name}"), *class));
+        }
+
+        for (name, doc) in &dep.def_docs {
+            self.def_docs.push((format!("{alias}.{name}"), doc.clone()));
         }
     }
 }

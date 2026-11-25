@@ -690,3 +690,31 @@ fn schema_imports_link() {
     server.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// A hover shows the documentation of the field and of its type (#34).
+#[test]
+fn hover_shows_documentation() {
+    let (mut c, server, dir) = start();
+    let root = base(&dir);
+    let schema = format!("{root}/docs.novs");
+    open(
+        &c,
+        &schema,
+        "@schema acme.test/docs@1.0.0\n@root Config\n\nrecord Config:\n  # Where the data lives.\n  db: Db @id(1)\n\n# A database connection.\nrecord Db:\n  url: string @id(1)\n",
+    );
+    assert_eq!(c.diagnostics_for(&schema), json!([]));
+
+    let doc = format!("{root}/docs.nova");
+    open(&c, &doc, "@schema acme.test/docs@1.0.0\ndb:\n  url: x\n");
+    let md = hover_text(&mut c, &doc, 1, 1);
+    assert!(md.contains("Where the data lives.") && md.contains("A database connection."), "{md}");
+
+    // In the schema file, the definition shows with its documentation.
+    let md = hover_text(&mut c, &schema, 5, 7);
+    assert!(md.contains("# A database connection.\nrecord Db:"), "{md}");
+
+    c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    server.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
+}

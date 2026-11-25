@@ -52,7 +52,7 @@ fn draft_2020_12_mapping_rows() {
             "maybe": {"anyOf": [{"$ref": "#/$defs/point"}, {"type": "null"}]},
             "nullable": {"type": ["string", "null"]},
             "nullable_enum": {"enum": ["a", "b", null]},
-            "old": {"type": "string", "deprecated": true, "description": "dropped silently"},
+            "old": {"type": "string", "deprecated": true, "description": "kept as documentation"},
             "inline": {"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]},
             "ports": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 10}},
             "anything": true,
@@ -106,6 +106,7 @@ record Everything:
   maybe: Point?
   nullable: string?
   nullable_enum: EverythingNullableEnum?
+  # kept as documentation
   old: string @deprecated
   inline: EverythingInline
   ports: list<EverythingPortsItem>

@@ -226,7 +226,11 @@ fn serde_attributes_and_open_records() {
 
     let schema = novafile_schemars::schema_for::<Loose>("loose", "0.1.0").unwrap();
     assert_eq!(
-        schema.to_string(),
+        schema.def_doc("Loose"),
+        Some("Not `deny_unknown_fields`, but `additionalProperties: true` via schemars.")
+    );
+    assert_eq!(
+        schema.to_canonical_text(),
         "@schema loose@0.1.0\n@root Loose\n\nrecord Loose @open:\n  a-b: u64\n  old?: i8? @deprecated\n"
     );
 

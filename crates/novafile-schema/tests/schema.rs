@@ -771,3 +771,35 @@ fn positional_tuples_keep_their_length() {
     let e = s.from_positional(&pos).unwrap_err();
     assert!(e.contains("2-tuple"), "{e}");
 }
+
+/// Comment lines directly above a definition, field or variant are its
+/// documentation (#34). The canonical text and the fingerprint leave them out.
+#[test]
+fn doc_comments_are_kept_but_not_fingerprinted() {
+    let src = "# File header: documents nothing.\n\n@schema docs@1.0.0\n@root Db\n\n# Which database to use.\n#\n# Second paragraph.\nrecord Db:\n  # The database URL.\n  url?: string  # trailing: not documentation\n\n  # Not above a field.\n\n  mode: Mode\n\n# The mode.\nenum Mode:\n  # Read only.\n  ro\n  rw\n";
+    let s = parse_schema(src).unwrap();
+    assert_eq!(s.def_doc("Db"), Some("Which database to use.\n\nSecond paragraph."));
+    assert_eq!(s.def_doc("Mode"), Some("The mode."));
+    let novafile_schema::Def::Record(r) = s.def("Db").unwrap() else {
+        panic!("Db is a record")
+    };
+    assert_eq!(r.fields[0].doc.as_deref(), Some("The database URL."));
+    assert_eq!(r.fields[1].doc, None);
+    let novafile_schema::Def::Enum(vs) = s.def("Mode").unwrap() else {
+        panic!("Mode is an enum")
+    };
+    assert_eq!((vs[0].doc.as_deref(), vs[1].doc.as_deref()), (Some("Read only."), None));
+
+    let source = s.to_string();
+    assert!(
+        source.contains("\n# Which database to use.\n#\n# Second paragraph.\nrecord Db:\n  # The database URL.\n  url?: string\n"),
+        "{source}"
+    );
+    assert!(!s.to_canonical_text().contains('#'));
+
+    // The source text parses back to the same schema, and the docs do not change the fingerprint.
+    assert_eq!(parse_schema(&source).unwrap(), s);
+    let bare = parse_schema(&s.to_canonical_text()).unwrap();
+    assert_eq!(bare.fingerprint(), s.fingerprint());
+    assert_eq!(check_versions(&bare, &s).unwrap().kind, ChangeKind::None);
+}

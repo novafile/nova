@@ -30,6 +30,8 @@ pub struct SchemaGen {
     /// A name is registered before its definition is built, so a recursive use
     /// finds it and is not built again.
     owners: HashMap<String, String>,
+    /// The documentation of definitions, from the doc comments of their Rust items.
+    docs: Vec<(String, String)>,
 }
 
 impl SchemaGen {
@@ -58,6 +60,11 @@ impl SchemaGen {
         r
     }
 
+    /// Record `doc` as the documentation of the definition `name`.
+    pub fn doc(&mut self, name: &str, doc: &str) {
+        self.docs.push((name.to_owned(), doc.to_owned()));
+    }
+
     /// Build the schema from the collected definitions, with the given
     /// `@root` and optional `@schema` name and version.
     ///
@@ -70,6 +77,7 @@ impl SchemaGen {
             version: version.map(|v| crate::Version::parse(v).unwrap_or_else(|e| panic!("#[nova(version)]: {e}"))),
             root,
             defs: self.defs,
+            def_docs: self.docs,
             ..Schema::default()
         }
     }

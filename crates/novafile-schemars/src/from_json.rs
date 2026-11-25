@@ -99,6 +99,7 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
         patterns: std::cell::Cell::new(novafile_schema::SCHEMA_BUDGET),
         inlined: HashMap::new(),
         def_classes: Vec::new(),
+        def_docs: Vec::new(),
         uses_std: false,
     };
 
@@ -156,6 +157,7 @@ pub(crate) fn convert(json: &Json, name: Option<&str>, version: Option<&str>) ->
 
     schema.defs = std::mem::take(&mut c.defs);
     schema.def_classes = std::mem::take(&mut c.def_classes);
+    schema.def_docs = std::mem::take(&mut c.def_docs);
     // Canonical order (spec §6.6), so the result does not depend on traversal order.
     schema.defs.sort_by(|a, b| a.0.cmp(&b.0));
     break_alias_cycles(&mut schema, &mut c.warnings);
@@ -252,6 +254,8 @@ struct Conv<'a> {
     inlined: HashMap<String, TypeRef>,
     /// `@personal` or `@secret` on the record and enum definitions created so far.
     def_classes: Vec<(String, Class)>,
+    /// The `description` of the definitions created so far, as their documentation.
+    def_docs: Vec<(String, String)>,
     /// Whether a type refers to the standard library, so that the schema needs its import.
     uses_std: bool,
 }
@@ -287,6 +291,10 @@ impl Conv<'_> {
 
     /// Convert a schema that becomes the definition `name`.
     fn def_of(&mut self, s: &Json, at: &str, name: &str) -> Def {
+        if let Some(d) = description(s) {
+            self.def_docs.push((name.to_owned(), d));
+        }
+
         if let Json::Object(o) = s {
             let (o, nullable) = strip_null(o);
             if !nullable {
@@ -331,6 +339,7 @@ impl Conv<'_> {
                     name: t.clone(),
                     payload: None,
                     id: None,
+                    doc: None,
                 })),
                 Alt::Payload(tag, payload, i) => {
                     let at = format!("{at}/{key}/{i}/properties/{}", escape_pointer(&tag));
@@ -339,6 +348,7 @@ impl Conv<'_> {
                         name: tag,
                         payload: Some(t),
                         id: None,
+                        doc: None,
                     });
                 }
             }
@@ -434,6 +444,7 @@ impl Conv<'_> {
                 key: false,
                 id: None,
                 deprecated: meta("deprecated") == Some(&Json::Bool(true)),
+                doc: description(fs),
             };
 
             if let Some(d) = meta("default") {
@@ -484,6 +495,7 @@ impl Conv<'_> {
             key: false,
             id: None,
             deprecated: false,
+            doc: None,
         };
 
         let mut fields = vec![field(tag, TypeRef::new(TypeKind::String), false)];
@@ -1237,6 +1249,15 @@ fn std_of_format(f: &str) -> Option<&'static str> {
 /// Import the newest bundled standard library as `std` and link its
 /// definitions. A scratch schema does the linking, so the reference checks
 /// do not run before the defaults are resolved.
+/// The `description` of a schema as documentation, without the note that
+/// [`crate::to_json_schema`] adds to `@key` fields.
+fn description(s: &Json) -> Option<String> {
+    let d = s.as_object()?.get("description")?.as_str()?;
+    let d = d.strip_suffix(crate::to_json::KEY_NOTE).unwrap_or(d).trim_end();
+    (!d.is_empty()).then(|| d.to_owned())
+}
+
+/// Import the bundled standard library into `schema` under [`STD_ALIAS`].
 fn import_std(schema: &mut Schema) {
     let reference = latest_std().reference().expect("the standard library has a name and version");
     let mut scratch = Schema::default();
@@ -1248,6 +1269,7 @@ fn import_std(schema: &mut Schema) {
     schema.imports = scratch.imports;
     schema.imported = scratch.imported;
     schema.def_classes.extend(scratch.def_classes);
+    schema.def_docs.extend(scratch.def_docs);
 }
 
 /// Set `@len` from a pair of min/max keywords, if either is present.

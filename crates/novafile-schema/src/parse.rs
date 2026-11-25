@@ -503,6 +503,7 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
             let (name, ty) = rest.split_once('=').ok_or_else(|| err(i, "expected `type Name = T`".into()))?;
             let t = parse_type_within(ty.trim(), &budget).map_err(|m| err(i, m))?;
             push_def(&mut schema, name.trim(), Def::Alias(t)).map_err(|m| err(i, m))?;
+            push_doc(&mut schema, name.trim(), doc_above(&lines, i));
             i += 1;
         } else if let Some(rest) = raw.strip_prefix("enum ") {
             if let Some((head, alts)) = rest.split_once('=') {
@@ -518,6 +519,7 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
 
                 push_def(&mut schema, name, Def::Enum(vs)).map_err(|m| err(i, m))?;
                 push_class(&mut schema, name, class);
+                push_doc(&mut schema, name, doc_above(&lines, i));
                 i += 1;
             } else {
                 let head = rest
@@ -528,6 +530,7 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
                     return Err(err(i, "@open applies to records, not enums".into()));
                 }
 
+                let doc = doc_above(&lines, i);
                 i += 1;
                 let mut vs = Vec::new();
                 while i < lines.len() {
@@ -538,7 +541,9 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
                     }
 
                     let Some(body) = l.strip_prefix("  ") else { break };
-                    push_variant(&mut vs, parse_variant(body.trim(), &budget).map_err(|m| err(i, m))?).map_err(|m| err(i, m))?;
+                    let mut v = parse_variant(body.trim(), &budget).map_err(|m| err(i, m))?;
+                    v.doc = doc_above(&lines, i);
+                    push_variant(&mut vs, v).map_err(|m| err(i, m))?;
                     i += 1;
                 }
 
@@ -548,11 +553,13 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
 
                 push_def(&mut schema, name, Def::Enum(vs)).map_err(|m| err(i, m))?;
                 push_class(&mut schema, name, class);
+                push_doc(&mut schema, name, doc);
             }
         } else if let Some(rest) = raw.strip_prefix("record ") {
             let head = rest.strip_suffix(':').ok_or_else(|| err(i, "expected `record Name:`".into()))?;
             let (name, open, class) = def_head(head).map_err(|m| err(i, m))?;
 
+            let doc = doc_above(&lines, i);
             let start = i;
             i += 1;
             let mut fields: Vec<FieldDef> = Vec::new();
@@ -568,7 +575,8 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
                     return Err(err(i, "fields are indented exactly 2 spaces".into()));
                 }
 
-                let f = parse_field(body, &budget).map_err(|m| err(i, m))?;
+                let mut f = parse_field(body, &budget).map_err(|m| err(i, m))?;
+                f.doc = doc_above(&lines, i);
                 check_unique_field(&fields, &f).map_err(|m| err(i, m))?;
                 fields.push(f);
                 i += 1;
@@ -576,6 +584,7 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
 
             push_def(&mut schema, name, Def::Record(RecordDef { fields, open })).map_err(|m| err(start, m))?;
             push_class(&mut schema, name, class);
+            push_doc(&mut schema, name, doc);
         } else if let Some(d) = raw.strip_prefix('@') {
             return Err(err(i, format!("unknown directive @{}", d.split(' ').next().unwrap_or(d))));
         } else {
@@ -633,6 +642,32 @@ fn push_class(s: &mut Schema, name: &str, class: Option<Class>) {
     }
 }
 
+/// Record the documentation of the definition `name`, if it has any.
+fn push_doc(s: &mut Schema, name: &str, doc: Option<String>) {
+    if let Some(d) = doc {
+        s.def_docs.push((name.to_owned(), d));
+    }
+}
+
+/// The documentation of the definition, field or variant on line `i`: the
+/// comment-only lines directly above it, without `#` and one space after it.
+/// A blank line or any other line ends the run, so a file header comment
+/// separated by a blank line documents nothing.
+fn doc_above(lines: &[&str], i: usize) -> Option<String> {
+    let above = lines.get(..i)?;
+    let n = above.iter().rev().take_while(|l| l.trim_start().starts_with('#')).count();
+    let run = above.get(above.len() - n..)?;
+    let text: Vec<&str> = run
+        .iter()
+        .map(|l| {
+            let t = l.trim_start().strip_prefix('#').unwrap_or_default();
+            t.strip_prefix(' ').unwrap_or(t).trim_end()
+        })
+        .collect();
+
+    (n > 0).then(|| text.join("\n"))
+}
+
 /// Add a definition. Fails if the name does not start with an uppercase
 /// letter, contains characters other than `[A-Za-z0-9_]`, or is taken.
 fn push_def(s: &mut Schema, name: &str, d: Def) -> Result<(), String> {
@@ -665,12 +700,14 @@ fn parse_variant(s: &str, budget: &Cell<usize>) -> Result<VariantDef, String> {
                 name: check_name(n.trim())?,
                 payload: Some(parse_type_within(inner, budget)?),
                 id,
+                doc: None,
             })
         }
         None => Ok(VariantDef {
             name: check_name(s)?,
             payload: None,
             id,
+            doc: None,
         }),
     }
 }
@@ -776,6 +813,7 @@ fn parse_field(body: &str, budget: &Cell<usize>) -> Result<FieldDef, String> {
         key: false,
         id: None,
         deprecated: false,
+        doc: None,
     };
 
     for (a, arg) in attrs {
