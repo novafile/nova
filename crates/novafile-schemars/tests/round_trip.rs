@@ -189,3 +189,18 @@ fn imported_definitions_are_written_transitively() {
     assert_eq!(defs["c.Ref"]["properties"]["id"], serde_json::json!({"$ref": "#/$defs/c.Id"}));
     assert_eq!(defs["c.Id"].get("x-nova-type"), None);
 }
+
+/// Integer bounds beyond 64 bits round outward in JSON and come back exact.
+#[test]
+fn wide_integer_bounds_round_outward_and_back() {
+    let old = parse_schema("@root R\n\nrecord R:\n  n: int @range(-18446744073709551617..18446744073709551617)\n").unwrap();
+    let json = to_json_schema(&old);
+    let n = &json["$defs"]["R"]["properties"]["n"];
+    let num = |k: &str| n[k].as_f64().unwrap();
+    // 2^64 + 1 must stay inside the JSON bounds.
+    assert!(num("maximum") > 18_446_744_073_709_551_616.0, "{n}");
+    assert!(num("minimum") < -18_446_744_073_709_551_616.0, "{n}");
+    assert_eq!(n["x-nova-range"], "-18446744073709551617..18446744073709551617", "{n}");
+    let new = assert_round_trip(&old);
+    assert_eq!(new.to_string(), old.to_string());
+}
