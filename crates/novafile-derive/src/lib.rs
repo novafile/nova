@@ -8,10 +8,11 @@
 //! derived schema is anonymous and cannot check a document's `@schema` line. Nested types need no
 //! attribute.
 //!
-//! Attributes — container: `#[nova(name = "…", version = "…", rename = "TypeName", open)]`;
+//! Attributes — container: `#[nova(name = "…", version = "…", rename = "TypeName", rename_all = "…",
+//! rename_all_fields = "…", open)]`;
 //! field: `#[nova(rename = "…", key, id = N, range = "1..65535", len = "..64, utf8",
 //! default = "flow literal", secret, personal, type = "string @len(1..)", deprecated, skip)]`;
-//! variant: `#[nova(rename = "…", id = N)]`.
+//! variant: `#[nova(rename = "…", id = N, rename_all = "…")]`.
 //!
 //! `secret` and `personal` classify the field's type (`@secret` / `@personal`, proposal 0009).
 //! `type` replaces the field type's `NovaSchema` impl with a schema type expression, for
@@ -22,7 +23,8 @@
 //! The derived schema gets the checks a parsed `.novs` gets (references resolve, no alias
 //! cycles, no class on a `@key` field); `novafile_schema()` panics if one fails.
 //! Serde attributes are honoured so the schema matches `novafile-serde`'s output:
-//! `rename`, `rename_all`, `default`, `skip`, `skip_serializing`/`skip_deserializing`.
+//! `rename`, `rename_all` (also on variants), `rename_all_fields`, `default`, `skip`,
+//! `skip_serializing`/`skip_deserializing`. Rename rules change names exactly as serde does.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as Ts;
@@ -76,6 +78,9 @@ struct Container {
     rename: Option<String>,
     /// Serde-style `rename_all` rule applied to field and variant names.
     rename_all: Option<String>,
+    /// Serde-style `rename_all_fields` rule: the `rename_all` of every struct variant
+    /// that has none of its own.
+    rename_all_fields: Option<String>,
     /// Emit the record as `@open`, accepting unknown fields.
     open: bool,
 }
@@ -106,6 +111,8 @@ struct FieldAttrs {
     deprecated: bool,
     /// Leave the field or variant out of the schema, as serde does.
     skip: bool,
+    /// On a struct variant: the `rename_all` rule for its fields.
+    rename_all: Option<String>,
 }
 
 /// The string literal of a `key = "..."` attribute.
@@ -141,22 +148,22 @@ fn container_attrs(attrs: &[Attribute]) -> syn::Result<Container> {
                     c.rename = Some(str_lit(&m)?);
                 } else if m.path.is_ident("rename_all") {
                     c.rename_all = Some(str_lit(&m)?);
+                } else if m.path.is_ident("rename_all_fields") {
+                    c.rename_all_fields = Some(str_lit(&m)?);
                 } else if m.path.is_ident("open") {
                     c.open = true;
                 } else {
-                    return Err(m.error("unknown #[nova] container attribute (name, version, rename, rename_all, open)"));
+                    return Err(m.error("unknown #[nova] container attribute (name, version, rename, rename_all, rename_all_fields, open)"));
                 }
 
                 Ok(())
             })?;
         } else if a.path().is_ident("serde") {
             a.parse_nested_meta(|m| {
-                if m.path.is_ident("rename_all") {
-                    if m.input.peek(syn::Token![=]) {
-                        c.rename_all = Some(str_lit(&m)?);
-                    } else {
-                        ignore(&m)?;
-                    }
+                if m.path.is_ident("rename_all") && m.input.peek(syn::Token![=]) {
+                    c.rename_all = Some(str_lit(&m)?);
+                } else if m.path.is_ident("rename_all_fields") && m.input.peek(syn::Token![=]) {
+                    c.rename_all_fields = Some(str_lit(&m)?);
                 } else if m.path.is_ident("tag") || m.path.is_ident("untagged") || m.path.is_ident("content") {
                     return Err(m.error("NovaSchema supports externally tagged enums only (they map to NOVA variants)"));
                 } else {
@@ -205,8 +212,12 @@ fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                     f.deprecated = true;
                 } else if p.is_ident("skip") {
                     f.skip = true;
+                } else if p.is_ident("rename_all") {
+                    f.rename_all = Some(str_lit(&m)?);
                 } else {
-                    return Err(m.error("unknown #[nova] field attribute (rename, key, id, range, len, default, secret, personal, type, deprecated, skip)"));
+                    return Err(m.error(
+                        "unknown #[nova] field attribute (rename, key, id, range, len, default, secret, personal, type, deprecated, skip, rename_all)",
+                    ));
                 }
 
                 Ok(())
@@ -217,6 +228,10 @@ fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                 if p.is_ident("rename") && m.input.peek(syn::Token![=]) {
                     if f.rename.is_none() {
                         f.rename = Some(str_lit(&m)?);
+                    }
+                } else if p.is_ident("rename_all") && m.input.peek(syn::Token![=]) {
+                    if f.rename_all.is_none() {
+                        f.rename_all = Some(str_lit(&m)?);
                     }
                 } else if p.is_ident("default") {
                     f.serde_default = true;
@@ -237,45 +252,79 @@ fn field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
     Ok(f)
 }
 
-/// Serde's `rename_all` rules, for `snake_case` fields and `PascalCase` variants.
+/// Serde's `rename_all` rules, applied exactly as serde applies them.
+///
+/// Serde does not split names into words. It assumes `snake_case` fields and
+/// `PascalCase` variants and changes characters in place, so `user_name` under
+/// `lowercase` stays `user_name`. Copying that keeps the schema on serde's output.
 fn rename(name: &str, rule: Option<&str>, is_variant: bool) -> syn::Result<String> {
     let Some(rule) = rule else { return Ok(name.to_owned()) };
-    let words: Vec<String> = if is_variant {
-        let mut w = Vec::new();
-        let mut cur = String::new();
-        for c in name.chars() {
-            if c.is_uppercase() && !cur.is_empty() {
-                w.push(std::mem::take(&mut cur));
+    let renamed = if is_variant { rename_variant(name, rule) } else { rename_field(name, rule) };
+    renamed.ok_or_else(|| Error::new(proc_macro2::Span::call_site(), format!("unknown rename_all rule {rule:?}")))
+}
+
+/// Serde's `RenameRule::apply_to_variant` for a `PascalCase` variant name, or `None` for an unknown rule.
+fn rename_variant(name: &str, rule: &str) -> Option<String> {
+    let snake = || {
+        let mut out = String::new();
+        for (i, c) in name.char_indices() {
+            if i > 0 && c.is_uppercase() {
+                out.push('_');
             }
 
-            cur.extend(c.to_lowercase());
+            out.push(c.to_ascii_lowercase());
         }
 
-        if !cur.is_empty() {
-            w.push(cur);
-        }
-
-        w
-    } else {
-        name.split('_').filter(|s| !s.is_empty()).map(str::to_lowercase).collect()
+        out
     };
 
-    let cap = |s: &str| {
-        let mut c = s.chars();
-        c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
-    };
-
-    Ok(match rule {
-        "lowercase" => words.concat(),
-        "UPPERCASE" => words.concat().to_uppercase(),
-        "PascalCase" => words.iter().map(|w| cap(w)).collect(),
-        "camelCase" => words.iter().enumerate().map(|(i, w)| if i == 0 { w.clone() } else { cap(w) }).collect(),
-        "snake_case" => words.join("_"),
-        "SCREAMING_SNAKE_CASE" => words.join("_").to_uppercase(),
-        "kebab-case" => words.join("-"),
-        "SCREAMING-KEBAB-CASE" => words.join("-").to_uppercase(),
-        other => return Err(Error::new(proc_macro2::Span::call_site(), format!("unknown rename_all rule {other:?}"))),
+    Some(match rule {
+        "PascalCase" => name.to_owned(),
+        "lowercase" => name.to_ascii_lowercase(),
+        "UPPERCASE" => name.to_ascii_uppercase(),
+        "camelCase" => lower_first(name),
+        "snake_case" => snake(),
+        "SCREAMING_SNAKE_CASE" => snake().to_ascii_uppercase(),
+        "kebab-case" => snake().replace('_', "-"),
+        "SCREAMING-KEBAB-CASE" => snake().to_ascii_uppercase().replace('_', "-"),
+        _ => return None,
     })
+}
+
+/// Serde's `RenameRule::apply_to_field` for a `snake_case` field name, or `None` for an unknown rule.
+fn rename_field(name: &str, rule: &str) -> Option<String> {
+    let pascal = || {
+        let mut out = String::new();
+        let mut capitalize = true;
+        for c in name.chars() {
+            if c == '_' {
+                capitalize = true;
+            } else if capitalize {
+                out.push(c.to_ascii_uppercase());
+                capitalize = false;
+            } else {
+                out.push(c);
+            }
+        }
+
+        out
+    };
+
+    Some(match rule {
+        "lowercase" | "snake_case" => name.to_owned(),
+        "UPPERCASE" | "SCREAMING_SNAKE_CASE" => name.to_ascii_uppercase(),
+        "PascalCase" => pascal(),
+        "camelCase" => lower_first(&pascal()),
+        "kebab-case" => name.replace('_', "-"),
+        "SCREAMING-KEBAB-CASE" => name.to_ascii_uppercase().replace('_', "-"),
+        _ => return None,
+    })
+}
+
+/// `s` with its first character in ASCII lowercase, as serde's `camelCase` does.
+fn lower_first(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_ascii_lowercase().to_string() + c.as_str()).unwrap_or_default()
 }
 
 /// Whether `ty` is written as `Option<…>` (any path ending in `Option`).
@@ -446,8 +495,10 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
                     Fields::Named(named) => {
                         // Struct variants get a record definition of their own.
                         let rec = format!("{def_name}{}", v.ident);
-                        let fields = record_fields(&krate, &rec, named, None)?;
-                        quote!(Some(generator.named(#rec, |generator| #krate::Def::Record(#krate::RecordDef { fields: #fields, open: false }))))
+                        let vname = v.ident.to_string();
+                        let field_rule = a.rename_all.as_deref().or(c.rename_all_fields.as_deref());
+                        let fields = record_fields(&krate, &rec, named, field_rule)?;
+                        quote!(Some(generator.named(#rec, &::std::format!("{}::{}", ::std::any::type_name::<Self>(), #vname), |generator| #krate::Def::Record(#krate::RecordDef { fields: #fields, open: false }))))
                     }
                 };
 
@@ -473,7 +524,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
     Ok(quote! {
         impl #krate::NovaSchema for #ident {
             fn nova_type(generator: &mut #krate::derive::SchemaGen) -> #krate::TypeRef {
-                generator.named(#def_name, |generator| #body)
+                generator.named(#def_name, ::std::any::type_name::<Self>(), |generator| #body)
             }
 
             #id

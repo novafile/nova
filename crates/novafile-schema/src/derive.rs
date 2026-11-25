@@ -19,30 +19,41 @@
 //! by `novafile-serde` resolve against the generated schema.
 
 use crate::model::{Def, IntKind, Num, Schema, TypeKind, TypeRef};
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 /// Collects named definitions while type expressions are generated.
 #[derive(Default)]
 pub struct SchemaGen {
     /// Completed definitions, in the order they were finished.
     defs: Vec<(String, Def)>,
-    /// Names whose definition is being built; a reference to one of them is a
-    /// recursive use and is not built again.
-    in_progress: HashSet<String>,
+    /// The Rust item behind each registered name, so two items never share one.
+    /// A name is registered before its definition is built, so a recursive use
+    /// finds it and is not built again.
+    owners: HashMap<String, String>,
 }
 
 impl SchemaGen {
     /// Register a named definition built by `build` (once; recursion-safe)
     /// and return a reference to it.
-    pub fn named(&mut self, name: &str, build: impl FnOnce(&mut SchemaGen) -> Def) -> TypeRef {
+    ///
+    /// `owner` names the Rust item behind the definition, for example
+    /// [`std::any::type_name`] of the type. A later call with the same `name`
+    /// reuses the definition only when it has the same `owner`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is already registered for a different `owner`: two
+    /// Rust types would otherwise share one schema definition.
+    pub fn named(&mut self, name: &str, owner: &str, build: impl FnOnce(&mut SchemaGen) -> Def) -> TypeRef {
         let r = TypeRef::new(TypeKind::Named(name.to_owned()));
-        if self.in_progress.contains(name) || self.defs.iter().any(|(n, _)| n == name) {
-            return r;
+        match self.owners.get(name) {
+            Some(o) if o == owner => return r,
+            Some(o) => panic!("#[derive(NovaSchema)]: {o} and {owner} both map to the schema name {name}; rename one with #[nova(rename)]"),
+            None => {}
         }
 
-        self.in_progress.insert(name.to_owned());
+        self.owners.insert(name.to_owned(), owner.to_owned());
         let def = build(self);
-        self.in_progress.remove(name);
         self.defs.push((name.to_owned(), def));
         r
     }
@@ -98,7 +109,9 @@ pub trait NovaSchema {
 /// # Panics
 ///
 /// Panics if the schema fails the checks [`crate::parse_schema`] applies: a `#[nova(type)]`
-/// naming an unknown type, an alias cycle, a class on a `@key` field, or an invalid default.
+/// naming an unknown type, an alias cycle, a class on a `@key` field, an invalid default,
+/// a repeated field name or id, an optional or nullable `@key`, or an enum without variants.
+/// Also panics if two different Rust types map to the same definition name.
 #[must_use]
 pub fn schema_for<T: NovaSchema>() -> Schema {
     let mut generator = SchemaGen::default();
@@ -119,7 +132,9 @@ pub fn schema_for<T: NovaSchema>() -> Schema {
 
     let (name, version) = T::nova_schema_id().map_or((None, None), |(n, v)| (Some(n), Some(v)));
     let schema = generator.into_schema(Some(root), name, version);
-    crate::parse::check_refs(&schema).unwrap_or_else(|e| panic!("#[derive(NovaSchema)]: {e}"));
+    crate::parse::check_defs(&schema)
+        .and_then(|()| crate::parse::check_refs(&schema))
+        .unwrap_or_else(|e| panic!("#[derive(NovaSchema)]: {e}"));
     schema
 }
 

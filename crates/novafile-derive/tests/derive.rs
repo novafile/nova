@@ -303,3 +303,149 @@ struct Dangling {
 fn type_overrides_must_name_known_types() {
     let _ = Dangling::novafile_schema();
 }
+
+/// A derived `@key` field must be required, as in a parsed schema.
+#[test]
+#[should_panic(expected = "@key fields must be required and non-null")]
+fn optional_key_is_rejected() {
+    #[derive(NovaSchema, Serialize)]
+    struct K {
+        #[nova(key)]
+        id: Option<String>,
+    }
+
+    let _ = K::novafile_schema();
+}
+
+/// Two derived fields cannot share an id, as in a parsed schema.
+#[test]
+#[should_panic(expected = "duplicate field id 1")]
+fn duplicate_field_id_is_rejected() {
+    #[derive(NovaSchema, Serialize)]
+    struct D {
+        #[nova(id = 1)]
+        a: String,
+        #[nova(id = 1)]
+        b: String,
+    }
+
+    let _ = D::novafile_schema();
+}
+
+/// Two derived fields cannot share a name, as in a parsed schema.
+#[test]
+#[should_panic(expected = "duplicate field \"p\"")]
+fn duplicate_field_name_is_rejected() {
+    #[derive(NovaSchema, Serialize)]
+    struct D {
+        #[nova(rename = "p")]
+        a: String,
+        #[nova(rename = "p")]
+        b: String,
+    }
+
+    let _ = D::novafile_schema();
+}
+
+/// An enum without variants has no schema, as in a parsed schema.
+#[test]
+#[should_panic(expected = "has no variants")]
+fn empty_enum_is_rejected() {
+    #[derive(NovaSchema)]
+    enum Never {}
+
+    let _ = Never::novafile_schema();
+}
+
+/// Two Rust types with one name do not merge into one definition.
+#[test]
+#[should_panic(expected = "both map to the schema name Item")]
+fn same_named_types_are_rejected() {
+    mod a {
+        #[derive(novafile_schema::NovaSchema, serde::Serialize)]
+        pub struct Item {
+            pub x: String,
+        }
+    }
+
+    mod b {
+        #[derive(novafile_schema::NovaSchema, serde::Serialize)]
+        pub struct Item {
+            pub y: i64,
+        }
+    }
+
+    #[derive(NovaSchema, Serialize)]
+    struct Top {
+        first: a::Item,
+        second: b::Item,
+    }
+
+    let _ = Top::novafile_schema();
+}
+
+/// Check that serde's output for `value` resolves against `T`'s derived schema.
+fn assert_serde_resolves<T: NovaSchema + Serialize>(value: &T) {
+    let schema = T::novafile_schema();
+    let v = novafile_serde::to_value(value).unwrap();
+    schema.resolve(&v).unwrap_or_else(|e| panic!("{schema}\n{v:?}\n{e:?}"));
+}
+
+/// Every `rename_all` rule names fields exactly as serde does, odd underscores included.
+#[test]
+fn rename_all_matches_serde_for_fields() {
+    macro_rules! check_rule {
+        ($rule:literal) => {{
+            #[derive(NovaSchema, Serialize)]
+            #[serde(rename_all = $rule)]
+            struct R {
+                user_name: String,
+                _x: String,
+                #[expect(non_snake_case, reason = "the test needs a double underscore, which serde keeps as is")]
+                a__b: String,
+            }
+
+            assert_serde_resolves(&R {
+                user_name: "u".into(),
+                _x: "x".into(),
+                a__b: "b".into(),
+            });
+        }};
+    }
+
+    check_rule!("lowercase");
+    check_rule!("UPPERCASE");
+    check_rule!("PascalCase");
+    check_rule!("camelCase");
+    check_rule!("snake_case");
+    check_rule!("SCREAMING_SNAKE_CASE");
+    check_rule!("kebab-case");
+    check_rule!("SCREAMING-KEBAB-CASE");
+}
+
+/// Variant names, a variant's own `rename_all` and `rename_all_fields` follow serde.
+#[test]
+fn rename_rules_match_serde_for_variants() {
+    #[derive(NovaSchema, Serialize)]
+    #[serde(rename_all = "snake_case", rename_all_fields = "camelCase")]
+    enum E {
+        HttpServer {
+            inner_field: String,
+        },
+        #[serde(rename_all = "kebab-case")]
+        GrpcServer {
+            inner_field: String,
+        },
+    }
+
+    #[derive(NovaSchema, Serialize)]
+    struct Top {
+        a: E,
+        b: E,
+    }
+
+    assert_serde_resolves(&Top {
+        a: E::HttpServer { inner_field: "a".into() },
+        b: E::GrpcServer { inner_field: "b".into() },
+    });
+}
