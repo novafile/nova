@@ -331,3 +331,14 @@ fn filters_on_redacted_values_fail() {
     assert_eq!(get(&view, "items[?pin].id").unwrap().value, Value::List(vec![Value::String("a".into())]));
     assert_eq!(get(&view, "items[?id=a].pin").unwrap().value, Value::List(vec![placeholder()]));
 }
+
+/// A diff that replaces the whole document prints a patch that parses and applies.
+#[test]
+fn root_diff_round_trips() {
+    for (a, b) in [("5", "6"), ("{x: 1}", "[1, 2]")] {
+        let (a, b) = (novafile_text::parse_flow(a).unwrap(), novafile_text::parse_flow(b).unwrap());
+        let text = diff(&a, &b).to_string();
+        let p = parse_patch(&text).unwrap_or_else(|e| panic!("{text}\n{e:?}"));
+        assert_eq!(apply_unchecked(&a, &p).unwrap().value, b, "{text}");
+    }
+}

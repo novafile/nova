@@ -141,7 +141,8 @@ impl PatchError {
 
 impl fmt::Display for Op {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let p = &self.path;
+        // The root path displays as `.`, but an op names the root with an empty path.
+        let p = if self.path.is_root() { String::new() } else { self.path.to_string() };
         match &self.kind {
             OpKind::Replace { old, new } => write!(f, "{p}: {} -> {}", flow_string(old), flow_string(new)),
             OpKind::Set(v) => write!(f, "= {p}: {}", flow_string(v)),
