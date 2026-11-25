@@ -139,10 +139,25 @@ impl PatchError {
     }
 }
 
+/// The path at the start of an op, and the bytes it takes.
+///
+/// Ops display the root as `.` (as [`Path`] does), so a lone `.` also names
+/// the root here. That keeps the patches `nvf diff` prints readable by
+/// [`parse_patch`] when the whole document changes.
+///
+/// # Errors
+///
+/// Returns a message if the path is malformed.
+fn op_path(s: &str) -> Result<(Path, usize), String> {
+    match s.strip_prefix('.') {
+        Some(rest) if rest.is_empty() || rest.starts_with([':', ' ', '\t', '\r', '\n', '#']) => Ok((Path::root(), 1)),
+        _ => Path::parse_prefix(s),
+    }
+}
+
 impl fmt::Display for Op {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // The root path displays as `.`, but an op names the root with an empty path.
-        let p = if self.path.is_root() { String::new() } else { self.path.to_string() };
+        let p = &self.path;
         match &self.kind {
             OpKind::Replace { old, new } => write!(f, "{p}: {} -> {}", flow_string(old), flow_string(new)),
             OpKind::Set(v) => write!(f, "= {p}: {}", flow_string(v)),
@@ -271,7 +286,7 @@ pub fn parse_patch(src: &str) -> Result<Patch, PatchError> {
         };
 
         p.skip_inline_ws();
-        let (op_path, n) = Path::parse_prefix(&src[p.pos..]).map_err(|m| syn(&p, p.pos, m))?;
+        let (op_path, n) = op_path(&src[p.pos..]).map_err(|m| syn(&p, p.pos, m))?;
         if !op_path.is_singular() {
             return Err(syn(&p, p.pos, "patch paths may not use `[*]` or projections".into()));
         }
