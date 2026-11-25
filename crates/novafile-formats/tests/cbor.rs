@@ -409,3 +409,11 @@ fn depth_limit() {
     ok.push(0x80);
     assert!(from_slice(&ok).is_ok());
 }
+
+/// A map with equal non-string keys is rejected, like one with equal string keys.
+#[test]
+fn duplicate_map_keys_are_rejected() {
+    // {1: 1, 1: 2} and {"a": 1, "a": 2}
+    assert!(from_slice(&[0xA2, 0x01, 0x01, 0x01, 0x02]).is_err());
+    assert!(from_slice(&[0xA2, 0x61, b'a', 0x01, 0x61, b'a', 0x02]).is_err());
+}

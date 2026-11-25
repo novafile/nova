@@ -6,7 +6,7 @@
 //! serializer and deserializer (`novafile-serde`), the same impls round-trip
 //! losslessly by way of reserved newtype-struct names (`$nova::…`).
 
-use crate::{Decimal, Duration, Rational, Record, Timestamp, Value};
+use crate::{Decimal, Duration, Rational, Timestamp, Value};
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, SerializeTuple, Serializer};
 use std::cell::RefCell;
@@ -278,17 +278,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
             entries.push((k, v));
         }
 
-        if entries.iter().all(|(k, _)| matches!(k, Value::String(_))) {
-            let mut r = Record::new();
-            for (k, v) in entries {
-                let Value::String(k) = k else { unreachable!() };
-                r.insert(k, v).map_err(de::Error::custom)?;
-            }
-
-            Ok(Value::Record(r))
-        } else {
-            Value::map(entries).map_err(de::Error::custom)
-        }
+        Value::record_or_map(entries).map_err(de::Error::custom)
     }
 }
 

@@ -175,6 +175,30 @@ impl Value {
         Ok(Value::Map(entries))
     }
 
+    /// Build a record when every key is a string, else a map.
+    ///
+    /// This is how the serde, facet and CBOR bindings read a key-value
+    /// collection, so they all agree on the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if two keys are equal.
+    pub fn record_or_map(entries: Vec<(Value, Value)>) -> Result<Value, String> {
+        if !entries.iter().all(|(k, _)| matches!(k, Value::String(_))) {
+            return Value::map(entries);
+        }
+
+        let mut r = Record::new();
+        for (k, v) in entries {
+            let Value::String(k) = k else {
+                unreachable!("all keys are strings: checked above")
+            };
+            r.insert(k, v).map_err(|e| e.to_string())?;
+        }
+
+        Ok(Value::Record(r))
+    }
+
     /// The record, if this is a record.
     #[must_use]
     pub fn as_record(&self) -> Option<&Record> {

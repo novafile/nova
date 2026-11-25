@@ -315,17 +315,7 @@ impl ser::SerializeMap for MapSer {
 
     /// String-keyed maps become records; any other key type makes a map.
     fn end(self) -> R {
-        if self.entries.iter().all(|(k, _)| matches!(k, Value::String(_))) {
-            let mut r = Record::new();
-            for (k, v) in self.entries {
-                let Value::String(k) = k else { unreachable!() };
-                r.insert(k, v).map_err(|e| Error::new(e.to_string()))?;
-            }
-
-            Ok(Value::Record(r))
-        } else {
-            Value::map(self.entries).map_err(Error::new)
-        }
+        Value::record_or_map(self.entries).map_err(Error::new)
     }
 }
 
