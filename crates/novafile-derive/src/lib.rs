@@ -15,9 +15,12 @@
 //!
 //! `secret` and `personal` classify the field's type (`@secret` / `@personal`, proposal 0009).
 //! `type` replaces the field type's `NovaSchema` impl with a schema type expression, for
-//! foreign types that have none (`url::Url`, `secrecy::SecretString`, …); on an `Option<…>`
-//! field it gives the inner type, which stays optional and nullable. `range`, `len` and the
-//! class apply on top of it.
+//! foreign types that have none (`url::Url`, `secrecy::SecretString`, …); on a field written
+//! as `Option<…>` (not through an alias) it gives the inner type, which stays optional and
+//! nullable. `range`, `len` and the class apply on top of it.
+//!
+//! The derived schema gets the checks a parsed `.novs` gets (references resolve, no alias
+//! cycles, no class on a `@key` field); `novafile_schema()` panics if one fails.
 //! Serde attributes are honoured so the schema matches `novafile-serde`'s output:
 //! `rename`, `rename_all`, `default`, `skip`, `skip_serializing`/`skip_deserializing`.
 
@@ -415,6 +418,10 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
             let mut variants = Vec::new();
             for v in &e.variants {
                 let a = field_attrs(&v.attrs)?;
+                if a.class.is_some() || a.ty.is_some() {
+                    return Err(Error::new(v.span(), "secret, personal and type apply to fields, not enum variants"));
+                }
+
                 if a.skip {
                     continue;
                 }

@@ -94,6 +94,11 @@ pub trait NovaSchema {
 }
 
 /// The complete schema for `T`, with `T` as the root type.
+///
+/// # Panics
+///
+/// Panics if the schema fails the checks [`crate::parse_schema`] applies: a `#[nova(type)]`
+/// naming an unknown type, an alias cycle, a class on a `@key` field, or an invalid default.
 #[must_use]
 pub fn schema_for<T: NovaSchema>() -> Schema {
     let mut generator = SchemaGen::default();
@@ -113,7 +118,9 @@ pub fn schema_for<T: NovaSchema>() -> Schema {
     };
 
     let (name, version) = T::nova_schema_id().map_or((None, None), |(n, v)| (Some(n), Some(v)));
-    generator.into_schema(Some(root), name, version)
+    let schema = generator.into_schema(Some(root), name, version);
+    crate::parse::check_refs(&schema).unwrap_or_else(|e| panic!("#[derive(NovaSchema)]: {e}"));
+    schema
 }
 
 /// Apply schema-syntax attributes (`@range(1..10) @len(..64, utf8)`) to a type.

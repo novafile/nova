@@ -185,10 +185,10 @@ fn recursive_types() {
 struct Chain(Option<Box<Chain>>);
 
 #[test]
+#[should_panic(expected = "cycle")]
 fn recursive_aliases_fail_instead_of_hanging() {
-    // `type Chain = Chain?` never reaches a type; resolving reports it.
-    let issues = Chain::novafile_schema().resolve(&novafile_value::Value::Int(1)).unwrap_err();
-    assert!(issues[0].message.contains("cycle"), "{issues:?}");
+    // `type Chain = Chain?` never reaches a type, like the same alias in a `.novs`.
+    let _ = Chain::novafile_schema();
 }
 
 #[derive(NovaSchema)]
@@ -274,4 +274,32 @@ fn classes_std_types_and_type_overrides() {
     let (_, marks) = s.classify(&v).unwrap();
     let classified: Vec<String> = marks.iter().map(|(p, c)| format!("{p} {c}")).collect();
     assert_eq!(classified.len(), 3, "{classified:?}");
+}
+
+#[derive(NovaSchema)]
+#[allow(dead_code)]
+struct SecretKey {
+    #[nova(key, type = "string @secret")]
+    id: Foreign,
+}
+
+/// A classified key, which `#[nova(key, secret)]` rejects at compile time, is also caught
+/// when the class comes from a `type` override.
+#[test]
+#[should_panic(expected = "@key field cannot have a @secret type")]
+fn classified_keys_are_rejected() {
+    let _ = SecretKey::novafile_schema();
+}
+
+#[derive(NovaSchema)]
+#[allow(dead_code)]
+struct Dangling {
+    #[nova(type = "Endpoint")]
+    endpoint: Foreign,
+}
+
+#[test]
+#[should_panic(expected = "unknown type Endpoint")]
+fn type_overrides_must_name_known_types() {
+    let _ = Dangling::novafile_schema();
 }
