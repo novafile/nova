@@ -22,7 +22,11 @@ pub const VERSION: u8 = 0x01;
 pub mod flags {
     /// A schema reference follows the flags byte.
     pub const SCHEMA: u8 = 0b0000_0001;
-    /// The payload is in canonical form (sorted, no back-references).
+    /// The writer claims the payload is in canonical form (sorted, no back-references).
+    ///
+    /// Informational: the decoder does not verify it, and [`crate::Frame`]
+    /// does not expose it. To rely on canonical bytes, re-encode the value with
+    /// [`novafile_value::canonical_bytes`].
     pub const CANONICAL: u8 = 0b0000_0010;
     /// A CRC-32 of the payload follows it.
     pub const CRC32: u8 = 0b0000_0100;
@@ -271,43 +275,22 @@ impl PrefixCrc {
     }
 }
 
-/// Append `v` as an unsigned LEB128 varint.
-#[expect(clippy::cast_possible_truncation, reason = "LEB128: only the low 7 bits are kept per byte")]
-fn put_varint(out: &mut Vec<u8>, mut v: u64) {
-    while v >= 0x80 {
-        out.push((v as u8) | 0x80);
-        v >>= 7;
-    }
-
-    out.push(v as u8);
+/// Append `v` as an unsigned LEB128 varint, as the value codec writes it.
+fn put_varint(out: &mut Vec<u8>, v: u64) {
+    novafile_value::put_varint(out, u128::from(v));
 }
 
 /// Read an unsigned LEB128 varint at `*pos`, advancing it.
 ///
 /// Fails with [`FrameError::Truncated`] at end of input and with
-/// [`FrameError::Malformed`] on values past `u64` and non-minimal encodings
-/// (a trailing zero byte), as the value codec rejects them.
+/// [`FrameError::Malformed`] on values past `u64` and non-minimal encodings,
+/// with the same rules as the value codec.
 fn get_varint(buf: &[u8], pos: &mut usize) -> Result<u64, FrameError> {
-    let mut v = 0u64;
-    for shift in (0..64).step_by(7) {
-        let b = *buf.get(*pos).ok_or(FrameError::Truncated)?;
-        *pos += 1;
-        // The 10th byte holds bit 63 only and must be the last.
-        if shift == 63 && b > 1 {
-            return Err(FrameError::Malformed("varint overflow".into()));
-        }
-
-        v |= u64::from(b & 0x7F) << shift;
-        if b & 0x80 == 0 {
-            if b == 0 && shift > 0 {
-                return Err(FrameError::Malformed("non-minimal varint".into()));
-            }
-
-            return Ok(v);
-        }
+    match novafile_value::read_varint(buf, pos) {
+        Ok(v) => u64::try_from(v).map_err(|_| FrameError::Malformed("varint overflow".into())),
+        Err("unexpected end of input") => Err(FrameError::Truncated),
+        Err(m) => Err(FrameError::Malformed(m.into())),
     }
-
-    unreachable!("the 10th byte never continues")
 }
 
 /// Encode one frame, setting the flags to match `frame` and `opts`.

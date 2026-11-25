@@ -30,7 +30,7 @@ pub fn is_variant_tag(s: &str) -> bool {
     cs.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && cs.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-pub use codec::{DecodeError, EncodeOptions, Limits, canonical_bytes, decode, decode_prefix, decode_ref, decode_ref_prefix, encode};
+pub use codec::{DecodeError, EncodeOptions, Limits, canonical_bytes, decode, decode_prefix, decode_ref, decode_ref_prefix, encode, put_varint, read_varint};
 pub use decimal::Decimal;
 pub use numeric::{f32_to_f64, numeric_cmp};
 pub use rational::Rational;

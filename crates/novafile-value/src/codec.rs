@@ -109,7 +109,7 @@ fn table_shape(items: &[Value]) -> Option<Vec<&str>> {
 }
 
 /// Append `v` as an unsigned LEB128 varint.
-fn put_varint(out: &mut Vec<u8>, mut v: u128) {
+pub fn put_varint(out: &mut Vec<u8>, mut v: u128) {
     loop {
         let byte = (v & 0x7F) as u8;
         v >>= 7;
@@ -149,7 +149,12 @@ fn unzigzag(v: u128) -> i128 {
 ///
 /// Rejects values that overflow `u128` and non-minimal encodings (a trailing
 /// zero byte), so each integer has exactly one encoding.
-fn read_varint(buf: &[u8], pos: &mut usize) -> Result<u128, &'static str> {
+///
+/// # Errors
+///
+/// Returns `"unexpected end of input"` when `buf` ends inside the varint, and
+/// a message for an overflow or a non-minimal encoding.
+pub fn read_varint(buf: &[u8], pos: &mut usize) -> Result<u128, &'static str> {
     let mut v: u128 = 0;
     let mut shift = 0;
     loop {
@@ -392,6 +397,14 @@ pub fn canonical_bytes(v: &Value) -> Vec<u8> {
     )
 }
 
+/// How many bytes of reused text the decoder hands out per input byte.
+///
+/// String back-references and record-list field names reuse text that appears
+/// once in the input. Each use costs a copy in an owned [`Value`]. Without a
+/// bound, a 2-byte back-reference to a long string makes a small input decode
+/// to gigabytes. Real data reuses short keys and tags, far below this factor.
+const COPY_FACTOR: usize = 64;
+
 /// Resource bounds the decoder enforces on untrusted input.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -441,6 +454,8 @@ struct Decoder<'a> {
     strings: Vec<&'a str>,
     /// Interned canonical identities of the subtrees that duplicate checks need.
     ids: HashMap<Node<'a>, usize>,
+    /// Bytes of reused text the decoder can still hand out, see [`COPY_FACTOR`].
+    copy_budget: usize,
 }
 
 /// A subtree's canonical form, with its children as interned ids: two subtrees
@@ -527,8 +542,11 @@ impl<'a> Decoder<'a> {
         let h = self.varint()?;
         if h & 1 == 1 {
             let idx = h >> 1;
-            return match usize::try_from(idx).ok().and_then(|i| self.strings.get(i)) {
-                Some(s) => Ok(s),
+            return match usize::try_from(idx).ok().and_then(|i| self.strings.get(i).copied()) {
+                Some(s) => {
+                    self.charge(s.len())?;
+                    Ok(s)
+                }
                 None => self.err(format!("string back-reference {idx} out of range")),
             };
         }
@@ -550,6 +568,22 @@ impl<'a> Decoder<'a> {
 
         self.strings.push(s);
         Ok(s)
+    }
+
+    /// Take `n` bytes of reused text from the copy budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DecodeError`] when the budget is spent: the input reuses
+    /// text far more often than real data does.
+    fn charge(&mut self, n: usize) -> Result<(), DecodeError> {
+        match self.copy_budget.checked_sub(n) {
+            Some(left) => {
+                self.copy_budget = left;
+                Ok(())
+            }
+            None => self.err("input reuses too much text: decoded size limit exceeded"),
+        }
     }
 
     /// The id of `n`, shared by every subtree with the same canonical form.
@@ -766,6 +800,8 @@ impl<'a> Decoder<'a> {
                     let mut row = Vec::new();
                     for (f, p) in fields.iter().zip(present) {
                         if p {
+                            // Every row repeats the field name, so it costs like a back-reference.
+                            self.charge(f.len())?;
                             let (v, id) = self.value::<T>(want)?;
                             // Field names were checked for duplicates above.
                             T::push(&mut r, f, v);
@@ -1026,6 +1062,7 @@ fn decode_any<'a, T: Build<'a>>(buf: &'a [u8], limits: Limits) -> Result<(T, usi
         limits,
         strings: Vec::new(),
         ids: HashMap::new(),
+        copy_budget: buf.len().saturating_mul(COPY_FACTOR),
     };
 
     let (v, _) = d.value(false)?;
@@ -1085,6 +1122,58 @@ mod tests {
         }
 
         assert!(crate::is_variant_tag("at_start-2") && !crate::is_variant_tag("2a"));
+    }
+
+    /// Back-references to one long string cannot blow a small input up to gigabytes.
+    #[test]
+    fn reused_strings_are_bounded() {
+        const LONG: usize = 256 * 1024;
+        const REFS: u128 = 4000;
+        let mut bytes = vec![tag::LIST];
+        put_varint(&mut bytes, REFS);
+        bytes.push(tag::STRING);
+        put_varint(&mut bytes, (LONG as u128) << 1);
+        bytes.resize(bytes.len() + LONG, b'a');
+        for _ in 1..REFS {
+            bytes.extend_from_slice(&[tag::STRING, 1]);
+        }
+
+        let e = decode(&bytes).unwrap_err();
+        assert!(e.message.contains("reuses too much text"), "{e:?}");
+    }
+
+    /// Record-list rows repeat their field names, so they draw from the same budget.
+    #[test]
+    fn record_list_field_names_are_bounded() {
+        const LONG: usize = 256 * 1024;
+        const ROWS: u128 = 4000;
+        let mut bytes = vec![tag::RECORD_LIST];
+        put_varint(&mut bytes, ROWS);
+        bytes.push(1);
+        put_varint(&mut bytes, (LONG as u128) << 1);
+        bytes.resize(bytes.len() + LONG, b'a');
+        bytes.push(0);
+        bytes.resize(bytes.len() + 4000, tag::NULL);
+        let e = decode(&bytes).unwrap_err();
+        assert!(e.message.contains("reuses too much text"), "{e:?}");
+    }
+
+    /// Normal reuse of short keys stays well within the budget.
+    #[test]
+    fn short_reused_keys_decode() {
+        let v = Value::List(
+            (0..10_000)
+                .map(|i| rec(vec![("id", Value::Int(i)), ("name", Value::String("n".into()))]))
+                .collect(),
+        );
+        for (dedupe_strings, tables) in [(true, false), (false, true), (true, true)] {
+            let opts = EncodeOptions {
+                canonical: false,
+                dedupe_strings,
+                tables,
+            };
+            assert_eq!(decode(&encode(&v, opts)).unwrap(), v);
+        }
     }
 
     #[test]
