@@ -783,13 +783,17 @@ impl Resolver {
             .ok_or_else(|| LookupError::Invalid("no user cache directory".into()))?
             .join(&r.name);
         let path = dir.join(format!("{}.novs", r.version));
-        if let Ok(old) = std::fs::read_to_string(&path).map_err(|_| ()).and_then(|t| self.load_text(&t).map_err(|_| ()))
-            && old.revision() != schema.revision()
+        // Build metadata does not count for precedence, so `1.0.0` and `1.0.0+b` are one version.
+        let same_version = |f: &Found| f.schema.version.as_ref().is_some_and(|v| v.precedence(&r.version) == Ordering::Equal);
+        if let Some(old) = self
+            .cached_unlinked(&r.name)
+            .into_iter()
+            .find(|f| same_version(f) && f.schema.revision() != schema.revision())
         {
             return Err(LookupError::Conflict(format!(
                 "{r} is cached at {} with revision {}, but the fetched file has {}",
-                path.display(),
-                old.revision(),
+                old.origin,
+                old.schema.revision(),
                 schema.revision()
             )));
         }
