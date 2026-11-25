@@ -315,17 +315,40 @@ fn int_format(k: IntKind) -> Option<&'static str> {
     })
 }
 
-/// An integer as a JSON number; beyond 64 bits it becomes a (rounded) float.
-fn int_json(i: i128) -> Json {
+/// An integer bound as a JSON number, and whether the number is exact.
+///
+/// Beyond 64 bits JSON has only binary64 numbers. The float is then rounded
+/// outward (up for a maximum, down for a minimum), so the bound never rejects
+/// a value that NOVA accepts.
+fn int_json(i: i128, upper: bool) -> (Json, bool) {
     if let Ok(v) = i64::try_from(i) {
-        v.into()
-    } else if let Ok(v) = u64::try_from(i) {
-        v.into()
-    } else {
-        #[expect(clippy::cast_precision_loss, reason = "beyond 64 bits JSON has only binary64 numbers")]
-        let f = i as f64;
-        f.into()
+        return (v.into(), true);
     }
+
+    if let Ok(v) = u64::try_from(i) {
+        return (v.into(), true);
+    }
+
+    #[expect(clippy::cast_precision_loss, reason = "beyond 64 bits JSON has only binary64 numbers; rounded outward below")]
+    let f = i as f64;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f is integral and near i, so the cast is exact or saturates at an i128 limit, both on the correct side"
+    )]
+    let back = f as i128;
+    let f = match back.cmp(&i) {
+        std::cmp::Ordering::Less if upper => f.next_up(),
+        std::cmp::Ordering::Greater if !upper => f.next_down(),
+        _ => f,
+    };
+
+    (f.into(), back == i)
+}
+
+/// The `@range` body `lo..hi`, with an open end left empty.
+fn range_text(lo: Option<&Num>, hi: Option<&Num>) -> String {
+    let bound = |n: Option<&Num>| n.map(std::string::ToString::to_string).unwrap_or_default();
+    format!("{}..{}", bound(lo), bound(hi))
 }
 
 /// The JSON Schema for a type kind, before constraints and nullability.
@@ -339,8 +362,9 @@ fn kind(schema: &Schema, k: &TypeKind) -> Json {
             if let Some(f) = int_format(*k) {
                 let (lo, hi) = k.bounds();
                 o["format"] = f.into();
-                o["minimum"] = int_json(lo);
-                o["maximum"] = int_json(hi);
+                // Fixed-width kinds fit 64 bits, so these bounds are exact.
+                o["minimum"] = int_json(lo, false).0;
+                o["maximum"] = int_json(hi, true).0;
             }
 
             o
@@ -447,28 +471,35 @@ fn constrain(schema: &Schema, t: &TypeRef, s: &mut Json) {
     if let Some((lo, hi)) = &c.range {
         match target {
             Target::Int(bounds) => {
+                let mut exact = true;
                 if let Some(lo) = lo.as_ref().and_then(|n| int_bound(n, true)) {
-                    let lo = bounds.map_or(lo, |(klo, _)| lo.max(klo));
-                    obj.insert("minimum".into(), int_json(lo));
+                    let (min, min_exact) = int_json(bounds.map_or(lo, |(klo, _)| lo.max(klo)), false);
+                    obj.insert("minimum".into(), min);
+                    exact &= min_exact;
                 }
 
                 if let Some(hi) = hi.as_ref().and_then(|n| int_bound(n, false)) {
-                    let hi = bounds.map_or(hi, |(_, khi)| hi.min(khi));
-                    obj.insert("maximum".into(), int_json(hi));
+                    let (max, max_exact) = int_json(bounds.map_or(hi, |(_, khi)| hi.min(khi)), true);
+                    obj.insert("maximum".into(), max);
+                    exact &= max_exact;
+                }
+
+                // A rounded bound is looser than the range; keep the exact range for the way back.
+                if !exact {
+                    obj.insert("x-nova-range".into(), range_text(lo.as_ref(), hi.as_ref()).into());
                 }
             }
             Target::Float => {
                 if let Some(lo) = lo {
-                    obj.insert("minimum".into(), num_json(lo));
+                    obj.insert("minimum".into(), num_json(lo, false));
                 }
 
                 if let Some(hi) = hi {
-                    obj.insert("maximum".into(), num_json(hi));
+                    obj.insert("maximum".into(), num_json(hi, true));
                 }
             }
             _ => {
-                let bound = |n: &Option<Num>| n.as_ref().map(std::string::ToString::to_string).unwrap_or_default();
-                obj.insert("x-nova-range".into(), format!("{}..{}", bound(lo), bound(hi)).into());
+                obj.insert("x-nova-range".into(), range_text(lo.as_ref(), hi.as_ref()).into());
             }
         }
     }
@@ -531,11 +562,12 @@ fn int_bound(n: &Num, lower: bool) -> Option<i128> {
     }
 }
 
-/// A bound as a JSON number (decimals and rationals via binary64).
-fn num_json(n: &Num) -> Json {
+/// A bound as a JSON number (decimals and rationals via binary64). `upper`
+/// says which way a wide integer rounds, see [`int_json`].
+fn num_json(n: &Num, upper: bool) -> Json {
     match &n.0 {
-        Value::Int(i) => int_json(*i),
-        Value::Decimal(d) => d.to_i128().map_or_else(|| d.to_f64().into(), int_json),
+        Value::Int(i) => int_json(*i, upper).0,
+        Value::Decimal(d) => d.to_i128().map_or_else(|| d.to_f64().into(), |i| int_json(i, upper).0),
         Value::Rational(r) => r.to_f64().into(),
         Value::Float(f) => (*f).into(),
         _ => Json::Null,
