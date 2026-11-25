@@ -292,8 +292,8 @@ fn put_varint(out: &mut Vec<u8>, v: u64) {
 fn get_varint(buf: &[u8], pos: &mut usize) -> Result<u64, FrameError> {
     match novafile_value::read_varint(buf, pos) {
         Ok(v) => u64::try_from(v).map_err(|_| FrameError::Malformed("varint overflow".into())),
-        Err("unexpected end of input") => Err(FrameError::Truncated),
-        Err(m) => Err(FrameError::Malformed(m.into())),
+        Err(novafile_value::VarintError::Truncated) => Err(FrameError::Truncated),
+        Err(e) => Err(FrameError::Malformed(e.to_string())),
     }
 }
 
