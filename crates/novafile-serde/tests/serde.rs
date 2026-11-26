@@ -243,11 +243,15 @@ fn renamed_variant_tags_need_not_be_identifiers() {
         AtEnd(u8),
         #[serde(rename = "")]
         Empty,
+        #[serde(rename = "@redacted")]
+        Marker,
     }
 
     assert_eq!(to_value(&Op::AtStart).unwrap(), Value::Variant("at start".into(), None));
     assert_eq!(to_value(&Op::AtEnd(1)).unwrap(), Value::Variant("at-end".into(), Some(Box::new(Value::Int(1)))));
     assert!(to_value(&Op::Empty).unwrap_err().to_string().contains("empty"));
+    // `@` tags are reserved for markers such as redaction placeholders (§2.11).
+    assert!(to_value(&Op::Marker).unwrap_err().to_string().contains("reserved"));
 }
 
 /// `from_str_with_schema` checks the document's `@schema` line against a named schema (#28).

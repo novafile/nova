@@ -66,8 +66,8 @@ pub fn value() -> impl Strategy<Value = Value> {
             items.prop_filter_map("duplicate set element", |v| Value::set(v).ok()),
             prop::collection::vec((".{0,8}", inner.clone()), 0..6).prop_filter_map("duplicate record key", |e| Record::from_entries(e).ok().map(Value::Record)),
             prop::collection::vec((inner.clone(), inner.clone()), 0..4).prop_filter_map("duplicate map key", |e| Value::map(e).ok()),
-            // Identifier tags, and any other non-empty string, which text writes quoted (§2.11).
-            (prop_oneof!["[a-z][a-z0-9_]{0,8}", ".{1,8}"], prop::option::of(inner)).prop_map(|(n, p)| Value::Variant(n, p.map(Box::new))),
+            // Identifier tags, and any other valid tag, which text writes quoted (§2.11).
+            (prop_oneof!["[a-z][a-z0-9_]{0,8}", "[^@].{0,7}"], prop::option::of(inner)).prop_map(|(n, p)| Value::Variant(n, p.map(Box::new))),
         ]
     })
 }
