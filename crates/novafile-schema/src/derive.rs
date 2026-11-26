@@ -400,3 +400,27 @@ tuples!(
     (A, B, C, D, E, F, G),
     (A, B, C, D, E, F, G, H)
 );
+
+/// Implements [`NovaSchema`] for foreign types as standard library types, which
+/// [`schema_for`] imports as `std`.
+macro_rules! std_types {
+    ($($feature:literal: $t:ty => $name:literal),* $(,)?) => {$(
+        #[cfg(feature = $feature)]
+        impl NovaSchema for $t {
+            fn nova_type(_: &mut SchemaGen) -> TypeRef {
+                TypeRef::new(TypeKind::Named(format!("{STD_ALIAS}.{}", $name)))
+            }
+        }
+    )*};
+}
+
+std_types! {
+    // RFC 3986. `url::Url` parses WHATWG URLs, which accept more (surrounding whitespace,
+    // Unicode hosts, `\` as `/`), so the schema is the stricter side; what `Url` writes passes.
+    "url": url::Url => "Uri",
+    // Lower case, hyphenated: what `Uuid` writes. `Uuid` also reads upper case and other
+    // forms, which the schema rejects.
+    "uuid": uuid::Uuid => "Uuid",
+    // SemVer 2.0.0; `semver::Version` reads and writes the same syntax.
+    "semver": semver::Version => "SemVer",
+}

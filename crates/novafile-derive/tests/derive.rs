@@ -632,3 +632,59 @@ fn derived_schemas_import_the_standard_library() {
 fn derived_schemas_import_only_bundled_schemas() {
     let _ = Unbundled::novafile_schema();
 }
+
+/// Foreign types mapped to standard library types (issue #38).
+#[derive(NovaSchema)]
+#[expect(dead_code, reason = "only the schema is used")]
+struct Client {
+    endpoint: url::Url,
+    id: uuid::Uuid,
+    version: Option<semver::Version>,
+    /// `type` still overrides the mapping, and `len` refines it.
+    #[nova(type = "string")]
+    plain: url::Url,
+    #[nova(len = "..40")]
+    short: url::Url,
+}
+
+/// `url::Url`, `uuid::Uuid` and `semver::Version` derive as `std.Uri`, `std.Uuid` and
+/// `std.SemVer`, and what those types write passes the schema.
+#[test]
+fn foreign_types_map_to_the_standard_library() {
+    let s = Client::novafile_schema();
+    let text = s.to_string();
+    for field in [
+        "endpoint: std.Uri",
+        "id: std.Uuid",
+        "version?: std.SemVer?",
+        "plain: string",
+        "short: std.Uri @len(..40)",
+    ] {
+        assert!(text.contains(field), "{field} in\n{text}");
+    }
+    assert!(text.contains("@import novafile.dev/std@0.1.0#"), "{text}");
+
+    let url = |s: &str| url::Url::parse(s).unwrap().to_string();
+    let doc = |endpoint: &str, id: &str| {
+        let r = novafile_value::Record::from_entries(vec![
+            ("endpoint".into(), endpoint.into()),
+            ("id".into(), id.into()),
+            ("version".into(), semver::Version::parse("1.2.3-rc.1+build.5").unwrap().to_string().into()),
+            ("plain".into(), "not a url".into()),
+            ("short".into(), url("https://a.example").into()),
+        ])
+        .unwrap();
+        s.resolve(&novafile_value::Value::Record(r))
+    };
+
+    let id = uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef).to_string();
+    // What `Url` writes passes, Unicode hosts included (written as punycode).
+    for written in [url(" https://bücher.example/a b?q=1#f "), url("http://[::1]:8080/"), url("file:///tmp/x")] {
+        doc(&written, &id).unwrap_or_else(|e| panic!("{written}: {e:?}"));
+    }
+
+    // Input `Url` would read is stricter here: unencoded spaces, Unicode hosts, upper-case UUIDs.
+    assert!(doc("https://exa mple.com", &id).is_err());
+    assert!(doc("https://bücher.example", &id).is_err());
+    assert!(doc(&url("https://a.example"), &id.to_uppercase()).is_err());
+}

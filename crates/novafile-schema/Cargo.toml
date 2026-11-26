@@ -15,6 +15,11 @@ categories.workspace = true
 [features]
 # `#[derive(NovaSchema)]` (crate `novafile-derive`).
 derive = ["dep:novafile-derive"]
+# `NovaSchema` for foreign types, mapped to the standard library (`novafile.dev/std`):
+# `url::Url` as `std.Uri`, `uuid::Uuid` as `std.Uuid`, `semver::Version` as `std.SemVer`.
+url = ["dep:url"]
+uuid = ["dep:uuid"]
+semver = ["dep:semver"]
 
 [dependencies]
 novafile-value = { workspace = true, features = ["revision"] }
@@ -24,6 +29,9 @@ sha2.workspace = true
 regex-automata.workspace = true
 unicode-segmentation.workspace = true
 novafile-derive = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+semver = { workspace = true, optional = true }
 
 [lints]
 workspace = true

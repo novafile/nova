@@ -34,9 +34,13 @@
 //!
 //! `secret` and `personal` classify the field's type (`@secret` / `@personal`, proposal 0009).
 //! `type` replaces the field type's `NovaSchema` impl with a schema type expression, for
-//! foreign types that have none (`url::Url`, `secrecy::SecretString`, …); on a field written
+//! foreign types that have none (`secrecy::SecretString`, …); on a field written
 //! as `Option<…>` (not through an alias) it gives the inner type, which stays optional and
-//! nullable. `range`, `len` and the class apply on top of it.
+//! nullable. `range`, `len` and the class apply on top of it. The `novafile-schema` features
+//! `url`, `uuid` and `semver` give `url::Url`, `uuid::Uuid` and `semver::Version` an impl that
+//! derives `std.Uri`, `std.Uuid` and `std.SemVer`. `std.Uri` follows RFC 3986 and is stricter
+//! than the WHATWG parsing of `url::Url` (unencoded spaces, Unicode hosts), and `std.Uuid` takes
+//! lower case only; what those types write always passes.
 //!
 //! An `Option<…>` field derives `name?: T?`: it may be absent, and it may be `null`.
 //! `not_null` keeps the field optional but rejects `null`, so it derives `name?: T`. Serde
