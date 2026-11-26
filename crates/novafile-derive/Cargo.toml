@@ -24,12 +24,15 @@ proc-macro2.workspace = true
 # Path-only on purpose: these crates depend on novafile-derive, and cargo drops versionless
 # path dev-dependencies when publishing, which breaks the cycle.
 [dev-dependencies]
-novafile-schema = { path = "../novafile-schema", features = ["derive"] }
+novafile-schema = { path = "../novafile-schema", features = ["derive", "url", "uuid", "semver"] }
 novafile-value = { path = "../novafile-value" }
 novafile-text = { path = "../novafile-text" }
 novafile-serde = { path = "../novafile-serde" }
 proptest.workspace = true
 serde.workspace = true
+url.workspace = true
+uuid.workspace = true
+semver.workspace = true
 
 [lints]
 workspace = true

@@ -128,7 +128,7 @@ Fields take `#[nova(secret)]` / `#[nova(personal)]` to classify them for redacti
 
 | Crate | Purpose |
 | --- | --- |
-| [`novafile`](crates/novafile) | Umbrella crate re-exporting the pieces below (features: `serde`, `derive`, `facet`, `formats`, `proto`, `template`, `lint`, `schemars`, `full`) |
+| [`novafile`](crates/novafile) | Umbrella crate re-exporting the pieces below (features: `serde`, `derive`, `facet`, `formats`, `proto`, `template`, `lint`, `schemars`, `full`; `url`, `uuid`, `semver` for `NovaSchema` on those crates' types) |
 | [`novafile-value`](crates/novafile-value) | Value model (incl. decimals, rationals, timestamps, durations), canonical encoding, revisions |
 | [`novafile-binary`](crates/novafile-binary) | Framed binary representation, CRC-32, recovering stream reader, record streams with header and end frames |
 | [`novafile-text`](crates/novafile-text) | Text parser; human, compact and canonical writers; paths; source spans; template syntax; NOVA Lines (`.novl`) record streams; token heuristics; [miette](https://docs.rs/miette) diagnostics (feature `miette`) |

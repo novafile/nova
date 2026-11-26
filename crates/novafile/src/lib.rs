@@ -7,7 +7,7 @@
 //! | [`value`] | `novafile-value`: value model, canonical encoding, revisions | always |
 //! | [`text`] | `novafile-text`: text parser and writers, paths, formatting | always |
 //! | [`binary`] | `novafile-binary`: frames and streams | always |
-//! | [`schema`] | `novafile-schema`: schemas, resolution, SemVer, descriptors | always (`derive` for `#[derive(NovaSchema)]`) |
+//! | [`schema`] | `novafile-schema`: schemas, resolution, SemVer, descriptors | always (`derive` for `#[derive(NovaSchema)]`; `url`, `uuid`, `semver` map those crates' types to `std.Uri`, `std.Uuid`, `std.SemVer`) |
 //! | [`patch`] | `novafile-patch`: queries, patches, diffs | always |
 //! | [`serde`] | `novafile-serde` | `serde` (default) |
 //! | [`facet`] | `novafile-facet` | `facet` |
