@@ -6,7 +6,7 @@ mod strategy;
 
 use std::cmp::Ordering;
 
-use novafile_value::{Decimal, Duration, EncodeOptions, Rational, Timestamp, Value, canonical_bytes, decode, decode_ref, encode, numeric_cmp};
+use novafile_value::{Decimal, Duration, EncodeOptions, Rational, Record, Timestamp, Value, canonical_bytes, decode, decode_ref, encode, numeric_cmp};
 use proptest::prelude::*;
 use strategy::{decimal, duration, numeric, rational, timestamp, value};
 
@@ -151,5 +151,115 @@ proptest! {
         prop_assert_eq!(numeric_cmp(&Value::Int(i), &as_rat), Some(Ordering::Equal));
         prop_assert_eq!(numeric_cmp(&Value::Int(i), &Value::Int(j)), Some(i.cmp(&j)));
         prop_assert_eq!(numeric_cmp(&as_dec, &Value::Int(j)), Some(i.cmp(&j)));
+    }
+}
+
+/// A configuration-like layer: records and maps over a few keys, so that two layers share
+/// keys, and scalars and lists among them, so that kinds clash at a shared key.
+fn layer() -> impl Strategy<Value = Value> {
+    let leaf = prop_oneof![
+        Just(Value::Null),
+        (0i64..3).prop_map(Value::from),
+        "[xy]".prop_map(Value::String),
+        prop::collection::vec((0i64..3).prop_map(Value::from), 0..3).prop_map(Value::List),
+    ];
+    leaf.prop_recursive(3, 32, 4, |inner| {
+        prop_oneof![
+            prop::collection::btree_map("[a-c]", inner.clone(), 0..4).prop_map(|m| Value::Record(Record::from_entries(m.into_iter().collect()).unwrap())),
+            prop::collection::btree_map(0i64..3, inner, 0..3).prop_map(|m| Value::Map(m.into_iter().map(|(k, v)| (Value::from(k), v)).collect())),
+        ]
+    })
+}
+
+/// One step of a path through records (by field) and maps (by key).
+#[derive(Clone, Debug)]
+enum Step {
+    /// A record field.
+    Field(String),
+    /// A map key.
+    Key(Value),
+}
+
+/// The value at `step` inside `v`, if `v` is the matching container and holds it.
+fn child<'a>(v: &'a Value, step: &Step) -> Option<&'a Value> {
+    match (v, step) {
+        (Value::Record(r), Step::Field(f)) => r.get(f),
+        (Value::Map(m), Step::Key(k)) => m.iter().find(|(mk, _)| mk == k).map(|(_, v)| v),
+        _ => None,
+    }
+}
+
+/// Every leaf of `v` (a value that is not a record or map) with its path.
+fn leaves(v: &Value, path: &mut Vec<Step>, out: &mut Vec<(Vec<Step>, Value)>) {
+    let children: Vec<(Step, &Value)> = match v {
+        Value::Record(r) => r.iter().map(|(k, v)| (Step::Field(k.clone()), v)).collect(),
+        Value::Map(m) => m.iter().map(|(k, v)| (Step::Key(k.clone()), v)).collect(),
+        _ => return out.push((path.clone(), v.clone())),
+    };
+    for (step, c) in children {
+        path.push(step);
+        leaves(c, path, out);
+        path.pop();
+    }
+}
+
+/// Whether `upper` replaces what `lower` holds at `path`: it holds a value at the path, or at
+/// a prefix of it a value that is not a container of the same kind as `lower`'s.
+fn shadowed(lower: &Value, upper: &Value, path: &[Step]) -> bool {
+    let (mut l, mut u) = (lower, upper);
+    for step in path {
+        let same_kind = matches!((l, u), (Value::Record(_), Value::Record(_)) | (Value::Map(_), Value::Map(_)));
+        if !same_kind {
+            return true;
+        }
+        match (child(l, step), child(u, step)) {
+            (Some(lc), Some(uc)) => (l, u) = (lc, uc),
+            _ => return false,
+        }
+    }
+    true
+}
+
+proptest! {
+    /// An empty record is a neutral layer below and above any record.
+    #[test]
+    fn merge_with_an_empty_record_changes_nothing(v in layer(), w in value()) {
+        let mut below = Value::Record(Record::new());
+        below.merge(w.clone());
+        prop_assert_eq!(below, w);
+        if matches!(v, Value::Record(_)) {
+            let mut above = v.clone();
+            above.merge(Value::Record(Record::new()));
+            prop_assert_eq!(above, v);
+        }
+    }
+
+    /// A layer merged over itself gives itself.
+    #[test]
+    fn merge_is_idempotent(v in value()) {
+        let mut m = v.clone();
+        m.merge(v.clone());
+        prop_assert_eq!(m, v);
+    }
+
+    /// Every leaf of the upper layer is in the result at its path, and every leaf of the lower
+    /// layer that the upper layer does not replace is kept.
+    #[test]
+    fn upper_leaves_win_and_untouched_lower_leaves_stay(lower in layer(), upper in layer()) {
+        let mut m = lower.clone();
+        m.merge(upper.clone());
+        let at = |path: &[Step]| path.iter().try_fold(&m, |v, s| child(v, s));
+
+        let mut ups = Vec::new();
+        leaves(&upper, &mut Vec::new(), &mut ups);
+        for (path, leaf) in &ups {
+            prop_assert_eq!(at(path), Some(leaf), "upper leaf at {:?}", path);
+        }
+
+        let mut lows = Vec::new();
+        leaves(&lower, &mut Vec::new(), &mut lows);
+        for (path, leaf) in lows.iter().filter(|(p, _)| !shadowed(&lower, &upper, p)) {
+            prop_assert_eq!(at(path), Some(leaf), "lower leaf at {:?}", path);
+        }
     }
 }

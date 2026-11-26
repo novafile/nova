@@ -277,6 +277,10 @@ impl Value {
     /// variants, scalars, a value of another kind, and `null`, which overrides and
     /// never deletes. Applications that need other precedence (appending lists,
     /// `null` as deletion) write their own merge.
+    ///
+    /// Merging is not associative, since a replaced value takes its whole subtree along:
+    /// `{db: {url: …}}`, then `{db: null}`, then `{db: {pool: 5}}` gives `{db: {pool: 5}}`, but
+    /// merging the last two first gives back `url`. Merge the layers in order, lowest first.
     pub fn merge(&mut self, upper: Value) {
         match (self, upper) {
             (Value::Record(lower), Value::Record(upper)) => {
