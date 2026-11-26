@@ -597,7 +597,7 @@ pub fn parse_schema_unlinked(src: &str) -> Result<Schema, SchemaError> {
 
 /// Parse the argument of `@import`: `name@version[#fingerprint] as alias`.
 /// Fails if it is malformed, or the alias is not an identifier or is taken.
-fn parse_import(rest: &str, schema: &Schema) -> Result<Import, String> {
+pub(crate) fn parse_import(rest: &str, schema: &Schema) -> Result<Import, String> {
     let (reference, alias) = rest.trim().split_once(" as ").ok_or("expected `@import name@version as alias`")?;
     let reference = crate::SchemaRef::parse(reference.trim())?;
     let alias = alias.trim();

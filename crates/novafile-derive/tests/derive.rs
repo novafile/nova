@@ -578,3 +578,57 @@ fn record_rules_need_optional_fields() {
 
     let _ = R::novafile_schema();
 }
+
+/// A field refining a standard library type, as `#[nova(type = "std.…")]`.
+#[derive(NovaSchema, Serialize)]
+struct Upstream {
+    /// Base URL of the upstream service, origin only.
+    #[nova(type = r#"std.Uri @pattern("https?://[^/?#@]+/?")"#)]
+    address: String,
+}
+
+/// The same, with the standard library version pinned.
+#[derive(NovaSchema, Serialize)]
+#[nova(import = "novafile.dev/std@0.1.0 as std")]
+struct PinnedUpstream {
+    #[nova(type = "std.Uri")]
+    address: String,
+}
+
+/// An import of a schema that is not bundled.
+#[derive(NovaSchema, Serialize)]
+#[nova(import = "acme.test/common@1.0.0 as c")]
+struct Unbundled {
+    id: String,
+}
+
+/// `std.*` in a derived schema imports the bundled standard library (issue #37): the rendered
+/// schema carries the `@import`, parses back to the same fingerprint, and checks both the std
+/// type and the local refinement.
+#[test]
+fn derived_schemas_import_the_standard_library() {
+    let s = Upstream::novafile_schema();
+    let text = s.to_string();
+    assert!(text.contains("@import novafile.dev/std@0.1.0#"), "{text}");
+    assert!(text.contains(" as std\n"), "{text}");
+    assert_eq!(parse_schema(&text).unwrap().fingerprint(), s.fingerprint());
+
+    let check = |doc: &str| s.resolve(&novafile_text::parse(doc).unwrap()).is_ok();
+    assert!(check("address: \"https://api.example.com\"\n"));
+    assert!(!check("address: \"https://api.example.com/path\"\n"), "the local @pattern narrows");
+    assert!(!check("address: \"https://exa mple.com\"\n"), "std.Uri rejects a space");
+
+    // Without a `std.*` reference there is no import.
+    assert!(!Infrastructure::novafile_schema().to_string().contains("@import"));
+
+    // An explicit import pins the version and is not added twice.
+    let pinned = PinnedUpstream::novafile_schema();
+    assert_eq!(pinned.imports.len(), 1);
+    assert_eq!(pinned.imports[0].reference.version.to_string(), "0.1.0");
+}
+
+#[test]
+#[should_panic(expected = "can only import a bundled schema")]
+fn derived_schemas_import_only_bundled_schemas() {
+    let _ = Unbundled::novafile_schema();
+}
