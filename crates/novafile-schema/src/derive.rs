@@ -16,8 +16,7 @@
 //! ```
 //!
 //! The mapping follows the Serde binding (spec §11.3), so values produced
-//! by `novafile-serde` resolve against the generated schema. The exception is a
-//! `url::Url` (feature `url`) built from text that is not an RFC 3986 URI.
+//! by `novafile-serde` resolve against the generated schema.
 
 use crate::model::{Def, IntKind, Num, Schema, TypeKind, TypeRef};
 use std::collections::HashMap;
@@ -416,9 +415,9 @@ macro_rules! std_types {
 }
 
 std_types! {
-    // RFC 3986, stricter than the WHATWG URLs of `Url`. A `Url` read from a URI writes a URI
-    // back; one built from other text can keep `[ ] | { } ^` and then fails (`type = "string"`).
-    "url": url::Url => "Uri",
+    // A WHATWG URL serialization (std 0.2.0, proposal 0011): what `Url` writes, so every `Url`
+    // round-trips. `type = "std.Uri"` asks for an RFC 3986 URI instead.
+    "url": url::Url => "Url",
     // Lower case, hyphenated: what `Uuid` writes. `Uuid` also reads upper case and other
     // forms, which the schema rejects.
     "uuid": uuid::Uuid => "Uuid",

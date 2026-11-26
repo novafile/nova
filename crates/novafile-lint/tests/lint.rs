@@ -163,7 +163,7 @@ fn std_lints() {
         [("std-restated", Level::Hint, "type Port"), ("std-restated", Level::Hint, "type Mail")],
         "{f:#?}"
     );
-    assert!(f[1].message.contains("restates Email of novafile.dev/std@0.1.0"), "{}", f[1].message);
+    assert!(f[1].message.contains("restates Email of novafile.dev/std@0.2.0"), "{}", f[1].message);
     // `std-hint` is off by default.
     let on = Config::default().with_directive("enable=std-hint allow=std-restated").unwrap();
     let f = lint_schema(src, &on).unwrap();
