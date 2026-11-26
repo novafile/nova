@@ -268,6 +268,38 @@ impl Value {
             _ => {}
         }
     }
+
+    /// Deep-merge `upper` into `self`, as one configuration layer over the one below
+    /// (spec §6.4, partial validation).
+    ///
+    /// Records merge field by field and maps entry by entry (keys matched by value
+    /// equality, §2.12), recursively. Everything else replaces: lists, sets, tuples,
+    /// variants, scalars, a value of another kind, and `null`, which overrides and
+    /// never deletes. Applications that need other precedence (appending lists,
+    /// `null` as deletion) write their own merge.
+    pub fn merge(&mut self, upper: Value) {
+        match (self, upper) {
+            (Value::Record(lower), Value::Record(upper)) => {
+                for (k, v) in upper.into_entries() {
+                    match lower.get_mut(&k) {
+                        Some(slot) => slot.merge(v),
+                        None => {
+                            lower.set(k, v);
+                        }
+                    }
+                }
+            }
+            (Value::Map(lower), Value::Map(upper)) => {
+                for (k, v) in upper {
+                    match lower.iter_mut().find(|(lk, _)| *lk == k) {
+                        Some((_, slot)) => slot.merge(v),
+                        None => lower.push((k, v)),
+                    }
+                }
+            }
+            (slot, upper) => *slot = upper,
+        }
+    }
 }
 
 impl From<&str> for Value {
@@ -333,5 +365,58 @@ impl Ord for Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A record from `(key, value)` pairs.
+    fn rec(entries: Vec<(&str, Value)>) -> Value {
+        Value::Record(Record::from_entries(entries.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()).unwrap())
+    }
+
+    #[test]
+    fn merge_records_deeply_and_replaces_the_rest() {
+        let mut base = rec(vec![
+            ("name", "app".into()),
+            ("db", rec(vec![("host", "localhost".into()), ("port", 5432.into())])),
+            ("tags", Value::List(vec!["a".into(), "b".into()])),
+            ("debug", Value::Bool(true)),
+            ("extra", rec(vec![("x", 1.into())])),
+        ]);
+        base.merge(rec(vec![
+            ("db", rec(vec![("port", 6432.into()), ("user", "ada".into())])),
+            ("tags", Value::List(vec!["c".into()])),
+            ("debug", Value::Null),
+            ("extra", "flat".into()),
+            ("new", 1.into()),
+        ]));
+        assert_eq!(
+            base,
+            rec(vec![
+                ("name", "app".into()),
+                ("db", rec(vec![("host", "localhost".into()), ("port", 6432.into()), ("user", "ada".into())])),
+                ("tags", Value::List(vec!["c".into()])),
+                ("debug", Value::Null),
+                ("extra", "flat".into()),
+                ("new", 1.into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn merge_maps_by_key_equality() {
+        let mut base = Value::Map(vec![(1.into(), rec(vec![("a", 1.into())])), (2.into(), "two".into())]);
+        base.merge(Value::Map(vec![(1.into(), rec(vec![("b", 2.into())])), (3.into(), "three".into())]));
+        assert_eq!(
+            base,
+            Value::Map(vec![
+                (1.into(), rec(vec![("a", 1.into()), ("b", 2.into())])),
+                (2.into(), "two".into()),
+                (3.into(), "three".into()),
+            ])
+        );
     }
 }
