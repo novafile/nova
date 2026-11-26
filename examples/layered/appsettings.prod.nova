@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: CC0-1.0
+# Production layer: overrides the base key by key.
+@schema appsettings@1.0.0
+
+log_level: warn
+http:
+  port: 8080
+db:
+  pool: 50
+features: [search, checkout]   # lists replace, they do not append

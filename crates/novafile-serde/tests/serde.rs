@@ -276,3 +276,64 @@ fn with_schema_checks_the_schema_reference() {
     let anonymous = novafile_schema::parse_schema("@root Settings\nrecord Settings:\n  name?: string\n").unwrap();
     novafile_serde::from_str_with_schema::<Settings>("@schema example.org/other@1.0.0\nname: x\n", &anonymous).unwrap();
 }
+
+/// Layered configuration (spec §6.4): each layer passes the partial check, the layers merge
+/// with `Value::merge`, and only the merged value gets defaults, required fields and rules.
+#[test]
+fn layered_configuration_merges_then_resolves() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Config {
+        name: String,
+        port: u16,
+        tags: Vec<String>,
+        db: Db,
+    }
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Db {
+        url: Option<String>,
+        url_file: Option<String>,
+        pool: u16,
+    }
+
+    let schema = novafile_schema::parse_schema(
+        "@root Config\nrecord Config:\n  name: string\n  port: u16\n  tags: string[]\n  db: Db\n\
+         record Db @one_of(url, url_file):\n  url?: string\n  url_file?: string\n  pool: u16 = 10\n",
+    )
+    .unwrap();
+    let parse = |src: &str| novafile_text::parse(src).unwrap();
+    let merged = |layers: &[&str]| {
+        let mut v = Value::Record(novafile_value::Record::new());
+        for src in layers {
+            let layer = parse(src);
+            schema.resolve_partial(&layer).unwrap();
+            v.merge(layer);
+        }
+        schema.resolve(&v)
+    };
+
+    let base = "name: app\ntags: [a, b]\ndb:\n  url: \"postgres://base\"\n";
+    let prod = "port: 8080\ntags: [c]\n";
+    // A single layer is incomplete: valid partially, missing `port` in full.
+    assert!(schema.resolve(&parse(base)).is_err());
+
+    // The upper layer wins key by key, lists replace, and `pool` gets its default only now.
+    let config: Config = from_value(merged(&[base, prod]).unwrap()).unwrap();
+    assert_eq!(
+        config,
+        Config {
+            name: "app".into(),
+            port: 8080,
+            tags: vec!["c".into()],
+            db: Db {
+                url: Some("postgres://base".into()),
+                url_file: None,
+                pool: 10
+            },
+        }
+    );
+
+    // Each layer satisfies `@one_of` alone; the merge keeps both fields and breaks it.
+    let issues = merged(&[base, prod, "db:\n  url_file: /run/url\n"]).unwrap_err();
+    assert_eq!(issues.len(), 1);
+    assert!(issues[0].to_string().contains("@one_of(url, url_file): 2 present"), "{}", issues[0]);
+}
