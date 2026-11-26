@@ -809,6 +809,10 @@ fn parse_variant(s: &str, budget: &Cell<usize>) -> Result<VariantDef, String> {
             return Err(format!("invalid variant name {}", &s[..end]));
         };
         // An enum variant named `@redacted` would let resolution turn the string into a marker.
+        if name.is_empty() {
+            return Err("a variant name cannot be empty".into());
+        }
+
         novafile_value::variant_tag(&name).map_err(|m| format!("invalid variant name: {m}"))?;
 
         (name, &s[end..])
