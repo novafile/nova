@@ -678,7 +678,7 @@ fn foreign_types_map_to_the_standard_library() {
     };
 
     let id = uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef).to_string();
-    // What `Url` writes passes, Unicode hosts included (written as punycode).
+    // `Url` writes these as URIs: it percent-encodes spaces and writes Unicode hosts as punycode.
     for written in [url(" https://bücher.example/a b?q=1#f "), url("http://[::1]:8080/"), url("file:///tmp/x")] {
         doc(&written, &id).unwrap_or_else(|e| panic!("{written}: {e:?}"));
     }
@@ -687,4 +687,11 @@ fn foreign_types_map_to_the_standard_library() {
     assert!(doc("https://exa mple.com", &id).is_err());
     assert!(doc("https://bücher.example", &id).is_err());
     assert!(doc(&url("https://a.example"), &id.to_uppercase()).is_err());
+
+    // The boundary: from text that is not RFC 3986, `Url` keeps characters a URI may not hold
+    // (`[`, `]`, `|`, `{` in a query), so its output fails `std.Uri`. Such fields take
+    // `#[nova(type = "string")]`.
+    let whatwg = url("https://a.example/?filter[a]=b|c{d}");
+    assert_eq!(whatwg, "https://a.example/?filter[a]=b|c{d}");
+    assert!(doc(&whatwg, &id).is_err());
 }

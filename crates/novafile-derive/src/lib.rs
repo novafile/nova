@@ -38,9 +38,11 @@
 //! as `Option<…>` (not through an alias) it gives the inner type, which stays optional and
 //! nullable. `range`, `len` and the class apply on top of it. The `novafile-schema` features
 //! `url`, `uuid` and `semver` give `url::Url`, `uuid::Uuid` and `semver::Version` an impl that
-//! derives `std.Uri`, `std.Uuid` and `std.SemVer`. `std.Uri` follows RFC 3986 and is stricter
-//! than the WHATWG parsing of `url::Url` (unencoded spaces, Unicode hosts), and `std.Uuid` takes
-//! lower case only; what those types write always passes.
+//! derives `std.Uri`, `std.Uuid` and `std.SemVer`. `std.Uri` follows RFC 3986, which is stricter
+//! than the WHATWG URLs of `url::Url`: a document must hold a URI (no unencoded spaces or Unicode
+//! hosts), and a `Url` read from one writes a URI back. A `Url` built from other text can keep
+//! characters a URI may not hold (`?filter[a]=b|c`), and its output then fails the schema; give
+//! such fields `type = "string"`. `std.Uuid` takes lower case, which is what `Uuid` writes.
 //!
 //! An `Option<…>` field derives `name?: T?`: it may be absent, and it may be `null`.
 //! `not_null` keeps the field optional but rejects `null`, so it derives `name?: T`. Serde

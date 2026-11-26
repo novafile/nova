@@ -30,9 +30,9 @@ novafile-text = { path = "../novafile-text" }
 novafile-serde = { path = "../novafile-serde" }
 proptest.workspace = true
 serde.workspace = true
-url.workspace = true
-uuid.workspace = true
-semver.workspace = true
+url = { workspace = true, features = ["serde"] }
+uuid = { workspace = true, features = ["serde"] }
+semver = { workspace = true, features = ["serde"] }
 
 [lints]
 workspace = true
