@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: CC0-1.0
+# Schema for the layered configuration example (spec §6.4, partial validation).
+# Each layer is checked partially; the merged configuration is checked in full.
+@schema appsettings@1.0.0
+@root AppSettings
+
+record AppSettings:
+  name: string
+  log_level: LogLevel = !info
+  http: Http
+  db: Db
+  features: string[] = []
+
+enum LogLevel = trace | debug | info | warn | error
+
+record Http:
+  host: string = "0.0.0.0"
+  port: u16 @range(1..)
+
+# The connection comes from a URL or a file holding it; credentials come as a pair.
+record Db @one_of(url, url_file) @together(user, password):
+  url?: string
+  url_file?: string
+  user?: string
+  password?: string
+  pool: u16 @range(1..100) = 10
