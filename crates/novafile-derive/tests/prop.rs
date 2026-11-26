@@ -66,32 +66,31 @@ struct Foreign {
     version: semver::Version,
 }
 
-/// An RFC 3986 URI with an authority, parsed by `url::Url`: special and other schemes,
-/// domain and IP hosts, ports, and paths, queries and fragments of RFC 3986 characters and
-/// percent-escapes. `Url` normalizes it (host case, default ports, `'` in queries) and must
-/// write it back as a URI that `std.Uri` accepts. A `Url` built from text that is not RFC 3986
-/// (`?filter[a]=b`) can write characters `std.Uri` rejects; the derive tests pin that boundary.
+/// A URL built by `url::Url` from arbitrary text: special, other and opaque schemes; ASCII,
+/// Unicode, IPv4 and IPv6 hosts; ports; and paths, queries and fragments of any characters,
+/// including those RFC 3986 forbids. `std.Url` must accept whatever `Url` writes for them.
 fn url() -> impl Strategy<Value = url::Url> {
-    const PCHAR: &str = "([A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-Fa-f]{2})";
-    let re = |p: &str| proptest::string::string_regex(p).unwrap();
     let host = prop_oneof![
         "[A-Za-z0-9]([A-Za-z0-9-]{0,6}[A-Za-z0-9])?(\\.[A-Za-z]{2,4}){0,2}",
+        "\\p{L}{1,6}\\.[a-z]{2,3}",
         any::<std::net::Ipv4Addr>().prop_map(|ip| ip.to_string()),
         any::<Ipv6Addr>().prop_map(|ip| format!("[{ip}]")),
     ];
     (
-        prop::sample::select(vec!["http", "https", "ws", "ftp", "git+ssh", "x-app"]),
+        prop::sample::select(vec!["http", "https", "ws", "wss", "ftp", "file", "git+ssh", "x-app", "mailto", "data"]),
+        any::<bool>(),
         host,
         prop::option::of(any::<u16>()),
-        prop::collection::vec(re(&format!("{PCHAR}{{0,6}}")), 0..4),
-        prop::option::of(re(&format!("({PCHAR}|[/?]){{0,12}}"))),
-        prop::option::of(re(&format!("({PCHAR}|[/?]){{0,12}}"))),
+        "\\PC{0,16}",
     )
-        .prop_filter_map("Url rejects the URI", |(scheme, host, port, segments, query, fragment)| {
+        .prop_filter_map("Url rejects the input", |(scheme, slashes, host, port, rest)| {
             let port = port.map(|p| format!(":{p}")).unwrap_or_default();
-            let query = query.map(|q| format!("?{q}")).unwrap_or_default();
-            let fragment = fragment.map(|f| format!("#{f}")).unwrap_or_default();
-            url::Url::parse(&format!("{scheme}://{host}{port}/{}{query}{fragment}", segments.join("/"))).ok()
+            let text = if slashes {
+                format!("{scheme}://{host}{port}/{rest}")
+            } else {
+                format!("{scheme}:{rest}")
+            };
+            url::Url::parse(&text).ok()
         })
 }
 

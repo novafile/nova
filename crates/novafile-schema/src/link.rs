@@ -24,7 +24,7 @@ const MAX_IMPORTED_DEFS: usize = 10_000;
 pub const STD_NAME: &str = "novafile.dev/std";
 
 /// The source of every bundled version of the standard library, oldest first.
-pub const STD_SRCS: &[&str] = &[include_str!("../meta/std.novs")];
+pub const STD_SRCS: &[&str] = &[include_str!("../meta/std-0.1.0.novs"), include_str!("../meta/std.novs")];
 
 /// Every bundled version of the standard library, oldest first.
 ///

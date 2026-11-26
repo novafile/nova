@@ -609,7 +609,8 @@ struct Unbundled {
 fn derived_schemas_import_the_standard_library() {
     let s = Upstream::novafile_schema();
     let text = s.to_string();
-    assert!(text.contains("@import novafile.dev/std@0.1.0#"), "{text}");
+    // The newest bundled version, unless the root pins one (`PinnedUpstream` below).
+    assert!(text.contains("@import novafile.dev/std@0.2.0#"), "{text}");
     assert!(text.contains(" as std\n"), "{text}");
     assert_eq!(parse_schema(&text).unwrap().fingerprint(), s.fingerprint());
 
@@ -647,22 +648,22 @@ struct Client {
     short: url::Url,
 }
 
-/// `url::Url`, `uuid::Uuid` and `semver::Version` derive as `std.Uri`, `std.Uuid` and
+/// `url::Url`, `uuid::Uuid` and `semver::Version` derive as `std.Url`, `std.Uuid` and
 /// `std.SemVer`, and what those types write passes the schema.
 #[test]
 fn foreign_types_map_to_the_standard_library() {
     let s = Client::novafile_schema();
     let text = s.to_string();
     for field in [
-        "endpoint: std.Uri",
+        "endpoint: std.Url",
         "id: std.Uuid",
         "version?: std.SemVer?",
         "plain: string",
-        "short: std.Uri @len(..40)",
+        "short: std.Url @len(..40)",
     ] {
         assert!(text.contains(field), "{field} in\n{text}");
     }
-    assert!(text.contains("@import novafile.dev/std@0.1.0#"), "{text}");
+    assert!(text.contains("@import novafile.dev/std@0.2.0#"), "{text}");
 
     let url = |s: &str| url::Url::parse(s).unwrap().to_string();
     let doc = |endpoint: &str, id: &str| {
@@ -678,22 +679,23 @@ fn foreign_types_map_to_the_standard_library() {
     };
 
     let id = uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef).to_string();
-    // `Url` writes these as URIs: it percent-encodes spaces and writes Unicode hosts as punycode.
-    for written in [url(" https://bücher.example/a b?q=1#f "), url("http://[::1]:8080/"), url("file:///tmp/x")] {
+    // What `Url` writes passes, including characters a URI may not hold (`[`, `]`, `|`, `{`).
+    for written in [
+        url(" https://bücher.example/a b?q=1#f "),
+        url("http://[::1]:8080/"),
+        url("file:///tmp/x"),
+        url("https://a.example/?filter[a]=b|c{d}"),
+        url("mailto:a b@example.com"),
+    ] {
         doc(&written, &id).unwrap_or_else(|e| panic!("{written}: {e:?}"));
     }
 
-    // Input `Url` would read is stricter here: unencoded spaces, Unicode hosts, upper-case UUIDs.
-    assert!(doc("https://exa mple.com", &id).is_err());
-    assert!(doc("https://bücher.example", &id).is_err());
+    // A document must hold the written form: no unencoded spaces in hosts, no Unicode hosts,
+    // the `/` of a special URL's empty path, a lowercase scheme; and lower-case UUIDs.
+    for input in ["https://exa mple.com/", "https://bücher.example/", "https://a.example", "HTTPS://a.example/"] {
+        assert!(doc(input, &id).is_err(), "{input}");
+    }
     assert!(doc(&url("https://a.example"), &id.to_uppercase()).is_err());
-
-    // The boundary: from text that is not RFC 3986, `Url` keeps characters a URI may not hold
-    // (`[`, `]`, `|`, `{` in a query), so its output fails `std.Uri`. Such fields take
-    // `#[nova(type = "string")]`.
-    let whatwg = url("https://a.example/?filter[a]=b|c{d}");
-    assert_eq!(whatwg, "https://a.example/?filter[a]=b|c{d}");
-    assert!(doc(&whatwg, &id).is_err());
 }
 
 /// A PDDL-like formula: operators as variants renamed to tags that are not identifiers.
