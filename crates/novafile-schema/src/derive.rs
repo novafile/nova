@@ -102,6 +102,13 @@ pub trait NovaSchema {
         None
     }
 
+    /// The `@import` arguments from `#[nova(import = "name@version as alias")]`.
+    #[doc(hidden)]
+    #[must_use]
+    fn nova_imports() -> &'static [&'static str] {
+        &[]
+    }
+
     /// The complete schema with `Self` as `@root`.
     #[must_use]
     fn novafile_schema() -> Schema
@@ -116,10 +123,18 @@ pub trait NovaSchema {
 ///
 /// # Panics
 ///
+/// The imports are those of `T`'s `#[nova(import = …)]`, which must name bundled schemas.
+/// A reference to `std.Name` without an import under the alias `std` imports the newest
+/// bundled standard library as `std`, so `#[nova(type = "std.Uri")]` and the foreign-type
+/// impls work without an attribute; `import = "novafile.dev/std@… as std"` pins the version.
+///
+/// # Panics
+///
 /// Panics if the schema fails the checks [`crate::parse_schema`] applies: a `#[nova(type)]`
 /// naming an unknown type, an alias cycle, a class on a `@key` field, an invalid default,
 /// a repeated field name or id, an optional or nullable `@key`, or an enum without variants.
-/// Also panics if two different Rust types map to the same definition name.
+/// Also panics if two different Rust types map to the same definition name, or on a
+/// malformed `#[nova(import)]` or one that names a schema that is not bundled.
 #[must_use]
 pub fn schema_for<T: NovaSchema>() -> Schema {
     let mut generator = SchemaGen::default();
@@ -139,11 +154,55 @@ pub fn schema_for<T: NovaSchema>() -> Schema {
     };
 
     let (name, version) = T::nova_schema_id().map_or((None, None), |(n, v)| (Some(n), Some(v)));
-    let schema = generator.into_schema(Some(root), name, version);
+    let mut schema = generator.into_schema(Some(root), name, version);
+    for text in T::nova_imports() {
+        let import = crate::parse::parse_import(text, &schema).unwrap_or_else(|e| panic!("#[nova(import = {text:?})]: {e}"));
+        assert!(
+            crate::bundled(&import.reference).is_some(),
+            "#[nova(import = {text:?})]: a derived schema can only import a bundled schema, such as {}",
+            crate::STD_NAME
+        );
+
+        schema.imports.push(import);
+    }
+
+    if !schema.imports.iter().any(|i| i.alias == STD_ALIAS) && uses_alias(&schema, STD_ALIAS) {
+        let std = crate::std_schemas().last().and_then(Schema::reference).expect("a bundled standard library");
+        schema.imports.push(crate::model::Import {
+            alias: STD_ALIAS.to_owned(),
+            reference: std,
+        });
+    }
+
     crate::parse::check_defs(&schema)
-        .and_then(|()| crate::parse::check_refs(&schema))
-        .unwrap_or_else(|e| panic!("#[derive(NovaSchema)]: {e}"));
+        .map_err(|message| crate::SchemaError { line: 0, message })
+        .and_then(|()| schema.link(&|_| Err(String::new())))
+        .unwrap_or_else(|e| panic!("#[derive(NovaSchema)]: {}", e.message));
     schema
+}
+
+/// The alias under which derived schemas reach the standard library.
+const STD_ALIAS: &str = "std";
+
+/// Whether the root or a definition of `schema` names a type `alias.Name`.
+fn uses_alias(schema: &Schema, alias: &str) -> bool {
+    /// Whether `t` or a type inside it is a name under `alias`.
+    fn names(t: &TypeRef, alias: &str) -> bool {
+        match &t.kind {
+            TypeKind::Named(n) => n.split_once('.').is_some_and(|(a, _)| a == alias),
+            TypeKind::List(e) | TypeKind::Set(e) => names(e, alias),
+            TypeKind::Map(k, v) => names(k, alias) || names(v, alias),
+            TypeKind::Tuple(ts) | TypeKind::Union(ts) => ts.iter().any(|t| names(t, alias)),
+            _ => false,
+        }
+    }
+
+    schema.root.iter().any(|t| names(t, alias))
+        || schema.defs.iter().any(|(_, d)| match d {
+            Def::Alias(t) => names(t, alias),
+            Def::Enum(vs) => vs.iter().filter_map(|v| v.payload.as_ref()).any(|t| names(t, alias)),
+            Def::Record(r) => r.fields.iter().any(|f| names(&f.ty, alias)),
+        })
 }
 
 /// Apply schema-syntax attributes (`@range(1..10) @len(..64, utf8)`) to a type.

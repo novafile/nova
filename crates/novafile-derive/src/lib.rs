@@ -8,7 +8,7 @@
 //! derived schema is anonymous and cannot check a document's `@schema` line. Nested types need no
 //! attribute.
 //!
-//! Attributes — container: `#[nova(name = "…", version = "…", rename = "TypeName", rename_all = "…",
+//! Attributes — container: `#[nova(name = "…", version = "…", import = "name@version as alias", rename = "TypeName", rename_all = "…",
 //! rename_all_fields = "…", open, doc = "…", together = "a, b", one_of = "a, b", any_of = "a, b")]`;
 //! field: `#[nova(rename = "…", key, id = N, range = "1..65535", len = "..64, utf8",
 //! default = "flow literal", secret, personal, type = "string @len(1..)", not_null, deprecated, skip,
@@ -24,6 +24,13 @@
 //! exactly one, or at least one of the named fields is present (not `null`). They name Rust
 //! fields, which must be `Option<…>` or `#[serde(default)]` and have no `default`; each may
 //! be given more than once. Partial validation of a configuration layer skips them.
+//!
+//! The standard library `novafile.dev/std` (proposal 0008) is available as `std`: a
+//! `type = "std.Uri @pattern(\"https://.*\")"` refines one of its types, and the derived schema
+//! then carries `@import novafile.dev/std@… as std`, the newest bundled version. `import` on the
+//! root type adds an `@import` line of its own, to pin that version
+//! (`import = "novafile.dev/std@0.1.0 as std"`); it may be given more than once, and only bundled
+//! schemas can be imported.
 //!
 //! `secret` and `personal` classify the field's type (`@secret` / `@personal`, proposal 0009).
 //! `type` replaces the field type's `NovaSchema` impl with a schema type expression, for
@@ -105,6 +112,8 @@ struct Container {
     /// Record rules: the rule name (`together`, `one_of`, `any_of`) and the Rust
     /// field names it lists, in the order written.
     rules: Vec<(String, Vec<String>, proc_macro2::Span)>,
+    /// `@import` arguments (`name@version as alias`), in the order written.
+    imports: Vec<String>,
 }
 
 /// Settings of a field or enum variant, from `#[nova(...)]`, `#[serde(...)]` and `#[deprecated]`.
@@ -217,13 +226,15 @@ fn container_attrs(attrs: &[Attribute]) -> syn::Result<Container> {
                     c.open = true;
                 } else if m.path.is_ident("doc") {
                     nova_doc = Some(str_lit(&m)?);
+                } else if m.path.is_ident("import") {
+                    c.imports.push(str_lit(&m)?);
                 } else if let Some(rule) = ["together", "one_of", "any_of"].into_iter().find(|r| m.path.is_ident(r)) {
                     let span = m.path.span();
                     let fields = str_lit(&m)?.split(',').map(|f| f.trim().to_owned()).collect();
                     c.rules.push((rule.to_owned(), fields, span));
                 } else {
                     return Err(m.error(
-                        "unknown #[nova] container attribute (name, version, rename, rename_all, rename_all_fields, open, doc, together, one_of, any_of)",
+                        "unknown #[nova] container attribute (name, version, import, rename, rename_all, rename_all_fields, open, doc, together, one_of, any_of)",
                     ));
                 }
 
@@ -653,6 +664,17 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
         _ => return Err(Error::new(ident.span(), "#[nova(name = …)] and #[nova(version = …)] go together")),
     };
 
+    let imports = &c.imports;
+    let imports = if imports.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn nova_imports() -> &'static [&'static str] {
+                &[#(#imports),*]
+            }
+        }
+    };
+
     Ok(quote! {
         impl #krate::NovaSchema for #ident {
             fn nova_type(generator: &mut #krate::derive::SchemaGen) -> #krate::TypeRef {
@@ -663,6 +685,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
             }
 
             #id
+            #imports
         }
     })
 }
