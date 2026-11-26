@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: CC0-1.0
+# Local layer: a developer's overrides, usually not committed.
+@schema appsettings@1.0.0
+
+log_level: debug
+http:
+  host: localhost
