@@ -864,3 +864,36 @@ fn record_rules_and_partial_validation() {
             .contains("records, not enums")
     );
 }
+
+/// Quoted variant names (spec §6.1): both enum forms parse, the canonical text quotes only
+/// names that are not identifiers, and it parses back to the same schema.
+#[test]
+fn quoted_variant_names_round_trip() {
+    let block = parse_schema("enum Op:\n  and(Op[])\n  \"=\"((int, int)) @id(9)\n  \"at start\"(Op)\n  \"plain\"\n").unwrap_err();
+    assert!(block.message.contains("@id"), "{block}");
+
+    let s = parse_schema("@root Op\nenum Op:\n  and(Op[])\n  \"=\"((int, int))\n  \"at start\"(Op)\n  \"plain\"\n  \"a \\\"q\\\"\"\n").unwrap();
+    let text = s.to_canonical_text();
+    for line in [
+        "  and(list<Op>)\n",
+        "  \"=\"((int, int))\n",
+        "  \"at start\"(Op)\n",
+        "  plain\n",
+        "  \"a \\\"q\\\"\"\n",
+    ] {
+        assert!(text.contains(line), "{line:?} in\n{text}");
+    }
+    assert_eq!(parse_schema(&text).unwrap().fingerprint(), s.fingerprint());
+
+    let inline = parse_schema("@root Op\nenum Op = and(Op[]) | \"=\"((int, int)) | \"at start\"(Op) | \"plain\" | \"a \\\"q\\\"\"\n").unwrap();
+    assert_eq!(inline.fingerprint(), s.fingerprint());
+
+    for (bad, why) in [
+        ("enum E = \"\"\n", "empty"),
+        ("enum E = \"a\" (int)\n", "unexpected"),
+        ("enum E = \"a\n", "unterminated"),
+    ] {
+        let e = parse_schema(bad).unwrap_err();
+        assert!(e.message.contains(why), "{bad:?}: {e}");
+    }
+}

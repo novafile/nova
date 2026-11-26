@@ -191,11 +191,11 @@ fn write_flow(o: &mut String, v: &Value, sep: &str) {
         }
         Value::Variant(t, None) => {
             o.push('!');
-            o.push_str(t);
+            o.push_str(&key_text(t));
         }
         Value::Variant(t, Some(p)) => {
             o.push('!');
-            o.push_str(t);
+            o.push_str(&key_text(t));
             o.push('(');
             write_flow(o, p, sep);
             o.push(')');
@@ -451,7 +451,7 @@ impl<'t> W<'t> {
                 }
             }
             Value::Variant(t, Some(p)) => {
-                let _ = writeln!(self.out, " !{t}");
+                let _ = writeln!(self.out, " !{}", key_text(t));
                 self.block(p, indent + 2);
             }
             _ => {

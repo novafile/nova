@@ -130,8 +130,8 @@ impl Text<'_> {
         for v in vs {
             self.doc(f, "  ", v.doc.as_deref())?;
             match &v.payload {
-                Some(t) => write!(f, "  {}({t})", v.name)?,
-                None => write!(f, "  {}", v.name)?,
+                Some(t) => write!(f, "  {}({t})", novafile_text::key_text(&v.name))?,
+                None => write!(f, "  {}", novafile_text::key_text(&v.name))?,
             }
 
             match v.id {

@@ -753,7 +753,7 @@ fn decimal_to_rational(d: Decimal) -> Option<Rational> {
 
 /// Variant names joined as `a | b | c`, for messages.
 fn names(vs: &[VariantDef]) -> String {
-    vs.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(" | ")
+    vs.iter().map(|v| novafile_text::key_text(&v.name)).collect::<Vec<_>>().join(" | ")
 }
 
 /// Whether resolving `v` against `kind` would convert it (spec §6.3) rather

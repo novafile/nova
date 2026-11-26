@@ -802,23 +802,29 @@ fn parse_variant(s: &str, budget: &Cell<usize>) -> Result<VariantDef, String> {
         _ => (s, None),
     };
 
-    match s.split_once('(') {
-        Some((n, rest)) => {
-            let inner = rest.strip_suffix(')').ok_or("expected `)` after variant payload")?;
-            Ok(VariantDef {
-                name: check_name(n.trim())?,
-                payload: Some(parse_type_within(inner, budget)?),
-                id,
-                doc: None,
-            })
+    let (name, rest) = if s.starts_with('"') {
+        // A quoted name, like a quoted field name: any non-empty string (spec §6.1).
+        let end = quoted_end(s).ok_or("unterminated quoted variant name")?;
+        let Ok(novafile_value::Value::String(name)) = novafile_text::parse_flow(&s[..end]) else {
+            return Err(format!("invalid variant name {}", &s[..end]));
+        };
+        if name.is_empty() {
+            return Err("a variant name cannot be empty".into());
         }
-        None => Ok(VariantDef {
-            name: check_name(s)?,
-            payload: None,
-            id,
-            doc: None,
-        }),
-    }
+
+        (name, &s[end..])
+    } else {
+        let i = s.find('(').unwrap_or(s.len());
+        (check_name(s[..i].trim())?, &s[i..])
+    };
+
+    let payload = match rest.strip_prefix('(') {
+        Some(rest) => Some(parse_type_within(rest.strip_suffix(')').ok_or("expected `)` after variant payload")?, budget)?),
+        None if rest.trim().is_empty() => None,
+        None => return Err(format!("unexpected {:?} after variant {name:?}", rest.trim())),
+    };
+
+    Ok(VariantDef { name, payload, id, doc: None })
 }
 
 /// Add a variant to an enum. Fails if its `@id` is 0 or taken, or if it has

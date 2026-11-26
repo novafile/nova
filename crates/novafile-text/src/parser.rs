@@ -1301,7 +1301,17 @@ impl<'a> Parser<'a> {
     /// Parse `!tag` with an optional `(payload)`.
     fn variant_flow(&mut self) -> R<Node> {
         self.pos += 1;
-        let tag = self.ident()?;
+        let tag = if self.peek() == Some(b'"') {
+            let start = self.pos;
+            let t = self.parse_quoted_literal()?;
+            if t.is_empty() {
+                return Err(self.error_at(start, "a variant tag cannot be empty"));
+            }
+
+            t
+        } else {
+            self.ident()?
+        };
         if self.peek() == Some(b'(') {
             self.pos += 1;
             self.skip_ws_multi();
