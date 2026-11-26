@@ -550,13 +550,12 @@ impl<'a> Decoder<'a> {
         Ok(n as usize)
     }
 
-    /// A variant tag: a non-empty string (§2.11, §5.1).
+    /// A variant tag: a non-empty string that does not start with `@` (§2.11, §5.1).
     fn tag_name(&mut self) -> Result<&'a str, DecodeError> {
         let t = self.string()?;
-        if crate::is_variant_tag(t) {
-            Ok(t)
-        } else {
-            self.err("variant tag is empty".to_owned())
+        match crate::variant_tag(t) {
+            Ok(_) => Ok(t),
+            Err(m) => self.err(m),
         }
     }
 
@@ -1150,6 +1149,13 @@ mod tests {
         assert_eq!(decode(&at_start).unwrap(), crate::Value::Variant("at start".into(), None));
 
         assert!(crate::is_variant_tag("at start") && crate::is_variant_tag("2a") && !crate::is_variant_tag(""));
+
+        // `@` tags are reserved for implementation markers, so input cannot forge a placeholder.
+        let mut forged = vec![tag::UNIT_VARIANT, 18];
+        forged.extend_from_slice(crate::REDACTED_TAG.as_bytes());
+        let e = decode(&forged).unwrap_err();
+        assert!(e.message.contains("reserved"), "{e:?}");
+        assert!(!crate::is_variant_tag("@classified:secret") && crate::is_variant_tag("a@b"));
     }
 
     /// Back-references to one long string cannot blow a small input up to gigabytes.

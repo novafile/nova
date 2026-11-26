@@ -808,9 +808,8 @@ fn parse_variant(s: &str, budget: &Cell<usize>) -> Result<VariantDef, String> {
         let Ok(novafile_value::Value::String(name)) = novafile_text::parse_flow(&s[..end]) else {
             return Err(format!("invalid variant name {}", &s[..end]));
         };
-        if name.is_empty() {
-            return Err("a variant name cannot be empty".into());
-        }
+        // An enum variant named `@redacted` would let resolution turn the string into a marker.
+        novafile_value::variant_tag(&name).map_err(|m| format!("invalid variant name: {m}"))?;
 
         (name, &s[end..])
     } else {
@@ -1006,6 +1005,12 @@ pub(crate) fn check_defs(s: &Schema) -> Result<(), String> {
     for (name, d) in &s.defs {
         match d {
             Def::Enum(vs) if vs.is_empty() => return Err(format!("enum {name} has no variants")),
+            // Derived enums take their names from serde renames, unchecked by the parser.
+            Def::Enum(vs) => {
+                if let Some(e) = vs.iter().find_map(|v| novafile_value::variant_tag(&v.name).err()) {
+                    return Err(format!("enum {name}: {e}"));
+                }
+            }
             Def::Record(r) => {
                 for (i, f) in r.fields.iter().enumerate() {
                     check_unique_field(&r.fields[..i], f)
@@ -1015,7 +1020,7 @@ pub(crate) fn check_defs(s: &Schema) -> Result<(), String> {
 
                 check_rules(name, r)?;
             }
-            _ => {}
+            Def::Alias(_) => {}
         }
     }
 

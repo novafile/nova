@@ -22,25 +22,31 @@ pub mod serde_support;
 mod time;
 mod value_ref;
 
-/// Whether `s` is a valid variant tag: a non-empty string (spec §2.11). Tags that
-/// are not identifiers, such as `at start` or `=`, are written quoted in text.
-/// Decoders reject the empty tag, and bindings refuse to write it.
+/// Whether `s` is a valid variant tag: a non-empty string that does not start with `@`
+/// (spec §2.11). Tags that are not identifiers, such as `at start` or `=`, are written
+/// quoted in text. Tags starting with `@` are reserved for markers that only
+/// implementations create, such as [`REDACTED_TAG`], so no input can forge one.
+/// Parsers and decoders reject other tags, and bindings refuse to write them.
 #[must_use]
 pub fn is_variant_tag(s: &str) -> bool {
-    !s.is_empty()
+    !s.is_empty() && !s.starts_with('@')
 }
 
-/// `s` as an owned variant tag, or the error bindings report when it is not one:
-/// the empty tag, e.g. from `#[serde(rename = "")]`.
+/// `s` as an owned variant tag, or the error parsers, decoders and bindings report
+/// when it is not one: the empty tag, or one starting with `@`.
 ///
 /// # Errors
 ///
-/// Returns a message if [`is_variant_tag`] rejects `s`.
+/// Returns a message naming the problem if [`is_variant_tag`] rejects `s`.
 pub fn variant_tag(s: &str) -> Result<String, String> {
     if is_variant_tag(s) {
         Ok(s.to_owned())
-    } else {
+    } else if s.is_empty() {
         Err("variant tag is empty".to_owned())
+    } else {
+        Err(format!(
+            "variant tag {s:?} starts with `@`, which is reserved for implementation markers such as {REDACTED_TAG}"
+        ))
     }
 }
 
@@ -102,9 +108,9 @@ pub enum Value {
 }
 
 /// The tag of a redaction placeholder (proposal 0009): `@redacted`, or
-/// `@redacted("p:…")` with a pseudonym as its string payload. Tags in data are
-/// identifiers, so no parsed document holds this tag. Only redacting readers
-/// create it, and writers of stored data must reject it.
+/// `@redacted("p:…")` with a pseudonym as its string payload. Tags in data cannot
+/// start with `@` ([`is_variant_tag`]), so no parsed or decoded document holds this
+/// tag. Only redacting readers create it, and writers of stored data must reject it.
 pub const REDACTED_TAG: &str = "@redacted";
 
 impl Value {

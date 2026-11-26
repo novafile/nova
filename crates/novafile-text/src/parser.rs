@@ -1304,9 +1304,8 @@ impl<'a> Parser<'a> {
         let tag = if self.peek() == Some(b'"') {
             let start = self.pos;
             let t = self.parse_quoted_literal()?;
-            if t.is_empty() {
-                return Err(self.error_at(start, "a variant tag cannot be empty"));
-            }
+            // Empty tags and `@` tags (reserved for markers such as `@redacted`) are invalid.
+            novafile_value::variant_tag(&t).map_err(|m| self.error_at(start, m))?;
 
             t
         } else {

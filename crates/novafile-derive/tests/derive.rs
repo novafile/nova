@@ -725,3 +725,19 @@ fn renamed_variants_derive_quoted_names() {
     let back: Formula = novafile_serde::from_str_with_schema(&doc, &s).unwrap();
     assert_eq!(back, f);
 }
+
+/// An enum whose rename would make a variant named like a redaction placeholder.
+#[derive(NovaSchema, Serialize)]
+#[expect(dead_code, reason = "only the schema is derived")]
+enum Forged {
+    #[serde(rename = "@redacted")]
+    Marker,
+}
+
+/// A derived enum cannot declare an `@` variant: resolution would turn the string
+/// `@redacted` into a placeholder (spec §2.11).
+#[test]
+#[should_panic(expected = "reserved")]
+fn derived_variants_cannot_use_reserved_tags() {
+    let _ = Forged::novafile_schema();
+}
