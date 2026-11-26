@@ -194,3 +194,11 @@ fn template_rules() {
     let f = lint_document(&src.replacen('\n', "\n@x-lint allow=unused-def,bare-argument\n", 1), &Config::default()).unwrap();
     assert_eq!(f.len(), 2, "{f:#?}");
 }
+
+/// Quoted variant names exist for external vocabularies and are exempt from `variant-case`.
+#[test]
+fn quoted_variant_names_are_exempt_from_variant_case() {
+    let rules = |src: &str| lint_schema(src, &Config::default()).unwrap().into_iter().map(|f| f.rule).collect::<Vec<_>>();
+    assert!(!rules("enum Op = and | \"at start\" | \"=\"\n").contains(&"variant-case"));
+    assert!(rules("enum Op = and | AtStart\n").contains(&"variant-case"));
+}

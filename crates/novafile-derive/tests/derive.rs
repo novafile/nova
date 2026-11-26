@@ -695,3 +695,33 @@ fn foreign_types_map_to_the_standard_library() {
     assert_eq!(whatwg, "https://a.example/?filter[a]=b|c{d}");
     assert!(doc(&whatwg, &id).is_err());
 }
+
+/// A PDDL-like formula: operators as variants renamed to tags that are not identifiers.
+#[derive(NovaSchema, Serialize, serde::Deserialize, Debug, PartialEq)]
+enum Formula {
+    #[serde(rename = "and")]
+    And(Vec<Formula>),
+    #[serde(rename = "=")]
+    Eq(String, String),
+    #[serde(rename = "at start")]
+    AtStart(Box<Formula>),
+    #[serde(rename = "true")]
+    True,
+}
+
+/// Renamed variants derive quoted variant names (spec §6.1, issue novafile/spec#1), and what
+/// `novafile-serde` writes resolves against the derived schema and reads back.
+#[test]
+fn renamed_variants_derive_quoted_names() {
+    let s = Formula::novafile_schema();
+    let text = s.to_string();
+    for line in ["  and(list<Formula>)\n", "  \"=\"((string, string))\n", "  \"at start\"(Formula)\n", "  true\n"] {
+        assert!(text.contains(line), "{line:?} in\n{text}");
+    }
+
+    let f = Formula::And(vec![Formula::AtStart(Box::new(Formula::Eq("?x".into(), "a".into()))), Formula::True]);
+    let doc = novafile_serde::to_string(&f).unwrap();
+    assert!(doc.contains("!\"at start\""), "{doc}");
+    let back: Formula = novafile_serde::from_str_with_schema(&doc, &s).unwrap();
+    assert_eq!(back, f);
+}

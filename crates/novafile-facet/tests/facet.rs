@@ -589,9 +589,10 @@ fn f32_overflow_is_an_error() {
     assert!(from_value::<f32>(Value::Float(f64::INFINITY)).unwrap().is_infinite());
 }
 
-/// Variant tags must be identifiers (§2.11); a rename to anything else is an error.
+/// A variant tag is any non-empty string (§2.11): a rename to `at start` is that tag, and
+/// only a rename to the empty string is an error.
 #[test]
-fn non_identifier_variant_tags_are_errors() {
+fn renamed_variant_tags_need_not_be_identifiers() {
     #[derive(Facet)]
     #[repr(u8)]
     #[allow(dead_code)]
@@ -600,10 +601,13 @@ fn non_identifier_variant_tags_are_errors() {
         AtStart,
         #[facet(rename = "at-end")]
         AtEnd(u8),
+        #[facet(rename = "")]
+        Empty,
     }
 
-    assert!(to_value(&Op::AtStart).unwrap_err().to_string().contains("not an identifier"));
+    assert_eq!(to_value(&Op::AtStart).unwrap(), Value::Variant("at start".into(), None));
     assert_eq!(to_value(&Op::AtEnd(1)).unwrap(), Value::Variant("at-end".into(), Some(Box::new(Value::Int(1)))));
+    assert!(to_value(&Op::Empty).unwrap_err().to_string().contains("empty"));
 }
 
 /// `from_str_with_schema` checks the document's `@schema` line against a named schema (#28).

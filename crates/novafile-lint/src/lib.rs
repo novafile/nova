@@ -10,7 +10,7 @@
 //! | `mixed-list` | lists mixing scalar kinds | hint | — |
 //! | `compat-loss` | values the `@compat` format cannot represent | warning | — |
 //! | `field-case` | schema field names, except quoted ones | warning | — |
-//! | `variant-case` | schema enum variants | warning | — |
+//! | `variant-case` | schema enum variants, except quoted ones | warning | — |
 //! | `union-order` | union members an earlier member makes unreachable or captures values from (spec §6.5) | warning | — |
 //! | `pattern-anchor` | `@pattern`s starting with `^` or ending with `$`, which I-Regexp matches literally | warning | — |
 //! | `schema-name-version` | schema names whose last segment looks like a version (`…/v2`); versions go after `@` | warning | — |
@@ -516,7 +516,8 @@ pub fn lint_parsed_schema(src: &str, schema: &novafile_schema::Schema, config: &
                 }
             }
             novafile_schema::Def::Enum(vs) if config.on("variant-case") => {
-                for v in vs {
+                // Quoted names exist for external vocabularies and are exempt, as for fields.
+                for v in vs.iter().filter(|v| novafile_text::key_text(&v.name) == v.name) {
                     if !config.case.matches(&v.name) {
                         let (a, b) = line_of(&v.name, def_at);
                         out.push(Finding {

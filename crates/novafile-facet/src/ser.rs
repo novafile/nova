@@ -297,7 +297,7 @@ fn enumeration(e: PeekEnum<'_, '_>) -> R {
     }
 }
 
-/// `tag` as a variant tag, or an error if it is not an identifier (§2.11).
+/// `tag` as a variant tag, or an error if it is empty (§2.11).
 fn checked_tag(tag: &str) -> Result<String, Error> {
     novafile_value::variant_tag(tag).map_err(Error::new)
 }

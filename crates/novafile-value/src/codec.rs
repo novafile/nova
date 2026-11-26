@@ -550,13 +550,13 @@ impl<'a> Decoder<'a> {
         Ok(n as usize)
     }
 
-    /// A variant tag: a string that is an identifier (§2.11, §5.1).
+    /// A variant tag: a non-empty string (§2.11, §5.1).
     fn tag_name(&mut self) -> Result<&'a str, DecodeError> {
         let t = self.string()?;
         if crate::is_variant_tag(t) {
             Ok(t)
         } else {
-            self.err(format!("variant tag {t:?} is not an identifier"))
+            self.err("variant tag is empty".to_owned())
         }
     }
 
@@ -1139,18 +1139,17 @@ mod proofs;
 mod tests {
     use super::*;
 
-    /// Zero-field rows cost no input bytes, so their count is not bounded by it.
+    /// Variant tags are non-empty strings: the empty tag is rejected, `at start` decodes.
     #[test]
-    fn variant_tags_must_be_identifiers() {
-        // Unit variant "", then a unit variant "at start".
+    fn variant_tags_must_not_be_empty() {
+        let e = decode(&[tag::UNIT_VARIANT, 0]).unwrap_err();
+        assert!(e.message.contains("empty"), "{e:?}");
+
         let mut at_start = vec![tag::UNIT_VARIANT, 16];
         at_start.extend_from_slice(b"at start");
-        for bytes in [vec![tag::UNIT_VARIANT, 0], at_start] {
-            let e = decode(&bytes).unwrap_err();
-            assert!(e.message.contains("not an identifier"), "{e:?}");
-        }
+        assert_eq!(decode(&at_start).unwrap(), crate::Value::Variant("at start".into(), None));
 
-        assert!(crate::is_variant_tag("at_start-2") && !crate::is_variant_tag("2a"));
+        assert!(crate::is_variant_tag("at start") && crate::is_variant_tag("2a") && !crate::is_variant_tag(""));
     }
 
     /// Back-references to one long string cannot blow a small input up to gigabytes.

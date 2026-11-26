@@ -553,3 +553,15 @@ fn qualified_names_give_reversed_domain_packages() {
     assert_eq!(p("3m.com/parts-list/2x").as_deref(), Some("com._3m.parts_list._2x.v2"));
     assert_eq!(p("acme/rich-test").as_deref(), Some("acme_rich_test.v2"));
 }
+
+#[test]
+fn quoted_variant_names_are_not_protobuf_names() {
+    let wrap = |e: &str| schema(&format!("@root R\nrecord R:\n  e: E @id(1)\n{e}"));
+    for src in ["enum E = a | \"at start\"\n", "enum E = a(int) @id(1) | \"=\"(int) @id(2)\n"] {
+        let e = proto_file(&wrap(src)).unwrap_err();
+        assert!(e.contains("not a valid Protobuf enum value or field name"), "{src}: {e}");
+    }
+
+    // A quoted name that is an identifier is that identifier.
+    assert!(proto_file(&wrap("enum E = a | \"b\"\n")).is_ok());
+}

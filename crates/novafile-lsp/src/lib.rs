@@ -1158,9 +1158,11 @@ fn value_items(schema: &Schema, ty: &novafile_schema::TypeRef) -> Option<Vec<Com
     match (def, &under.kind) {
         (Some(Def::Enum(vs)), _) => {
             for v in vs {
+                let tag = novafile_text::key_text(&v.name);
                 let (label, insert) = match &v.payload {
-                    None => (v.name.clone(), v.name.clone()),
-                    Some(t) => (format!("!{}({t})", v.name), format!("!{}()", v.name)),
+                    // A bare word resolves to a unit variant (§6.3); one that is not an identifier is quoted.
+                    None => (v.name.clone(), tag),
+                    Some(t) => (format!("!{tag}({t})"), format!("!{tag}()")),
                 };
 
                 items.push(CompletionItem {

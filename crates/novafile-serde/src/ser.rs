@@ -20,7 +20,7 @@ fn text_of(v: Value, what: &str) -> Result<String, Error> {
     }
 }
 
-/// `variant` as a tag, or an error if it is not an identifier (§2.11).
+/// `variant` as a tag, or an error if it is empty (§2.11).
 fn tag(variant: &str) -> Result<String, Error> {
     novafile_value::variant_tag(variant).map_err(Error::new)
 }

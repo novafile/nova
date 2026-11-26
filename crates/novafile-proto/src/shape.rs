@@ -419,6 +419,11 @@ impl<'s> Plan<'s> {
                     let mut names = HashMap::new();
                     let oneof = vs.iter().any(|v| v.payload.is_some());
                     for v in vs {
+                        // Quoted variant names (`"at start"`), like quoted field names.
+                        if !is_proto_ident(&ident(&v.name)) {
+                            return Err(format!("{name}.{}: not a valid Protobuf enum value or field name", v.name));
+                        }
+
                         if let Some(other) = names.insert(ident(&v.name), &v.name) {
                             return Err(format!("{name}.{}: Protobuf name collides with variant {other}", v.name));
                         }

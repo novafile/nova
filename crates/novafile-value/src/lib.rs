@@ -22,27 +22,25 @@ pub mod serde_support;
 mod time;
 mod value_ref;
 
-/// Whether `s` is a valid variant tag: an identifier, `[A-Za-z_][A-Za-z0-9_-]*`
-/// (spec §2.11). Decoders reject other tags, and bindings refuse to write them.
+/// Whether `s` is a valid variant tag: a non-empty string (spec §2.11). Tags that
+/// are not identifiers, such as `at start` or `=`, are written quoted in text.
+/// Decoders reject the empty tag, and bindings refuse to write it.
 #[must_use]
 pub fn is_variant_tag(s: &str) -> bool {
-    let mut cs = s.chars();
-    cs.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && cs.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    !s.is_empty()
 }
 
-/// `s` as an owned variant tag, or the error bindings report when it is not one.
-///
-/// A tag that is not an identifier cannot be written as text, and decoders
-/// reject it, e.g. a `#[serde(rename = "at start")]` variant.
+/// `s` as an owned variant tag, or the error bindings report when it is not one:
+/// the empty tag, e.g. from `#[serde(rename = "")]`.
 ///
 /// # Errors
 ///
-/// Returns a message naming `s` if [`is_variant_tag`] rejects it.
+/// Returns a message if [`is_variant_tag`] rejects `s`.
 pub fn variant_tag(s: &str) -> Result<String, String> {
     if is_variant_tag(s) {
         Ok(s.to_owned())
     } else {
-        Err(format!("variant tag {s:?} is not an identifier"))
+        Err("variant tag is empty".to_owned())
     }
 }
 
