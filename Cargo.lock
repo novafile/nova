@@ -1287,7 +1287,7 @@ checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
 
 [[package]]
 name = "novafile"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "novafile-binary",
  "novafile-facet",
@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-binary"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "criterion",
  "novafile-text",
@@ -1316,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-cli"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "clap",
  "detect-coding-agent",
@@ -1339,7 +1339,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-conformance"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "novafile-binary",
  "novafile-patch",
@@ -1352,7 +1352,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-derive"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "novafile-schema",
  "novafile-serde",
@@ -1371,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-facet"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "facet",
  "facet-reflect",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-formats"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64",
  "novafile-value",
@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-json"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64",
  "novafile-value",
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-lint"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "novafile-formats",
  "novafile-json",
@@ -1415,7 +1415,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-lsp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "lsp-server",
  "lsp-types",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-patch"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "novafile-text",
  "novafile-value",
@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-proto"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "novafile-schema",
  "novafile-text",
@@ -1450,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-schema"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64",
  "novafile-derive",
@@ -1466,7 +1466,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-schemars"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "jsonschema",
  "novafile-json",
@@ -1481,7 +1481,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-serde"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "novafile-binary",
  "novafile-json",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-template"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64",
  "novafile-schema",
@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-text"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64",
  "criterion",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-umbrella-tests"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "novafile",
  "serde",
@@ -1526,7 +1526,7 @@ dependencies = [
 
 [[package]]
 name = "novafile-value"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "facet",
  "num-bigint 0.5.1",
