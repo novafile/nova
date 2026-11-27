@@ -66,6 +66,35 @@ fn refinement_intersects_with_the_alias() {
     assert!(!check(&p, "Lower", "\"ada \""), "the alias pattern");
 }
 
+/// A pattern from a named type is reported by the type's name, not by the
+/// pattern, which for `std.Url` runs to kilobytes (issue #44). A pattern
+/// written at the use site is still shown.
+#[test]
+fn pattern_issues_name_the_alias() {
+    let s = schema(
+        "@import novafile.dev/std@0.2.0 as std
+@root App
+type Endpoint = std.Url
+record App:
+  endpoint?: std.Url
+  db_url?: std.Url @secret
+  other?: Endpoint
+  slug?: string @pattern(\"[a-z]+\")
+",
+    );
+    let v = novafile_text::parse("endpoint: \"not a url\"\ndb_url: \"hunter2\"\nother: x\nslug: Ab\n").unwrap();
+    let messages: Vec<String> = s.validate(&v).unwrap_err().iter().map(ToString::to_string).collect();
+    assert_eq!(
+        messages,
+        [
+            "endpoint: \"not a url\" is not a std.Url",
+            "db_url: value is not a std.Url",
+            "other: \"x\" is not a std.Url",
+            "slug: \"Ab\" does not match @pattern(\"[a-z]+\")",
+        ]
+    );
+}
+
 #[test]
 fn canonical_text_keeps_imports_with_fingerprints() {
     let s = schema(CRM);

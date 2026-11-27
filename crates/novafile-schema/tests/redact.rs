@@ -99,7 +99,7 @@ fn issues_do_not_show_classified_values() {
     let issues = s.redact(&v, &Reveal::Redact, None).unwrap_err();
     let all: String = issues.iter().map(ToString::to_string).collect();
     assert!(!all.contains("not a uri"), "{all}");
-    assert!(all.contains("value does not match"), "{all}");
+    assert!(all.contains("value is not a std.Uri"), "{all}");
 }
 
 #[test]

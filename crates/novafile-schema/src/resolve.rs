@@ -189,9 +189,15 @@ impl<'s> Ctx<'s> {
         };
 
         // Constraints on the use site and every alias of the chain all hold
-        // (proposal 0008: a reference to an alias refines it).
-        for link in self.schema.alias_chain(t) {
-            self.constraints(&v, &link.constraints);
+        // (proposal 0008: a reference to an alias refines it). Each link but
+        // the first is the target of the alias the link before it names.
+        let chain = self.schema.alias_chain(t);
+        for (i, link) in chain.iter().enumerate() {
+            let alias = i.checked_sub(1).and_then(|j| match &chain[j].kind {
+                TypeKind::Named(n) => Some(n.as_str()),
+                _ => None,
+            });
+            self.constraints(&v, &link.constraints, alias);
         }
 
         v
@@ -670,9 +676,11 @@ impl<'s> Ctx<'s> {
         }
     }
 
-    /// Check `v` against `@range` and `@len`; a constraint that does not apply
-    /// to the value's kind passes.
-    fn constraints(&mut self, v: &Value, c: &Constraints) {
+    /// Check `v` against `@range`, `@pattern` and `@len`; a constraint that
+    /// does not apply to the value's kind passes. `alias` names the type alias
+    /// that declares `c`, if any: a pattern mismatch then names that type
+    /// rather than spelling out its pattern, which can run to kilobytes.
+    fn constraints(&mut self, v: &Value, c: &Constraints, alias: Option<&str>) {
         if let Some((lo, hi)) = &c.range
             && let Some(n) = Num::of(v)
         {
@@ -688,7 +696,10 @@ impl<'s> Ctx<'s> {
             && !p.is_match(s)
         {
             let shown = self.shown(|| novafile_text::quote(s));
-            self.issue(format!("{shown} does not match @pattern({})", novafile_text::quote(p.as_str())));
+            match alias {
+                Some(n) => self.issue(format!("{shown} is not a {n}")),
+                None => self.issue(format!("{shown} does not match @pattern({})", novafile_text::quote(p.as_str()))),
+            }
         }
 
         if let Some((lo, hi)) = c.len {
